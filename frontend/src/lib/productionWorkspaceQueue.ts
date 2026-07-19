@@ -71,11 +71,15 @@ export function pickNextExecutableProductionLineExcludingWorkOrder<T extends Pro
 
 export type PostProductionReportConfirmAdvance =
   | { kind: "stay"; line: ProductionQueueLine | null }
-  | { kind: "advance"; line: ProductionQueueLine | null };
+  | { kind: "advance"; line: ProductionQueueLine | null }
+  /** Report confirmed and WO closed — return to card Production Workspace (never legacy NO_QTY runner). */
+  | { kind: "workspace" };
 
 /**
- * After Production Report confirmation — mirror Material Issue auto-advance:
- * stay when same WO still has executable remaining qty; otherwise FIFO advance or empty.
+ * After Production Report confirmation:
+ * - stay when same WO still has executable remaining qty (report without close)
+ * - workspace when WO was closed (Confirm Report & Close WO) — never auto-open another WO
+ * - advance only for non-close confirmations with another executable WO
  */
 export function resolvePostProductionReportConfirmAdvance(input: {
   confirmedWorkOrderId: number;
@@ -86,11 +90,9 @@ export function resolvePostProductionReportConfirmAdvance(input: {
   const woId = Number(input.confirmedWorkOrderId);
   const sameWoNext = pickFirstExecutableProductionLine(executableLinesForWorkOrder(input.lines, woId));
 
+  // Confirm Report & Close WO — leave the runner; Ready to Start card workspace.
   if (input.forceAdvanceFromConfirmedWorkOrder) {
-    return {
-      kind: "advance",
-      line: pickNextExecutableProductionLineExcludingWorkOrder(input.lines, woId),
-    };
+    return { kind: "workspace" };
   }
 
   if (input.requiresShortfallDecision) {
@@ -101,10 +103,10 @@ export function resolvePostProductionReportConfirmAdvance(input: {
     return { kind: "stay", line: sameWoNext };
   }
 
-  return {
-    kind: "advance",
-    line: pickNextExecutableProductionLineExcludingWorkOrder(input.lines, woId),
-  };
+  const next = pickNextExecutableProductionLineExcludingWorkOrder(input.lines, woId);
+  // No remaining executable work on any WO — card workspace, not empty NO_QTY Select-WO.
+  if (!next) return { kind: "workspace" };
+  return { kind: "advance", line: next };
 }
 
 /** Scopes bumped after production report confirmation (queue + dashboards). */
@@ -116,6 +118,26 @@ export const PRODUCTION_REPORT_CONFIRM_REFRESH_SCOPES = [
   "stock",
   "pending-actions",
 ] as const;
+
+export type PostProductionPauseAdvance =
+  | { kind: "advance"; line: ProductionQueueLine | null }
+  | { kind: "workspace" };
+
+/**
+ * After Pause Production — leave the paused WO runner and open the next eligible
+ * executable WO, or return to the workspace Paused queue when none remain.
+ */
+export function resolvePostProductionPauseAdvance(input: {
+  pausedWorkOrderId: number;
+  lines: ProductionQueueLine[];
+}): PostProductionPauseAdvance {
+  const next = pickNextExecutableProductionLineExcludingWorkOrder(
+    input.lines,
+    Number(input.pausedWorkOrderId),
+  );
+  if (next) return { kind: "advance", line: next };
+  return { kind: "workspace" };
+}
 
 /** Build QC-pending totals per WO line from refreshed production entries. */
 export function buildQcPendingByWorkOrderLineId(

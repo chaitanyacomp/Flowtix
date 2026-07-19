@@ -188,21 +188,27 @@ describe("productionExecutionService", () => {
     assert.equal(getEffectiveProductionPendingQty(500, 480, "SHORTFALL_PENDING"), 0);
   });
 
-  test("syncShortfallPendingAfterProductionApprove marks execution SHORTFALL_PENDING", async () => {
-    const { tx, getExecutionStatus } = createFinishMockTx({ plannedQty: 3000, producedQty: 2800 });
-    await syncShortfallPendingAfterProductionApprove(tx, 280, 2800);
+  test("syncShortfallPendingAfterProductionApprove marks equal production SHORTFALL_PENDING for report", async () => {
+    const { tx, getExecutionStatus } = createFinishMockTx({ plannedQty: 3000, producedQty: 3000 });
+    await syncShortfallPendingAfterProductionApprove(tx, 280, 3000);
     assert.equal(getExecutionStatus(), "SHORTFALL_PENDING");
   });
 
-  test("syncShortfallPendingAfterProductionApprove skips partial batches that do not trigger shortfall", async () => {
+  test("syncShortfallPendingAfterProductionApprove marks extra production SHORTFALL_PENDING for report", async () => {
+    const { tx, getExecutionStatus } = createFinishMockTx({ plannedQty: 3000, producedQty: 3075 });
+    await syncShortfallPendingAfterProductionApprove(tx, 280, 3075);
+    assert.equal(getExecutionStatus(), "SHORTFALL_PENDING");
+  });
+
+  test("syncShortfallPendingAfterProductionApprove skips partial CONTINUE batches", async () => {
     const { tx, getExecutionStatus } = createFinishMockTx({ plannedQty: 3000, producedQty: 1000 });
     await syncShortfallPendingAfterProductionApprove(tx, 280, 1000);
     assert.equal(getExecutionStatus(), "RUNNING");
   });
 
   test("assertNoQtyProductionExecutionAllowsProduction blocks SHORTFALL_PENDING", async () => {
-    const { tx } = createFinishMockTx({ plannedQty: 3000, producedQty: 2800 });
-    await syncShortfallPendingAfterProductionApprove(tx, 280, 2800);
+    const { tx } = createFinishMockTx({ plannedQty: 3000, producedQty: 3000 });
+    await syncShortfallPendingAfterProductionApprove(tx, 280, 3000);
     tx.workOrder.findUnique = async () => ({
       id: 280,
       requirementSheetId: 7,
@@ -218,8 +224,8 @@ describe("productionExecutionService", () => {
   });
 
   test("blockProductionExecution from SHORTFALL_PENDING moves to BLOCKED for pause", async () => {
-    const { tx, getExecutionStatus } = createFinishMockTx({ plannedQty: 3000, producedQty: 2800 });
-    await syncShortfallPendingAfterProductionApprove(tx, 280, 2800);
+    const { tx, getExecutionStatus } = createFinishMockTx({ plannedQty: 3000, producedQty: 3000 });
+    await syncShortfallPendingAfterProductionApprove(tx, 280, 3000);
     await blockProductionExecution(tx, 280, {
       blockReason: "MACHINE_BREAKDOWN",
       remarks: null,
@@ -227,6 +233,58 @@ describe("productionExecutionService", () => {
       actorRole: null,
     });
     assert.equal(getExecutionStatus(), "BLOCKED");
+  });
+
+  test("block then resume is idempotent and preserves remainder for continue", async () => {
+    const { tx, getExecutionStatus } = createFinishMockTx({ plannedQty: 1500, producedQty: 500 });
+    const first = await blockProductionExecution(tx, 280, {
+      blockReason: "WAITING_FOR_RM",
+      remarks: null,
+      actorUserId: null,
+      actorRole: null,
+    });
+    assert.equal(getExecutionStatus(), "BLOCKED");
+    assert.equal(first.alreadyBlocked, undefined);
+    const second = await blockProductionExecution(tx, 280, {
+      blockReason: "WAITING_FOR_RM",
+      remarks: "still waiting",
+      actorUserId: null,
+      actorRole: null,
+    });
+    assert.equal(second.alreadyBlocked, true);
+    assert.equal(getExecutionStatus(), "BLOCKED");
+
+    const resumed = await resumeProductionExecution(tx, 280, {
+      actorUserId: null,
+      actorRole: null,
+    });
+    assert.equal(getExecutionStatus(), "RUNNING");
+    assert.ok(Number(resumed.summary.remainderQty) >= 999);
+    const resumedAgain = await resumeProductionExecution(tx, 280, {
+      actorUserId: null,
+      actorRole: null,
+    });
+    assert.equal(resumedAgain.alreadyResumed, true);
+    assert.equal(getExecutionStatus(), "RUNNING");
+  });
+
+  test("cannot resume terminal WO execution", async () => {
+    const { tx } = createFinishMockTx({ plannedQty: 1500, producedQty: 500 });
+    tx.workOrder.findUnique = async () => ({
+      id: 280,
+      docNo: "WO-280",
+      status: "COMPLETED",
+      salesOrderId: 42,
+      requirementSheetId: 7,
+      cycleId: 3,
+      lines: [{ id: 1, plannedQty: 1500, qty: 1500, fgItemId: 9, fgItem: { id: 9, itemName: "FG" } }],
+      salesOrder: { id: 42, docNo: "SO-42", orderType: "NO_QTY", customerId: 1 },
+      productionExecution: { executionStatus: "BLOCKED", blockReason: "WAITING_FOR_RM" },
+    });
+    await assert.rejects(
+      () => resumeProductionExecution(tx, 280, { actorUserId: 1, actorRole: "PRODUCTION" }),
+      (err) => /terminal|closed/i.test(err.message) && err.statusCode === 409,
+    );
   });
 
   test("getEffectiveProductionPendingQty returns remainder when running", () => {
@@ -329,6 +387,21 @@ describe("productionExecutionService", () => {
         ),
       (err) => err.code === "PRODUCTION_REPORT_REQUIRED" && err.statusCode === 409,
     );
+  });
+
+  test("entry disposition cannot close shortage or create recovery before the Production Report", async () => {
+    const { tx, carryForwardRows, getExecutionStatus, getWoStatus } = createFinishMockTx({
+      plannedQty: 6000,
+      producedQty: 3000,
+      reportConfirmed: false,
+    });
+    await assert.rejects(() => finishProductionExecution(tx, 280, {
+      shortfallOutcome: "CARRY_FORWARD", resolutionReason: "CAPACITY_CONSTRAINT",
+      approvalDispositionConfirmed: true,
+    }, { actorUserId: null, actorRole: "PRODUCTION" }), (err) => err.code === "PRODUCTION_REPORT_REQUIRED");
+    assert.notEqual(getExecutionStatus(), "COMPLETED");
+    assert.notEqual(getWoStatus(), "CLOSED_WITH_SHORTFALL");
+    assert.equal(carryForwardRows.length, 0);
   });
 
   test("finishProductionExecution does not wait for Store RM return acknowledgement", async () => {
@@ -489,9 +562,9 @@ describe("productionExecutionService", () => {
     assert.equal(summary.pendingShortfallResolution, false);
   });
 
-  test("finishProductionExecution WAIVE_BALANCE from BLOCKED paused shortfall closes WO", async () => {
-    const { tx, getExecutionStatus, getWoStatus } = createFinishMockTx({ plannedQty: 3000, producedQty: 2800 });
-    await syncShortfallPendingAfterProductionApprove(tx, 280, 2800);
+  test("finishProductionExecution cannot close or carry forward a paused WO", async () => {
+    const { tx, getExecutionStatus, getWoStatus } = createFinishMockTx({ plannedQty: 3000, producedQty: 3000 });
+    await syncShortfallPendingAfterProductionApprove(tx, 280, 3000);
     await blockProductionExecution(tx, 280, {
       blockReason: "MACHINE_BREAKDOWN",
       remarks: null,
@@ -500,16 +573,17 @@ describe("productionExecutionService", () => {
     });
     assert.equal(getExecutionStatus(), "BLOCKED");
 
-    const result = await finishProductionExecution(
-      tx,
-      280,
-      { shortfallOutcome: "WAIVE_BALANCE", resolutionReason: "MANAGEMENT_DECISION" },
-      { actorUserId: null, actorRole: null },
+    await assert.rejects(
+      () => finishProductionExecution(
+        tx,
+        280,
+        { shortfallOutcome: "WAIVE_BALANCE", resolutionReason: "MANAGEMENT_DECISION" },
+        { actorUserId: null, actorRole: null },
+      ),
+      (err) => err.code === "WO_EXEC_BLOCKED" && err.statusCode === 409,
     );
-
-    assert.equal(result.outcome, "WAIVE_BALANCE");
-    assert.equal(getExecutionStatus(), "COMPLETED");
-    assert.equal(getWoStatus(), "COMPLETED");
+    assert.equal(getExecutionStatus(), "BLOCKED");
+    assert.notEqual(getWoStatus(), "COMPLETED");
   });
 
   test("finishProductionExecution rejects auto complete while BLOCKED without shortfall outcome", async () => {
@@ -527,8 +601,12 @@ describe("productionExecutionService", () => {
   });
 
   test("pause shortfall then resume keeps RUNNING and allows remaining production", async () => {
+    // Explicit shortfall-pending (End with Shortage) with remaining balance — not equal/extra sync.
     const { tx, getExecutionStatus } = createFinishMockTx({ plannedQty: 4000, producedQty: 3800 });
-    await syncShortfallPendingAfterProductionApprove(tx, 280, 3800);
+    await tx.workOrderProductionExecution.update({
+      where: { workOrderId: 280 },
+      data: { executionStatus: "SHORTFALL_PENDING" },
+    });
     assert.equal(getExecutionStatus(), "SHORTFALL_PENDING");
 
     await blockProductionExecution(tx, 280, {
@@ -564,7 +642,6 @@ describe("productionExecutionService", () => {
 
   test("computeExecutionSummary exposes pendingShortfallResolution when execution is SHORTFALL_PENDING", async () => {
     const { tx } = createFinishMockTx({ plannedQty: 3000, producedQty: 2800 });
-    await syncShortfallPendingAfterProductionApprove(tx, 280, 2800);
     const wo = await tx.workOrder.findUnique();
     wo.productionExecution.executionStatus = "SHORTFALL_PENDING";
     const summary = await computeExecutionSummary(tx, wo);

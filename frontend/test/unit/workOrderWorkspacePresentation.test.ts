@@ -50,6 +50,7 @@ describe("buildWorkOrderWorkspaceSections", () => {
       producedQty: 8000,
       balanceQty: 2000,
       nextAction: "NEXT_RS_REQUIRED",
+      productionExecutionStatus: "COMPLETED",
       cycleNo: 1,
     });
     const wo168 = queueRow({
@@ -78,7 +79,8 @@ describe("buildWorkOrderWorkspaceSections", () => {
       cycleNo: 5,
     });
     const built = buildDashboardProductionStatusRows([wo167], { limit: 1 });
-    const trace = buildCycleOutcomeFromQueueLines(built.visible);
+    // NEXT_RS_REQUIRED is not Active Production; history/outcome uses the enriched queue line.
+    const trace = buildCycleOutcomeFromQueueLines(built.all);
     expect(trace.rsQty).toBe(4295);
     expect(trace.produced).toBe(4100);
     expect(trace.pendingQty).toBe(195);

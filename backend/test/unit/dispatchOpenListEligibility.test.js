@@ -2,6 +2,8 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   isDispatchOpenListLineCandidate,
+  isDispatchBacklogActionableLine,
+  filterDispatchBacklogActionableRows,
   isSalesOrderCommerciallyClosedForDispatch,
   shouldExcludeSalesOrderFromDispatchOpenList,
   filterLineStatsForDispatchOpenList,
@@ -101,5 +103,74 @@ describe("dispatchOpenListEligibility", () => {
     const out = filterLineStatsForDispatchOpenList(stats, "NORMAL");
     assert.equal(out.length, 1);
     assert.equal(out[0].dispatched, 40);
+  });
+
+  it("backlog KPI: three blocked lines with dispatchableQty=0 → backlog 0 (open-list may still show them for NO_QTY)", () => {
+    const blocked = [
+      { orderType: "NORMAL", pendingQty: 100, dispatchableNow: 0, itemName: "Square Box" },
+      { orderType: "NORMAL", pendingQty: 50, dispatchableNow: 0, itemName: "Round Plate" },
+      { orderType: "NORMAL", pendingQty: 25, dispatchableNow: 0, itemName: "PVC Angle" },
+    ];
+    for (const row of blocked) {
+      assert.equal(isDispatchOpenListLineCandidate({
+        pendingDispatchQty: row.pendingQty,
+        dispatchable: row.dispatchableNow,
+        orderQty: row.pendingQty,
+        dispatched: 0,
+        dispatchPendingLock: 0,
+      }, "NORMAL"), false);
+      assert.equal(isDispatchBacklogActionableLine(row, row.orderType), false);
+    }
+    assert.equal(filterDispatchBacklogActionableRows(blocked).length, 0);
+
+    const noQtyBlocked = blocked.map((r) => ({ ...r, orderType: "NO_QTY" }));
+    for (const row of noQtyBlocked) {
+      assert.equal(
+        isDispatchOpenListLineCandidate(
+          { pendingDispatchQty: row.pendingQty, dispatchable: 0, dispatchPendingLock: 0 },
+          "NO_QTY",
+        ),
+        true,
+        "workspace open list may show Cannot prepare now",
+      );
+      assert.equal(isDispatchBacklogActionableLine(row, "NO_QTY"), false);
+    }
+    assert.equal(filterDispatchBacklogActionableRows(noQtyBlocked).length, 0);
+  });
+
+  it("backlog KPI: one line with positive QC/stock headroom → ready/backlog 1", () => {
+    const rows = [
+      { orderType: "NORMAL", pendingQty: 100, dispatchableNow: 0 },
+      { orderType: "NORMAL", pendingQty: 80, dispatchableNow: 40 },
+      { orderType: "NORMAL", pendingQty: 0, dispatchableNow: 0, orderedQty: 50, dispatchedQty: 50 },
+    ];
+    const out = filterDispatchBacklogActionableRows(rows);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].dispatchableNow, 40);
+    assert.equal(isDispatchBacklogActionableLine(out[0], "NORMAL"), true);
+  });
+
+  it("backlog KPI: historical/zero/fully-dispatched rows never increase backlog", () => {
+    const rows = [
+      { orderType: "NORMAL", pendingQty: 0, dispatchableNow: 0, orderedQty: 100, dispatchedQty: 100 },
+      { orderType: "NORMAL", pendingQty: -1, dispatchableNow: 0 },
+      { orderType: "NORMAL", pendingQty: 0, dispatchableNow: 5, orderedQty: 100, dispatchedQty: 100 },
+      { orderType: "NO_QTY", pendingQty: 0, dispatchableNow: 0 },
+    ];
+    assert.equal(filterDispatchBacklogActionableRows(rows).length, 0);
+  });
+
+  it("backlog KPI matches Control Tower: only dispatchableNow > 0 counts", () => {
+    const rows = [
+      { orderType: "NO_QTY", pendingQty: 0, dispatchableNow: 12 },
+      { orderType: "NORMAL", pendingQty: 30, dispatchableNow: 0 },
+      { orderType: "NORMAL", pendingQty: 10, dispatchableNow: 10 },
+    ];
+    const out = filterDispatchBacklogActionableRows(rows);
+    assert.equal(out.length, 2);
+    assert.deepEqual(
+      out.map((r) => r.dispatchableNow),
+      [12, 10],
+    );
   });
 });

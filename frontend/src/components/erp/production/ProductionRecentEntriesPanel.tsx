@@ -76,6 +76,10 @@ type Props = {
   visibleEntries: ProductionRecentEntryRow[];
   entryFilter: "ALL" | "DRAFT" | "APPROVED";
   onEntryFilterChange: (value: "ALL" | "DRAFT" | "APPROVED") => void;
+  /** Default CURRENT_WO — do not mix sibling WO entries into the runner history. */
+  recentEntriesScope?: "CURRENT_WO" | "GLOBAL";
+  onRecentEntriesScopeChange?: (value: "CURRENT_WO" | "GLOBAL") => void;
+  showRecentEntriesScopeToggle?: boolean;
   workOrdersCount: number;
   showProductionWorkspace?: boolean;
   canProd: boolean;
@@ -107,6 +111,9 @@ export function ProductionRecentEntriesPanel({
   visibleEntries,
   entryFilter,
   onEntryFilterChange,
+  recentEntriesScope = "CURRENT_WO",
+  onRecentEntriesScopeChange,
+  showRecentEntriesScopeToggle = false,
   workOrdersCount,
   showProductionWorkspace = false,
   canProd,
@@ -207,7 +214,7 @@ export function ProductionRecentEntriesPanel({
                                 Edit
                               </Button>
                               <Button type="button" size="sm" variant="secondary" className="h-6 px-1.5 text-[10px]" disabled={rowBusy === r.id} onClick={() => onApproveDraft(r.id)}>
-                                {renderApproveButtonLabel(r.id, "Approve", true)}
+                                {renderApproveButtonLabel(r.id, "Review & Finalize", true)}
                               </Button>
                               <Button type="button" size="sm" variant="destructive" className="h-6 px-1.5 text-[10px]" disabled={rowBusy === r.id} onClick={() => onDeleteDraft(r.id)}>
                                 Delete
@@ -366,7 +373,7 @@ export function ProductionRecentEntriesPanel({
                             disabled={rowBusy === r.id}
                             onClick={() => onApproveDraft(r.id)}
                           >
-                            {renderApproveButtonLabel(r.id, "Approve", true)}
+                            {renderApproveButtonLabel(r.id, "Review & Finalize", true)}
                           </Button>
                           <Button
                             type="button"
@@ -470,7 +477,23 @@ export function ProductionRecentEntriesPanel({
         )}
       >
         {!operatorWorkbench ? (
-        <div className={cn("shrink-0", embedded ? "mb-1.5" : "border-b border-slate-100 px-0 py-1")}>
+        <div className={cn("shrink-0 space-y-1.5", embedded ? "mb-1.5" : "border-b border-slate-100 px-0 py-1")}>
+          {showRecentEntriesScopeToggle && onRecentEntriesScopeChange ? (
+            <label className="grid gap-1 text-[12px] font-semibold text-slate-700">
+              History scope
+              <select
+                className="erp-flow-filter-input h-8 w-full max-w-[14rem] rounded-md border border-slate-200 bg-white px-2 text-[13px]"
+                value={recentEntriesScope}
+                onChange={(e) =>
+                  onRecentEntriesScopeChange(e.target.value as "CURRENT_WO" | "GLOBAL")
+                }
+                aria-label="Recent entries history scope"
+              >
+                <option value="CURRENT_WO">This work order only</option>
+                <option value="GLOBAL">All WOs in loaded history</option>
+              </select>
+            </label>
+          ) : null}
           <label className="grid gap-1 text-[12px] font-semibold text-slate-700">
             Show
             <select

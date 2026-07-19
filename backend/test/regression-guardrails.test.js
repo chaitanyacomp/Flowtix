@@ -530,11 +530,11 @@ describe("dashboard queue metric context map", () => {
   });
 
   it("work-order status filters handle HOLD and CLOSED_WITH_SHORTFALL explicitly", () => {
-    assert.deepEqual(DASHBOARD_ACTIVE_WORK_ORDER_STATUSES, ["PENDING", "IN_PROGRESS", "HOLD"]);
+    assert.deepEqual(DASHBOARD_ACTIVE_WORK_ORDER_STATUSES, ["PENDING", "IN_PROGRESS", "HOLD", "PAUSED"]);
     assert.deepEqual(DASHBOARD_RUNNING_WORK_ORDER_STATUSES, ["PENDING", "IN_PROGRESS"]);
     assert.ok(DASHBOARD_TERMINAL_WORK_ORDER_STATUSES.includes("CLOSED_WITH_SHORTFALL"));
     assert.deepEqual(dashboardActiveWorkOrderWhere(), {
-      status: { in: ["PENDING", "IN_PROGRESS", "HOLD"] },
+      status: { in: ["PENDING", "IN_PROGRESS", "HOLD", "PAUSED"] },
     });
     assert.deepEqual(dashboardRunningWorkOrderWhere(), {
       status: { in: ["PENDING", "IN_PROGRESS"] },

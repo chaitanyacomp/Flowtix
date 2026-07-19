@@ -328,6 +328,16 @@ enum ProductionRmReturnPendingStatus {
   CANCELLED
 }
 
+/// Planned Process Allowance Admin approval (above 5% through 10%). No stock movement until Store issues after APPROVED.
+enum RmAllowanceApprovalStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  ISSUED
+  CANCELLED
+  SUPERSEDED
+}
+
 /// No Qty SO internal workflow cycles (reopen creates a new active cycle; history is locked per cycle).
 enum SalesOrderCycleStatus {
   ACTIVE
@@ -358,6 +368,16 @@ enum SalesBillStatus {
   DRAFT
   FINALIZED
   CANCELLED
+}
+
+enum SalesBillTransportationChargedBy {
+  OUR_COMPANY
+  TRANSPORTER_DIRECTLY
+}
+
+enum SalesBillTransportationAllocationMethod {
+  PROPORTIONAL_TAXABLE_VALUE
+  NOT_APPLICABLE
 }
 
 enum EnquiryStatus {
@@ -589,6 +609,9 @@ model User {
   noQtySoWaiversApproved                    NoQtySoWaiver[]                @relation("NoQtySoWaiverApprovedBy")
   noQtyAcceptedFgDispositionsApproved       NoQtyAcceptedFgDisposition[]   @relation("NoQtyFgDispositionApprovedBy")
   noQtyRsRecoveryDecisionsDecided           NoQtyRsItemRecoveryDecision[]  @relation("NoQtyRsRecoveryDecisionDecidedBy")
+  rmAllowanceApprovalsRequested             RmAllowanceApprovalRequest[]   @relation("RmAllowanceApprovalRequestedBy")
+  rmAllowanceApprovalsReviewed              RmAllowanceApprovalRequest[]   @relation("RmAllowanceApprovalReviewedBy")
+  rmAllowanceApprovalsIssued                RmAllowanceApprovalRequest[]   @relation("RmAllowanceApprovalIssuedBy")
 }
 
 /// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
@@ -816,8 +839,10 @@ model Item {
   materialWastageNotes            MaterialWastageNote[]
   productionEntryRmConsumptions   ProductionEntryRmConsumption[]
   productionReportLines           ProductionWorkOrderReportLine[]
+  productionReportWastageDetails  ProductionWorkOrderReportWastageDetail[]
   productionRmReturnPendings      ProductionRmReturnPending[]
   pmrLines                        ProductionMaterialRequestLine[]
+  rmAllowanceApprovalRequests     RmAllowanceApprovalRequest[]
   materialAllocations             MaterialAllocation[]            @relation("MaterialAllocationRmItem")
   noQtyClosedShortageLines        NoQtySoClosedShortageLine[]
   noQtySoWaiverLines              NoQtySoWaiverLine[]
@@ -1212,6 +1237,7 @@ model SalesOrder {
   replacementForReturn     CustomerReturn?          @relation("ReplacementForReturn", fields: [customerReturnId], references: [id], onDelete: SetNull)
   lines                    SalesOrderLine[]
   dispatch                 Dispatch[]
+  salesBills               SalesBill[]
   workOrders               WorkOrder[]
   requirementSheets        RequirementSheet[]
   materialRequirements     MaterialRequirement[]
@@ -1421,6 +1447,7 @@ model Dispatch {
   reversals       Dispatch[]       @relation("DispatchReversal")
   customerReturns CustomerReturn[]
   salesBills      SalesBill[]
+  salesBillAllocations SalesBillDispatchAllocation[]
 
   @@index([soId])
   @@index([cycleId])
@@ -1915,6 +1942,7 @@ model ProductionMaterialRequest {
   materialReturnNotes MaterialReturnNote[]
   materialWastageNotes MaterialWastageNote[]
   materialAllocations MaterialAllocation[]
+  rmAllowanceApprovalRequests RmAllowanceApprovalRequest[]
 
   @@index([workOrderId])
   @@index([status])
@@ -1935,6 +1963,7 @@ model ProductionMaterialRequestLine {
 
   productionMaterialRequest ProductionMaterialRequest @relation(fields: [productionMaterialRequestId], references: [id], onDelete: Cascade)
   item                      Item                      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  rmAllowanceApprovalRequests RmAllowanceApprovalRequest[]
 
   @@unique([productionMaterialRequestId, itemId], map: "PmrLine_pmrId_itemId_key")
   @@index([productionMaterialRequestId])
@@ -2000,6 +2029,7 @@ model MaterialIssueNote {
   productionMaterialRequest ProductionMaterialRequest? @relation(fields: [productionMaterialRequestId], references: [id], onDelete: SetNull)
   createdBy                 User?                      @relation("MaterialIssueCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   lines                     MaterialIssueLine[]
+  rmAllowanceApprovalRequests RmAllowanceApprovalRequest[]
 
   @@index([fromLocationId])
   @@index([toLocationId])
@@ -2014,12 +2044,74 @@ model MaterialIssueLine {
   itemId              Int
   issueQty            Decimal @db.Decimal(18, 3)
   unitSnapshot        String? @db.VarChar(64)
+  theoreticalBomQty   Decimal? @db.Decimal(18, 6)
+  includedRunnerQty   Decimal? @db.Decimal(18, 6)
+  allowanceInputSource String? @db.VarChar(16)
+  enteredAllowancePct Decimal? @db.Decimal(7, 4)
+  enteredAllowanceQty Decimal? @db.Decimal(18, 6)
+  plannedAllowancePct Decimal? @db.Decimal(7, 4)
+  plannedAllowanceQty Decimal? @db.Decimal(18, 6)
+  recommendedIssueQty Decimal? @db.Decimal(18, 6)
+  allowanceReason     String?  @db.VarChar(500)
+  allowanceApprovalStatus String? @db.VarChar(32)
+  allowanceApprovedByUserId Int?
+  allowanceApprovedAt DateTime?
+  allowanceEnteredByUserId Int?
+  allowanceEnteredAt DateTime?
+  conversionBasis     String? @db.VarChar(500)
 
   materialIssueNote MaterialIssueNote @relation(fields: [materialIssueNoteId], references: [id], onDelete: Cascade)
   item              Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
 
   @@index([materialIssueNoteId])
   @@index([itemId])
+}
+
+/// Store → Admin Planned Process Allowance approval (above 5% through 10%). No stock movement until final issue.
+model RmAllowanceApprovalRequest {
+  id                          Int                       @id @default(autoincrement())
+  requestNo                   String?                   @unique @db.VarChar(32)
+  workOrderId                 Int
+  productionMaterialRequestId Int
+  pmrLineId                   Int
+  itemId                      Int
+  theoreticalBomQty           Decimal                   @db.Decimal(18, 6)
+  applicableBomQty            Decimal                   @db.Decimal(18, 6)
+  alreadyIssuedQty            Decimal                   @db.Decimal(18, 6)
+  addQty                      Decimal                   @db.Decimal(18, 6)
+  /// Server-calculated acknowledgement % at request time (Add Qty ÷ applicable BOM × 100).
+  allowancePct                Decimal                   @db.Decimal(7, 4)
+  issueQty                    Decimal                   @db.Decimal(18, 6)
+  availableQtyAtRequest       Decimal?                  @db.Decimal(18, 6)
+  storeReason                 String                    @db.VarChar(500)
+  status                      RmAllowanceApprovalStatus @default(PENDING_APPROVAL)
+  requestedByUserId           Int
+  requestedAt                 DateTime                  @default(now())
+  reviewedByUserId            Int?
+  reviewedAt                  DateTime?
+  rejectionReason             String?                   @db.VarChar(500)
+  materialIssueNoteId         Int?
+  issuedAt                    DateTime?
+  issuedByUserId              Int?
+  createdAt                   DateTime                  @default(now())
+  updatedAt                   DateTime                  @updatedAt
+
+  workOrder                 WorkOrder                 @relation(fields: [workOrderId], references: [id], onDelete: Restrict, map: "RmAllwAppr_wo_fkey")
+  productionMaterialRequest ProductionMaterialRequest @relation(fields: [productionMaterialRequestId], references: [id], onDelete: Restrict, map: "RmAllwAppr_pmr_fkey")
+  pmrLine                   ProductionMaterialRequestLine @relation(fields: [pmrLineId], references: [id], onDelete: Restrict, map: "RmAllwAppr_pmrLine_fkey")
+  item                      Item                      @relation(fields: [itemId], references: [id], onDelete: Restrict, map: "RmAllwAppr_item_fkey")
+  requestedBy               User                      @relation("RmAllowanceApprovalRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict, map: "RmAllwAppr_reqBy_fkey")
+  reviewedBy                User?                     @relation("RmAllowanceApprovalReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull, map: "RmAllwAppr_revBy_fkey")
+  issuedBy                  User?                     @relation("RmAllowanceApprovalIssuedBy", fields: [issuedByUserId], references: [id], onDelete: SetNull, map: "RmAllwAppr_issBy_fkey")
+  materialIssueNote         MaterialIssueNote?        @relation(fields: [materialIssueNoteId], references: [id], onDelete: SetNull, map: "RmAllwAppr_min_fkey")
+
+  @@index([workOrderId, status], map: "RmAllwAppr_wo_status_idx")
+  @@index([productionMaterialRequestId, status], map: "RmAllwAppr_pmr_status_idx")
+  @@index([pmrLineId, status], map: "RmAllwAppr_line_status_idx")
+  @@index([itemId], map: "RmAllwAppr_item_idx")
+  @@index([status, requestedAt], map: "RmAllwAppr_status_reqAt_idx")
+  @@index([requestedByUserId], map: "RmAllwAppr_reqBy_idx")
+  @@index([reviewedByUserId], map: "RmAllwAppr_revBy_idx")
 }
 
 /// Production → Store RM return (MRN). Stock movement only — paired LOCATION_TRANSFER (inverse of MIN).
@@ -2102,7 +2194,10 @@ model SalesBill {
   billNo     String?         @db.VarChar(128)
   billDate   DateTime        @db.Date
   customerId Int
-  dispatchId Int
+  /// Legacy/primary dispatch pointer retained for historical compatibility.
+  dispatchId Int?
+  /// Authoritative billing boundary for multi-dispatch bills.
+  soId       Int?
   /// NO_QTY: workflow cycle isolation (copied from Dispatch.cycleId at creation; null for legacy / non-NO_QTY).
   cycleId    Int?
   remarks    String?         @db.Text
@@ -2167,6 +2262,19 @@ model SalesBill {
   totalTax   Decimal @default(0) @db.Decimal(18, 2)
   netAmount  Decimal @default(0) @db.Decimal(18, 2)
 
+  goodsTaxableValue          Decimal @default(0) @db.Decimal(18, 2)
+  transportationAmount       Decimal @default(0) @db.Decimal(18, 2)
+  transportationChargedBy    SalesBillTransportationChargedBy @default(OUR_COMPANY)
+  transportationAllocationMethod SalesBillTransportationAllocationMethod @default(PROPORTIONAL_TAXABLE_VALUE)
+  transportationTaxableValue Decimal @default(0) @db.Decimal(18, 2)
+  transporterName            String? @db.VarChar(256)
+  transportationReferenceNo  String? @db.VarChar(128)
+  transportationRemarks      String? @db.Text
+  roundOffAmount              Decimal @default(0) @db.Decimal(18, 2)
+  calculationVersion          String  @default("LEGACY_V1") @db.VarChar(32)
+  calculatedAt                DateTime?
+  calculatedById              Int?
+
   /// Commercial payment follow-up (Tally is ledger of record).
   paymentStatus  BillPaymentTrackingStatus @default(PENDING)
   dueDate        DateTime?                 @db.Date
@@ -2178,10 +2286,12 @@ model SalesBill {
   updatedAt DateTime @updatedAt
 
   customer Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  dispatch Dispatch         @relation(fields: [dispatchId], references: [id], onDelete: Restrict)
+  dispatch Dispatch?        @relation(fields: [dispatchId], references: [id], onDelete: Restrict)
+  salesOrder SalesOrder?    @relation(fields: [soId], references: [id], onDelete: Restrict)
   cycle    SalesOrderCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
   shipToAddress CustomerDeliveryAddress? @relation("SalesBillShipToAddress", fields: [shipToAddressId], references: [id], onDelete: SetNull)
   lines    SalesBillLine[]
+  dispatchAllocations SalesBillDispatchAllocation[]
   receipts SalesBillReceipt[]
 
   exportResetBy User? @relation("SalesBillExportResetBy", fields: [exportResetById], references: [id], onDelete: SetNull)
@@ -2194,6 +2304,7 @@ model SalesBill {
   @@index([status])
   @@index([customerId])
   @@index([dispatchId])
+  @@index([soId])
   @@index([cycleId])
   @@index([shipToAddressId])
   @@index([shipToChangedById])
@@ -2235,7 +2346,14 @@ model SalesBillLine {
   unitSnapshot     String  @default("") @db.VarChar(64)
   qty              Decimal @db.Decimal(18, 3)
   rate             Decimal @db.Decimal(18, 4)
+  discountRate     Decimal @default(0) @db.Decimal(7, 4)
+  taxTreatmentSnapshot String @default("GOODS") @db.VarChar(32)
   basicAmount      Decimal @db.Decimal(18, 2)
+  goodsTaxableAmount Decimal @default(0) @db.Decimal(18, 2)
+  transportationAllocation Decimal @default(0) @db.Decimal(18, 2)
+  transportationCgstAmount Decimal @default(0) @db.Decimal(18, 2)
+  transportationSgstAmount Decimal @default(0) @db.Decimal(18, 2)
+  transportationIgstAmount Decimal @default(0) @db.Decimal(18, 2)
   gstRate          Decimal @db.Decimal(5, 2)
   cgstAmount       Decimal @db.Decimal(18, 2)
   sgstAmount       Decimal @db.Decimal(18, 2)
@@ -2250,11 +2368,34 @@ model SalesBillLine {
 
   salesBill SalesBill @relation(fields: [salesBillId], references: [id], onDelete: Cascade)
   item      Item      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  dispatchAllocations SalesBillDispatchAllocation[]
 
   @@index([salesBillId])
   @@index([itemId])
   @@index([dispatchId])
   @@index([soId])
+}
+
+/// Quantity-level source trace and draft reservation behind commercial invoice lines.
+model SalesBillDispatchAllocation {
+  id              Int      @id @default(autoincrement())
+  salesBillId     Int
+  salesBillLineId Int
+  dispatchId      Int
+  allocatedQty    Decimal  @db.Decimal(18, 3)
+  createdById     Int?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  finalizedAt     DateTime?
+
+  salesBill     SalesBill     @relation(fields: [salesBillId], references: [id], onDelete: Cascade)
+  salesBillLine SalesBillLine @relation(fields: [salesBillLineId], references: [id], onDelete: Cascade)
+  dispatch      Dispatch      @relation(fields: [dispatchId], references: [id], onDelete: Restrict)
+
+  @@unique([salesBillId, dispatchId])
+  @@index([dispatchId])
+  @@index([salesBillLineId])
+  @@index([salesBillId, finalizedAt])
 }
 
 model RmPurchaseOrder {
@@ -2578,6 +2719,7 @@ model WorkOrder {
   materialReturnNotes             MaterialReturnNote[]
   materialWastageNotes            MaterialWastageNote[]
   materialRequirements            MaterialRequirement[]
+  rmAllowanceApprovalRequests     RmAllowanceApprovalRequest[]
   productionExecution             WorkOrderProductionExecution?
   productionReports               ProductionWorkOrderReport[]
   productionRmReturnPendings      ProductionRmReturnPending[]
@@ -2905,6 +3047,7 @@ model ProductionWorkOrderReport {
   plannedQty        Decimal                         @db.Decimal(18, 3)
   producedQty       Decimal                         @db.Decimal(18, 3)
   remainingQty      Decimal                         @db.Decimal(18, 3)
+  productionResult  String?                         @db.VarChar(16)
   remarks           String?                         @db.Text
   confirmedAt       DateTime                        @default(now())
   confirmedByUserId Int?
@@ -2931,6 +3074,11 @@ model ProductionWorkOrderReportLine {
   rmReturnQty        Decimal @default(0) @db.Decimal(18, 3)
   scrapWasteQty      Decimal @default(0) @db.Decimal(18, 3)
   varianceQty        Decimal @default(0) @db.Decimal(18, 3)
+  theoreticalBomQty  Decimal @default(0) @db.Decimal(18, 6)
+  runnerWasteQty     Decimal @default(0) @db.Decimal(18, 6)
+  plannedAllowancePct Decimal @default(0) @db.Decimal(7, 4)
+  plannedAllowanceQty Decimal @default(0) @db.Decimal(18, 6)
+  recommendedIssueQty Decimal @default(0) @db.Decimal(18, 6)
   remarks            String? @db.Text
 
   productionReport ProductionWorkOrderReport @relation(fields: [productionReportId], references: [id], onDelete: Cascade)
@@ -2989,16 +3137,20 @@ model WastageType {
 model ProductionWorkOrderReportWastageDetail {
   id                 Int     @id @default(autoincrement())
   productionReportId Int
-  wastageTypeId      Int
+  wastageTypeId      Int?
+  itemId             Int?
+  source             String  @default("MANUAL_PRODUCTION") @db.VarChar(32)
   qty                Decimal @db.Decimal(18, 3)
   remarks            String? @db.Text
   sortOrder          Int     @default(0)
 
   productionReport ProductionWorkOrderReport @relation(fields: [productionReportId], references: [id], onDelete: Cascade)
-  wastageType      WastageType               @relation(fields: [wastageTypeId], references: [id], onDelete: Restrict)
+  wastageType      WastageType?              @relation(fields: [wastageTypeId], references: [id], onDelete: Restrict)
+  item             Item?                     @relation(fields: [itemId], references: [id], onDelete: Restrict)
 
   @@index([productionReportId])
   @@index([wastageTypeId])
+  @@index([itemId])
 }
 
 model ProductionEntry {

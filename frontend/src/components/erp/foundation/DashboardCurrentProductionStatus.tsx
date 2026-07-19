@@ -11,7 +11,6 @@ import {
 import { resolveNoQtyCycleDisplayStatus } from "../../../lib/noQtyCycleDisplayStatus";
 import { noQtyOperatorThirdColumn } from "../../../lib/noQtyShortagePresentation";
 import { DashboardViewAllLink } from "./DashboardControlColumn";
-import { displayWorkOrderTraceNo } from "../../../lib/docNoDisplay";
 import { productionHrefFromDashboardRow } from "../../../lib/operationalWorkspaceLinks";
 
 const STATUS_TONE_CLASS: Record<ProductionOperationalStatusTone, string> = {
@@ -128,12 +127,12 @@ export function DashboardCurrentProductionStatus({
                 producedQty: row.producedQty,
               });
               const thirdQty = thirdCol.qty;
-              const isCarried = !row.countsAsActive;
+              const isCarried = !row.countsAsActiveProduction;
               const statusLabel =
                 row.orderType === "NO_QTY"
                   ? resolveNoQtyCycleDisplayStatus({ ...row, allQueueRows: rows ?? [] }).label
                   : row.operationalStatus.label;
-              const woLabel = displayWorkOrderTraceNo(row.workOrderId);
+              const woLabel = row.workOrderNo?.trim() || "Work Order";
               return (
                 <li key={key} className={cn(isCarried && "bg-white/40")}>
                   <Link

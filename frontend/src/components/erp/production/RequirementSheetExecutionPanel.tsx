@@ -26,6 +26,12 @@ import {
   rmDetailCollapsedSummary,
   WO_PLANNING_UX,
 } from "../../../lib/requirementSheetExecutionWorkspaceUx";
+import { useErpRefreshTick } from "../../../hooks/useErpRefreshTick";
+import {
+  buildRmPreviewLinesSignature,
+  mergePlacementDraftQtys,
+  resolveRmPreviewLines,
+} from "../../../lib/woPlanningRmPreview";
 
 type ProgressStatus = "NOT_STARTED" | "IN_PROGRESS" | "PARTIAL" | "COMPLETE" | "BLOCKED";
 type ReadinessDecision =
@@ -444,20 +450,38 @@ export function RequirementSheetExecutionPanel({
   const [liveRm, setLiveRm] = React.useState<RmReadinessBlock | null>(null);
   const [liveRmBusy, setLiveRmBusy] = React.useState(false);
   const [createdBanner, setCreatedBanner] = React.useState<CreatedWoBanner | null>(null);
+  const bomRefreshTick = useErpRefreshTick(["requirement", "stock", "production"], {
+    pollIntervalMs: 0,
+    refreshOnVisible: true,
+  });
+  const executionDataRef = React.useRef<RsExecutionSummary | null>(null);
+  executionDataRef.current = data;
+  const rmPreviewRequestIdRef = React.useRef(0);
+
+  React.useEffect(() => {
+    setData(null);
+    executionDataRef.current = null;
+    setDraftQtyByItem({});
+    setLiveRm(null);
+    setLiveRmBusy(false);
+    setCreatedBanner(null);
+    rmPreviewRequestIdRef.current += 1;
+  }, [sheetId]);
 
   React.useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    // Soft refresh after BOM approve: keep prior summary visible (no full-page empty flash).
+    const soft = Boolean(executionDataRef.current);
+    if (!soft) setLoading(true);
     setError(null);
     setSubmitError(null);
-    setCreatedBanner(null);
     void (async () => {
       try {
         const res = await apiFetch<RsExecutionSummary>(`/api/requirement-sheets/${sheetId}/execution`);
         if (!cancelled) setData(res);
       } catch (e) {
         if (!cancelled) {
-          setData(null);
+          if (!soft) setData(null);
           setError(e instanceof ApiRequestError ? e.message : "Failed to load execution summary.");
         }
       } finally {
@@ -467,16 +491,20 @@ export function RequirementSheetExecutionPanel({
     return () => {
       cancelled = true;
     };
-  }, [sheetId]);
+  }, [sheetId, bomRefreshTick]);
 
+  // Seed missing draft keys only — never overwrite quantities the operator is typing.
   React.useEffect(() => {
     if (!data?.placement?.lines) return;
-    const next: Record<number, string> = {};
-    for (const line of data.placement.lines) {
-      next[line.itemId] = fmtQty(Math.max(0, line.suggestedExecutableQty));
-    }
-    setDraftQtyByItem(next);
-    setLiveRm(data.rmReadiness);
+    setDraftQtyByItem((previous) => {
+      const { next, changed } = mergePlacementDraftQtys({
+        previous,
+        lines: data.placement.lines,
+        formatQty: (n) => fmtQty(n),
+      });
+      return changed ? next : previous;
+    });
+    setLiveRm((prev) => prev ?? data.rmReadiness);
   }, [data?.placement?.lines, data?.rmReadiness]);
 
   const validationByItem = React.useMemo(() => {
@@ -548,16 +576,37 @@ export function RequirementSheetExecutionPanel({
     [data?.placement?.lines, draftQtyByItem],
   );
 
+  const rmPreviewLines = React.useMemo(
+    () =>
+      resolveRmPreviewLines({
+        requestedLines,
+        suggestedLines: suggestedLines.map((line) => ({ itemId: line.itemId, qty: line.qty })),
+      }),
+    [requestedLines, suggestedLines],
+  );
+
+  const rmPreviewSignature = React.useMemo(
+    () => buildRmPreviewLinesSignature(rmPreviewLines),
+    [rmPreviewLines],
+  );
+
+  const rmPreviewLinesRef = React.useRef(rmPreviewLines);
+  rmPreviewLinesRef.current = rmPreviewLines;
+  const fallbackRmReadinessRef = React.useRef(data?.rmReadiness ?? null);
+  fallbackRmReadinessRef.current = data?.rmReadiness ?? null;
+
+  // Debounced RM feasibility: quantity signature + genuine BOM/stock soft-refresh only.
+  // POST /execution/rm-preview must NOT bump erp refresh (see erpRefreshScopesForMutation).
   React.useEffect(() => {
-    if (!data) return;
-    const lines = requestedLines.length
-      ? requestedLines
-      : suggestedLines.map((line) => ({ itemId: line.itemId, qty: line.qty }));
-    if (!lines.length) {
-      setLiveRm(data.rmReadiness);
+    if (!executionDataRef.current) return;
+    if (!rmPreviewSignature) {
+      setLiveRm(fallbackRmReadinessRef.current);
+      setLiveRmBusy(false);
       return;
     }
     let cancelled = false;
+    const requestId = ++rmPreviewRequestIdRef.current;
+    const lines = rmPreviewLinesRef.current;
     const timer = window.setTimeout(() => {
       setLiveRmBusy(true);
       void (async () => {
@@ -566,19 +615,23 @@ export function RequirementSheetExecutionPanel({
             `/api/requirement-sheets/${sheetId}/execution/rm-preview`,
             { method: "POST", body: JSON.stringify({ lines }) },
           );
-          if (!cancelled) setLiveRm(res.rmReadiness);
+          if (cancelled || requestId !== rmPreviewRequestIdRef.current) return;
+          setLiveRm(res.rmReadiness);
         } catch {
-          if (!cancelled) setLiveRm(data.rmReadiness);
+          if (cancelled || requestId !== rmPreviewRequestIdRef.current) return;
+          setLiveRm(fallbackRmReadinessRef.current);
         } finally {
-          if (!cancelled) setLiveRmBusy(false);
+          if (!cancelled && requestId === rmPreviewRequestIdRef.current) {
+            setLiveRmBusy(false);
+          }
         }
       })();
-    }, 280);
+    }, 350);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [sheetId, data, requestedLines, suggestedLines]);
+  }, [sheetId, rmPreviewSignature, bomRefreshTick]);
 
   function resetDrafts() {
     const next: Record<number, string> = {};

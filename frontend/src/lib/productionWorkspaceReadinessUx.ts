@@ -47,8 +47,9 @@ export function isQueueRmGateBlocked(
 export function isQueueReadyToStart(row: DashboardProductionStatusSource): boolean {
   const next = upper(row.nextAction);
   const exec = upper(row.productionExecutionStatus);
-  if (next !== "PRODUCTION_PENDING") return false;
-  if (exec === "BLOCKED" || exec === "SHORTFALL_PENDING") return false;
+  if (next !== "PRODUCTION_PENDING" && next !== "PRODUCTION_DRAFT_REVIEW") return false;
+  if (exec === "COMPLETED" || exec === "BLOCKED" || exec === "SHORTFALL_PENDING") return false;
+  // Entry-level Pending QC must not hide Ready when nothing has been produced yet.
   if (n(row.producedQty) > EPS) return false;
   if (hasQueueRmReadinessFields(row)) {
     return !isQueueRmGateBlocked(row) && n(row.rmProductionAllowedNowQty) > EPS;
@@ -56,17 +57,29 @@ export function isQueueReadyToStart(row: DashboardProductionStatusSource): boole
   return true;
 }
 
-/** In-progress bucket from backend execution + qty fields only. */
+/** In-progress / Continue bucket — entry QC may coexist with remaining executable qty. */
 export function isQueueInProgress(row: DashboardProductionStatusSource): boolean {
   const exec = upper(row.productionExecutionStatus);
   const next = upper(row.nextAction);
-  if (exec === "BLOCKED" || exec === "SHORTFALL_PENDING") return false;
-  if (next === "QC_PENDING" || next === "PRODUCTION_SHORTFALL_DECISION") return false;
-  if (exec === "RUNNING") return true;
+  if (exec === "COMPLETED" || exec === "BLOCKED" || exec === "SHORTFALL_PENDING") return false;
+  if (
+    next === "PRODUCTION_SHORTFALL_DECISION" ||
+    next === "NEXT_RS_REQUIRED" ||
+    next === "DISPATCH_PENDING" ||
+    next === "SALES_BILL_PENDING" ||
+    next === "ON_HOLD" ||
+    next === "PRODUCTION_PAUSED" ||
+    next === "PRODUCTION_EXECUTION_BLOCKED"
+  ) {
+    return false;
+  }
+  // QC_PENDING nextAction alone is not Continue — only when capacity remains under PRODUCTION_PENDING.
+  if (next === "QC_PENDING" && Math.max(0, n(row.balanceQty)) <= EPS) return false;
+  if (exec === "RUNNING" && n(row.producedQty) > EPS) return true;
   const produced = n(row.producedQty);
   if (produced > EPS) {
     const remaining = Math.max(0, n(row.balanceQty));
-    return remaining > EPS || next === "PRODUCTION_PENDING";
+    return remaining > EPS || next === "PRODUCTION_PENDING" || next === "PRODUCTION_DRAFT_REVIEW";
   }
   return false;
 }
@@ -77,8 +90,12 @@ export function classifyProductionQueueBucketFromBackend(
   const next = upper(row.nextAction);
   const exec = upper(row.productionExecutionStatus);
 
-  if (next === "QC_PENDING" || row.hasPendingQc) return "pendingQa";
+  // Entry-level QC must not classify an in-progress / paused WO as Pending QA.
+  if (next === "PRODUCTION_EXECUTION_BLOCKED" || next === "PRODUCTION_PAUSED" || exec === "BLOCKED") {
+    return null;
+  }
   if (next === "PRODUCTION_SHORTFALL_DECISION" || exec === "SHORTFALL_PENDING") return "shortfallDecision";
+  if (next === "QC_PENDING" || (row.hasPendingQc && exec === "COMPLETED")) return "pendingQa";
   if (isQueueReadyToStart(row)) return "readyToStart";
   return null;
 }

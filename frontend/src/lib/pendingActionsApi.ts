@@ -17,6 +17,8 @@ export type PendingAction = {
   recoveryType?: string | null;
   reason?: string | null;
   reasonMessage?: string | null;
+  /** Optional structured context (e.g. { allowanceApprovalId } for RM Allowance Approval rows). */
+  metadata?: Record<string, unknown> | null;
 };
 
 export type PendingActionsResponse = {

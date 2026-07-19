@@ -96,17 +96,34 @@ describe("materialIssueContinuousSession", () => {
     expect(before.filter((p) => p.workOrderId === 10)).toHaveLength(1);
   });
 
-  it("stays on the same work order when partial issue leaves RM pending", () => {
+  it("advances past a partially issued WO to the next Ready WO", () => {
     const rows = [
-      pmr({ id: 1, workOrderId: 10, totalPending: 4, status: "PARTIALLY_ISSUED" }),
-      pmr({ id: 2, workOrderId: 20, totalPending: 6 }),
+      pmr({
+        id: 1,
+        workOrderId: 10,
+        totalPending: 4,
+        status: "PARTIALLY_ISSUED",
+        totalIssued: 6,
+        issueQueueState: "PARTIALLY_ISSUED",
+      }),
+      pmr({
+        id: 2,
+        workOrderId: 20,
+        totalPending: 6,
+        status: "REQUESTED",
+        totalIssued: 0,
+        issueQueueState: "READY_TO_ISSUE",
+      }),
     ];
     const result = resolvePostIssueAdvance({
       issuedWorkOrderId: 10,
       freshPending: rows,
       scope: {},
     });
-    expect(result).toEqual({ kind: "stay", pmr: expect.objectContaining({ workOrderId: 10, id: 1 }) });
+    expect(result).toEqual({
+      kind: "advance",
+      pmr: expect.objectContaining({ workOrderId: 20, id: 2 }),
+    });
   });
 
   it("returns empty advance when the final work order is fully issued", () => {

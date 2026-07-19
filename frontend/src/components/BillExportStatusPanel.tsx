@@ -70,17 +70,18 @@ export function BillExportStatusPanel({
     statusLabel = "Not ready for export";
     help = "Finalize this bill before exporting.";
   } else if (lifecycle === "FINALIZED" && isExported) {
-    statusLabel = "Exported to Tally";
-    exportBadge = { text: "Exported to Tally", variant: "success" };
-    help = null;
+    statusLabel = "XML downloaded";
+    exportBadge = { text: "XML downloaded", variant: "success" };
+    help =
+      "Tally XML was downloaded and this bill is marked exported in ERP. Confirm the voucher in Tally separately — download does not prove import success.";
   } else if (lifecycle === "FINALIZED" && exportBlockedReason) {
     statusLabel = "Not Exported";
     exportBadge = { text: "Not Exported", variant: "warning" };
     help = exportBlockedReason;
   } else if (lifecycle === "FINALIZED") {
-    statusLabel = "Tally Export Pending";
-    exportBadge = { text: "Not Exported", variant: "warning" };
-    help = "This bill is finalized but not yet exported to Tally.";
+    statusLabel = "Tally XML pending";
+    exportBadge = { text: "Not exported", variant: "warning" };
+    help = "This bill is finalized. Download Tally XML when ready, then import the file in Tally.";
   }
 
   const billStatusPhrase = lifecycle === "FINALIZED" ? "Finalized" : lifecycle === "CANCELLED" ? "Cancelled" : "Draft";
@@ -102,7 +103,7 @@ export function BillExportStatusPanel({
               <>
                 {" "}
                 ·{" "}
-                <span className="tabular-nums">{isExported ? "Exported" : "Not exported"}</span>
+                <span className="tabular-nums">{isExported ? "XML downloaded" : "Not exported"}</span>
               </>
             ) : null}
           </p>
@@ -153,7 +154,7 @@ export function BillExportStatusPanel({
                 disabled={exporting}
                 onClick={() => void onExport()}
               >
-                {exporting ? "Exporting…" : isExported ? "Re-export to Tally" : "Export to Tally"}
+                {exporting ? "Downloading…" : isExported ? "Re-download Tally XML" : "Download Tally XML"}
               </Button>
             ) : null}
             {showReset ? (

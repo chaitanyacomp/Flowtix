@@ -15,6 +15,7 @@ import { ErpModal } from "../components/erp/ErpModal";
 import { OperationalWorkspaceFooter } from "../components/erp/OperationalWorkspaceChrome";
 import { cn } from "../lib/utils";
 import { SalesBillInvoiceDocument } from "../components/sales/SalesBillInvoiceDocument";
+import { formatGstPercent, lineTaxRates } from "../lib/salesBillTaxDisplay";
 import { StickyWorkflowActionBar } from "../components/erp/StickyWorkflowActionBar";
 import {
   hrefForEligibleDispatch,
@@ -54,6 +55,8 @@ type BillLine = {
   rate: string;
   rateEffectiveFrom?: string | null;
   basicAmount: string;
+  goodsTaxableAmount?: string;
+  transportationAllocation?: string;
   gstRate: string;
   cgstAmount: string;
   sgstAmount: string;
@@ -81,6 +84,14 @@ type Bill = {
   totalIgst: string;
   totalTax: string;
   netAmount: string;
+  goodsTaxableValue?: string;
+  transportationAmount?: string;
+  transportationTaxableValue?: string;
+  transportationChargedBy?: string;
+  transporterName?: string | null;
+  transportationReferenceNo?: string | null;
+  roundOffAmount?: string;
+  dispatchAllocations?: Array<{ dispatchId: number; allocatedQty: string; dispatch?: { docNo?: string | null } }>;
   paymentStatus?: string;
   dueDate?: string | null;
   receivedAmount?: string;
@@ -210,6 +221,7 @@ export function SalesBillEditPage() {
   } | null>(null);
   const [reExportAuth, setReExportAuth] = React.useState<{ open: boolean; password: string } | null>(null);
   const [nextBillHref, setNextBillHref] = React.useState<string | null>(null);
+  const [nextPendingExportHref, setNextPendingExportHref] = React.useState<string | null>(null);
   const [exportQueuePrompt, setExportQueuePrompt] = React.useState<{ remaining: number } | null>(null);
 
   const refreshBillingQueueHint = React.useCallback(async (excludeDispatchId?: number) => {
@@ -219,6 +231,19 @@ export function SalesBillEditPage() {
       setNextBillHref(next ? hrefForEligibleDispatch(next) : null);
     } catch {
       setNextBillHref(null);
+    }
+  }, []);
+
+  const refreshNextPendingExportHint = React.useCallback(async (excludeBillId?: number) => {
+    try {
+      const rows = await apiFetch<Array<{ id: number }>>(
+        "/api/sales-bills?status=FINALIZED&exportFilter=not_exported",
+      );
+      const list = Array.isArray(rows) ? rows : [];
+      const next = list.find((r) => Number(r.id) !== Number(excludeBillId));
+      setNextPendingExportHref(next ? `/sales-bills/${next.id}` : null);
+    } catch {
+      setNextPendingExportHref(null);
     }
   }, []);
   const [adminRateDlg, setAdminRateDlg] = React.useState<{ lineId: number; password: string } | null>(null);
@@ -324,6 +349,14 @@ export function SalesBillEditPage() {
       .catch((e) => setLoadError(e instanceof Error ? e.message : "Could not load this bill."));
   }, [billId]);
 
+  React.useEffect(() => {
+    if (bill?.status === "FINALIZED" && bill.isExported) {
+      void refreshNextPendingExportHint(bill.id);
+    } else {
+      setNextPendingExportHref(null);
+    }
+  }, [bill?.id, bill?.status, bill?.isExported, refreshNextPendingExportHint]);
+
   const showNoQtyRateUi = bill?.dispatch?.salesOrder?.orderType === "NO_QTY";
   const firstLine = bill?.lines?.[0];
   const headlineApplicableRate =
@@ -426,8 +459,11 @@ export function SalesBillEditPage() {
         setExportQueuePrompt({ remaining });
         return;
       }
-      alert("Tally XML downloaded.");
+      await refreshNextPendingExportHint(refreshed.id);
       await refreshBillingQueueHint(refreshed.dispatch.id);
+      alert(
+        "Tally XML downloaded and marked exported in ERP. Import the file in Tally to post the voucher — download is not a Tally import confirmation.",
+      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not export to Tally";
       setExportError(msg);
@@ -621,7 +657,8 @@ export function SalesBillEditPage() {
   const isDraftBill = bill.status === "DRAFT";
   const isFinalizedBill = bill.status === "FINALIZED";
   const soLabel = displaySalesOrderNo(bill.dispatch.soId, bill.dispatch.salesOrder?.docNo);
-  const dispatchLabel = displayDispatchNo(bill.dispatchId, bill.dispatch.docNo);
+  const sourceDispatches = bill.dispatchAllocations?.length ? bill.dispatchAllocations : [{ dispatchId: bill.dispatchId, allocatedQty: "0", dispatch: bill.dispatch }];
+  const dispatchLabel = sourceDispatches.length === 1 ? displayDispatchNo(sourceDispatches[0].dispatchId, sourceDispatches[0].dispatch?.docNo) : `${sourceDispatches.length} Dispatches`;
   const workQueueTotal = workQueue?.queueItems.length ?? 0;
   const workQueueIndex = workQueue?.currentIndex ?? 0;
   const showWorkQueueNav = workQueue != null && workQueueTotal > 1;
@@ -837,12 +874,7 @@ export function SalesBillEditPage() {
             <span className="text-slate-300" aria-hidden>
               →
             </span>
-            <Link
-              to={`/dispatch?salesOrderId=${bill.dispatch.soId}`}
-              className="font-mono font-semibold tabular-nums text-violet-800 underline decoration-violet-800/30 underline-offset-2 hover:text-violet-950"
-            >
-              {dispatchLabel}
-            </Link>
+            {sourceDispatches.length === 1 ? <Link to={`/dispatch?salesOrderId=${bill.dispatch.soId}`} className="font-mono font-semibold tabular-nums text-violet-800 underline decoration-violet-800/30 underline-offset-2 hover:text-violet-950">{dispatchLabel}</Link> : <details className="relative"><summary className="cursor-pointer list-none font-mono font-semibold tabular-nums text-violet-800 underline decoration-violet-800/30 underline-offset-2 marker:content-none [&::-webkit-details-marker]:hidden">{dispatchLabel}</summary><div className="absolute left-0 top-full z-20 mt-1 min-w-56 rounded-md border border-slate-200 bg-white p-2 shadow-lg">{sourceDispatches.map((source) => <div key={source.dispatchId} className="flex justify-between gap-4 whitespace-nowrap text-[11px]"><span className="font-mono font-semibold">{displayDispatchNo(source.dispatchId, source.dispatch?.docNo)}</span><span>{Number(source.allocatedQty)} allocated</span></div>)}</div></details>}
             <span className="text-slate-300" aria-hidden>
               →
             </span>
@@ -905,10 +937,10 @@ export function SalesBillEditPage() {
                         <th>Item</th>
                         <th>HSN</th>
                         <th className="text-right">Qty</th>
-                        <th>Unit</th>
                         {showNoQtyRateUi ? <th className="text-right">Eff. from</th> : null}
                         <th className="text-right">Rate</th>
                         <th className="text-right">Taxable</th>
+                        <th className="text-right">GST %</th>
                         <th className="text-right">GST</th>
                         <th className="text-right">Total</th>
                       </tr>
@@ -916,12 +948,12 @@ export function SalesBillEditPage() {
                     <tbody>
                       {bill.lines.map((ln) => {
                         const tax = n(ln.cgstAmount) + n(ln.sgstAmount) + n(ln.igstAmount);
+                        const rates = lineTaxRates(ln, bill.taxIntraState !== false);
                         return (
                           <tr key={ln.id} className="border-b border-slate-100">
-                            <td className="text-slate-800">{ln.itemNameSnapshot || ln.item.itemName}</td>
+                            <td className="text-slate-800">{ln.itemNameSnapshot || ln.item.itemName}<details className="mt-0.5 text-[10px] text-slate-500"><summary className="cursor-pointer">Tax breakdown</summary><div>Goods taxable: {formatMoney(ln.goodsTaxableAmount ?? (n(ln.basicAmount) - n(ln.transportationAllocation || 0)))}</div><div>Allocated transportation: {formatMoney(ln.transportationAllocation || 0)}</div><div>Total taxable: {formatMoney(ln.basicAmount)} at {formatGstPercent(ln.gstRate)}</div><div>CGST {rates.cgst ?? "â€”"}: {rates.cgst ? formatMoney(ln.cgstAmount) : "â€”"} Â· SGST {rates.sgst ?? "â€”"}: {rates.sgst ? formatMoney(ln.sgstAmount) : "â€”"} Â· IGST {rates.igst ?? "â€”"}: {rates.igst ? formatMoney(ln.igstAmount) : "â€”"}</div></details></td>
                             <td className="text-slate-700">{ln.hsnCodeSnapshot || "—"}</td>
                             <td className="text-right tabular-nums text-slate-800">{ln.qty}</td>
-                            <td className="text-slate-700">{ln.unitSnapshot}</td>
                             {showNoQtyRateUi ? (
                               <td className="text-right text-xs text-slate-600">{formatEffectiveDate(ln.rateEffectiveFrom)}</td>
                             ) : null}
@@ -952,6 +984,7 @@ export function SalesBillEditPage() {
                               )}
                             </td>
                             <td className="text-right tabular-nums text-slate-800">{formatMoney(ln.basicAmount)}</td>
+                            <td className="text-right tabular-nums font-medium text-slate-800">{formatGstPercent(ln.gstRate)}</td>
                             <td className="text-right tabular-nums text-slate-800">{formatMoney(tax)}</td>
                             <td className="text-right tabular-nums font-medium text-slate-900">{formatMoney(ln.lineTotal)}</td>
                           </tr>
@@ -1304,9 +1337,11 @@ export function SalesBillEditPage() {
             </CardHeader>
             <CardContent className="erp-txn-card-body grid gap-1 pt-0 text-sm">
               <div className="flex items-center justify-between gap-4">
-                <span className="text-slate-600">Taxable</span>
-                <span className="tabular-nums">{formatMoney(bill.totalBasic)}</span>
+                <span className="text-slate-600">Goods taxable</span>
+                <span className="tabular-nums">{formatMoney(bill.goodsTaxableValue ?? bill.totalBasic)}</span>
               </div>
+              {Number(bill.transportationAmount || 0) > 0 ? <div className="flex items-center justify-between gap-4"><span className="text-slate-600">Transportation Charges{bill.transportationChargedBy === "TRANSPORTER_DIRECTLY" ? " (direct)" : ""}</span><span className="tabular-nums">{formatMoney(bill.transportationAmount || 0)}</span></div> : null}
+              <div className="flex items-center justify-between gap-4"><span className="text-slate-600">Total Taxable Value</span><span className="tabular-nums">{formatMoney(bill.totalBasic)}</span></div>
               <div className="flex items-center justify-between gap-4">
                 <span className="text-slate-600">CGST</span>
                 <span className="tabular-nums">{formatMoney(bill.totalCgst)}</span>
@@ -1319,10 +1354,13 @@ export function SalesBillEditPage() {
                 <span className="text-slate-600">IGST</span>
                 <span className="tabular-nums">{formatMoney(bill.totalIgst)}</span>
               </div>
+              <div className="flex items-center justify-between gap-4"><span className="text-slate-600">Total tax</span><span className="tabular-nums">{formatMoney(bill.totalTax)}</span></div>
+              <div className="flex items-center justify-between gap-4"><span className="text-slate-600">Round-off</span><span className="tabular-nums">{formatMoney(bill.roundOffAmount || 0)}</span></div>
               <div className="flex items-center justify-between gap-4 border-t border-slate-200 pt-2 font-medium">
                 <span className="text-slate-900">Grand total</span>
                 <span className="tabular-nums text-slate-900">{formatMoney(bill.netAmount)}</span>
               </div>
+              {Number(bill.transportationAmount || 0) > 0 ? <p className="pt-1 text-[10px] text-slate-500">{bill.transportationChargedBy === "OUR_COMPANY" ? "Transportation GST is allocated proportionately across invoice items." : "Transporter bills the customer separately."}</p> : null}
             </CardContent>
           </Card>
 
@@ -1345,6 +1383,15 @@ export function SalesBillEditPage() {
                 density="default"
                 className="shadow-md ring-2 ring-emerald-200/90"
               />
+              {bill.isExported && nextPendingExportHref ? (
+                <Link
+                  to={nextPendingExportHref}
+                  className={cn(buttonVariants({ variant: "default", size: "sm" }), "h-9 w-full justify-center no-underline")}
+                  data-testid="sales-bill-next-pending-export"
+                >
+                  Next Pending Bill
+                </Link>
+              ) : null}
               <Button
                 type="button"
                 variant="outline"
@@ -1389,6 +1436,7 @@ export function SalesBillEditPage() {
               salesOrderDocNo={bill.dispatch.salesOrder?.docNo}
               dispatchId={bill.dispatchId}
               dispatchDocNo={bill.dispatch.docNo}
+              dispatchAllocations={bill.dispatchAllocations}
               customerId={bill.customerId}
               customerName={bill.customer.name}
               isExported={bill.isExported}
@@ -1526,13 +1574,22 @@ export function SalesBillEditPage() {
                         >
                           New SO
                         </Link>
+                        {nextPendingExportHref ? (
+                          <Link
+                            to={nextPendingExportHref}
+                            className={cn(buttonVariants({ variant: "default", size: "sm" }), "no-underline")}
+                            data-testid="sales-bill-next-pending-export-footer"
+                          >
+                            Next Pending Bill
+                          </Link>
+                        ) : null}
                         {nextBillHref ? (
                           <Link
                             to={nextBillHref}
-                            className={cn(buttonVariants({ variant: "default", size: "sm" }), "no-underline")}
+                            className={cn(buttonVariants({ variant: "outline", size: "sm" }), "no-underline")}
                             data-testid="sales-bill-continue-next-pending"
                           >
-                            Continue to next pending bill
+                            Continue to next billable dispatch
                           </Link>
                         ) : null}
                       </div>

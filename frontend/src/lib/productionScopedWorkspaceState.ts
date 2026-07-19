@@ -38,15 +38,20 @@ export function shouldShowScopedProductionReport(input: {
   executionSummary: ProductionExecutionSummary | null | undefined;
 }): boolean {
   if (!(input.workOrderId > 0)) return false;
-  if (input.hasApprovedProductionOnWorkOrder) return true;
-  if (
-    input.navigateNoQtyContext &&
-    executionSummaryMatchesWorkOrder(input.executionSummary, input.workOrderId) &&
-    input.executionSummary?.executionStatus === "COMPLETED"
-  ) {
-    return true;
+  if (!executionSummaryMatchesWorkOrder(input.executionSummary, input.workOrderId)) return false;
+  const executionStatus = String(input.executionSummary?.executionStatus ?? "").toUpperCase();
+  if (executionStatus === "BLOCKED") return false;
+  if (executionStatus === "COMPLETED") return true;
+  // Mandatory Production Report after equal/extra/shortage close decision.
+  if (executionStatus === "SHORTFALL_PENDING") {
+    return input.hasApprovedProductionOnWorkOrder;
   }
-  return false;
+  // A saved/Pending-QC partial entry is not a final-report request. Keep logging
+  // production until planned quantity is reached; confirmation remains explicit.
+  return (
+    input.hasApprovedProductionOnWorkOrder &&
+    Number(input.executionSummary?.remainderQty ?? 0) <= 1e-6
+  );
 }
 
 const CLOSED_SCOPED_WO_STATUSES = new Set(["COMPLETED", "CLOSED_WITH_SHORTFALL", "REJECTED"]);
@@ -142,7 +147,7 @@ export function scopedWorkOrderHasProducibleLine(
   return lines.some((line) => {
     if (Number(line.workOrderId) !== Number(workOrderId)) return false;
     if (!(Number(line.remainingQty) > eps)) return false;
-    if (Number(line.qcPendingQty) > eps) return false;
+    // Entry-level QC is orthogonal to WO execution and must not block continuation.
     if (line.isCarryForwardLine && !allowCf) return false;
     return true;
   });
@@ -153,6 +158,9 @@ export function scopedWorkOrderHasProducibleLine(
  *
  * Root cause fix: when a workOrderId is scoped in the URL, completion UI must reflect THAT wo only —
  * not SO-wide approved batches / empty auto-pick from a previously closed wo.
+ *
+ * When sibling WOs in the intended scope still accept production, do not show the completed
+ * banner (those WOs must remain primary/actionable — not buried under "Other Work Orders").
  */
 export function shouldHideNoQtyAddProductionEntry(input: {
   navigateNoQtyContext: boolean;
@@ -168,12 +176,17 @@ export function shouldHideNoQtyAddProductionEntry(input: {
   currentWoHasProducibleLine: boolean;
   currentWoHasApprovedProduction: boolean;
   currentWoIsClosed: boolean;
+  /** Other WOs/lines in scope that can still accept production entry. */
+  siblingActionableProductionCount?: number;
 }): boolean {
   if (input.noQtyBlockProductionEntry) return true;
   if (input.noQtyNextRsReady && !input.noQtyAllowShopFloorContinue) return true;
   if (!input.navigateNoQtyContext || input.noQtyAllowShopFloorContinue || !input.showNoQtyScopedProductionCard) {
     return false;
   }
+
+  const siblingCount = Number(input.siblingActionableProductionCount ?? 0);
+  if (siblingCount > 0) return false;
 
   if (input.effectiveScopedWoId > 0) {
     if (input.currentWoHasProducibleLine) return false;

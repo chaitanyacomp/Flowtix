@@ -147,6 +147,9 @@ describe("productionWorkOrderReportService", () => {
       assert.equal(report.rmLines[0].issuedQty, 12);
       assert.equal(report.rmLines[0].reportedConsumedQty, 10.5);
       assert.equal(report.rmLines[0].varianceQty, 0.5);
+      assert.equal(report.rmLines[0].availableForContinuationQty, 1.5);
+      assert.equal(report.rmAvailableForContinuation, 1.5);
+      assert.equal(report.totalWastageQty, 0);
     } finally {
       require(returnPath).buildReturnableLinesForWorkOrder = origReturn;
       delete require.cache[reportPath];
@@ -504,7 +507,7 @@ describe("productionWorkOrderReportService", () => {
     }
   });
 
-  it("confirmProductionWorkOrderReport auto-calculates scrap as issued minus consumed minus return", async () => {
+  it("confirmProductionWorkOrderReport records only explicitly declared actual wastage", async () => {
     const returnPath = require.resolve("../../src/services/materialReturnService");
     const reportPath = require.resolve("../../src/services/productionWorkOrderReportService");
     const origReturn = require(returnPath).buildReturnableLinesForWorkOrder;
@@ -581,14 +584,14 @@ describe("productionWorkOrderReportService", () => {
         db,
         15,
         {
-          lines: [{ itemId: 7, rmConsumedQty: 8, rmReturnQty: 2 }],
+          lines: [{ itemId: 7, rmConsumedQty: 8, rmReturnQty: 2, scrapWasteQty: 2 }],
           wastageDetails: [{ wastageTypeId: 1, qty: 2 }],
         },
         { userId: 9 },
       );
       assert.equal(capturedLineCreates.length, 1);
     assert.equal(capturedLineCreates[0].scrapWasteQty, "2");
-    assert.equal(capturedLineCreates[0].varianceQty, "4");
+    assert.equal(capturedLineCreates[0].varianceQty, "0");
   } finally {
     require(returnPath).buildReturnableLinesForWorkOrder = origReturn;
     delete require.cache[reportPath];
@@ -665,7 +668,7 @@ describe("productionWorkOrderReportService", () => {
             db,
             15,
             {
-              lines: [{ itemId: 7, rmConsumedQty: 8, rmReturnQty: 2 }],
+              lines: [{ itemId: 7, rmConsumedQty: 8, rmReturnQty: 2, scrapWasteQty: 2 }],
               wastageDetails: [{ wastageTypeId: 1, qty: 1.5 }],
             },
             { userId: 9 },

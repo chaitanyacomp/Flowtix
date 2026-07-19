@@ -7,7 +7,7 @@
 | **Volume** | 6 — UI & Experience Architecture |
 | **Chapter** | 7 — FT ERP UI/UX Design System |
 | **Title** | FT ERP UI/UX Design System |
-| **Version** | 1.0.8 |
+| **Version** | 1.0.11 |
 | **Status** | Draft — Final Architecture Review |
 | **Effective date** | 2026-07-03 |
 | **Author** | FT ERP Product Team |
@@ -42,6 +42,9 @@
 | 1.0.6 | 2026-07-12 | FT ERP Product Team | §10.8 — single two-column workstation grid (left context / right action); RM integrated in action column; Planning Context duplication removed |
 | 1.0.7 | 2026-07-16 | FT ERP Product Team | §17.7–§17.14 — Report Grid & Analytics UX Standard (categories, grid, filters, KPIs, drill-down); Analysis catalog UX compliance snapshot |
 | 1.0.8 | 2026-07-16 | FT ERP Product Team | §17.15 — Report Layout Compliance (FT-UI-REPORT-018); Production Wastage WO Analysis = canonical ReportChrome / ReportPageShell reference |
+| 1.0.9 | 2026-07-19 | FT ERP Product Team | §10.9 — Production Report compact viewport workbench (summary strip, sticky Confirm, unexplained balance) |
+| 1.0.10 | 2026-07-19 | FT ERP Product Team | §10.9 — RM wastage allocation precision (no whole-Kg rounding); disable Add when classified; no wastage scrollbar |
+| 1.0.11 | 2026-07-19 | FT ERP Product Team | §10.9 — post–Confirm Report close routes to Ready to Start; orphan NO_QTY Select-WO URLs redirected |
 
 **Supersedes:** Ad hoc screen conventions; informal spacing and button patterns not recorded in product documentation.
 
@@ -530,6 +533,25 @@ The Workbench **SHALL** be the **default pattern** for Requirement Sheet, Monthl
 - Workbench footer action bar **SHALL** stick to viewport bottom.
 - Document header band **SHALL** stick above grid (combined height **SHOULD** be ≤ 120px).
 
+### 10.9 Production Report — compact viewport workbench
+
+When a WO is **Production Report Pending**, the Production Workspace **SHALL** present a **single-column compact workbench** that fits one desktop viewport at 100% zoom (target 1366×768) without page-level vertical scroll for normal wastage entry (AP-03).
+
+| Zone | Requirement |
+|------|-------------|
+| **WO identity** | One compact identity line (WO · SO · Item). **SHALL NOT** use a tall left summary card or two-column closure panel. |
+| **Summary strip** | Horizontal KPI strip: Planned · Produced · Shortage/Extra · RM Issued · Accounted · Balance · Status. One optional contextual shortage line only. |
+| **RM table** | Full-width compact columns: RM Item · Issued · Consumed · Returned · Wastage · **Unexplained Balance** · Remarks. Zero unexplained balance **SHALL NOT** render as a red “Variance”. |
+| **RM precision** | Kg (and other decimal RM UOM) values **SHALL** use authoritative 3-decimal precision for logic and display. **SHALL NOT** round to whole numbers (e.g. 0.77 **SHALL NOT** display as 1). |
+| **Allocation** | Per RM line: `requiredAllocation = issued − consumed − returned`. Default manual wastage fills remaining after auto runner so unexplained starts at 0. Classified wastage must equal required manual wastage. |
+| **Wastage** | Single-line rows (Type · Qty · Remarks · compact delete). One-line summary: Required wastage · Classified · Remaining to classify. **SHALL NOT** use an internal vertical scrollbar. **Add Wastage Reason** **SHALL** be disabled when remaining to classify is 0. |
+| **Remarks** | Optional; collapsible / expand-on-focus. **SHALL NOT** reserve a tall empty textarea. |
+| **Footer** | Sticky **Confirm Report & Close WO** with reconciliation status (`Balance 0 · Ready to close` / `Unexplained balance …`). Disabled while unexplained balance ≠ 0 or wastage classification is incomplete. |
+| **Continue CTA** | **SHALL NOT** appear while execution is Production Report Pending (`SHORTFALL_PENDING`). |
+| **Post-close route** | After Confirm Report & Close WO, navigate to card Production Workspace → Ready to Start. **SHALL NOT** land on obsolete Select Work Order / Log production / Complete QA chrome. Navigate before refresh. |
+
+Lifecycle, backend reconciliation rules, and the Opening Production Report transition gate are unchanged — this section is presentation and client allocation display.
+
 ### 10.6 Frozen columns
 
 - Leading identifier columns (line no, item code, item name) **SHALL** freeze on wide grids.
@@ -566,6 +588,7 @@ When a NO_QTY Requirement Sheet is **LOCKED**, the operator’s current task is 
 | **Current Work Orders** | **SHALL** appear immediately below the Create Work Order workstation so newly created WOs are visible without scrolling through reference sections. |
 | **Reference sections** | Procurement Progress, Coverage Calculations, and Audit / History **SHALL** remain available but **SHALL** be collapsible and below the primary transaction / Current Work Orders area. |
 | **Post-create continuity** | After WO create, the workspace **SHALL** remain on Work Order Planning, show the business WO number and next step, refresh Current Work Orders, and offer Open WO / Material Issue / Create Another WO. Auto-navigation away **SHALL NOT** be the default. |
+| **Live RM feasibility** | Live RM preview **SHALL** debounce quantity changes, ignore stale responses, and **SHALL NOT** reset the quantity currently being typed. “Updating RM…” **SHALL** show only while a real request is pending. Preview POSTs **SHALL NOT** trigger a full workspace refresh loop. |
 | **Multi-WO** | While Remaining Requirement > 0, the RS **SHALL** remain available for additional WO placement. |
 
 Draft Requirement Sheet editing **SHALL** continue to use the Requirement Sheet page title. Workflow ownership and lifecycle rules remain in FT-PD-022 / FT-PD-031 / FT-PD-035 — this section governs presentation and operator continuity only. **No** calculation, permission, API, or lifecycle change is implied by layout hierarchy.

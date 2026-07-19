@@ -156,7 +156,7 @@ function resolveActiveWoMr(woMr) {
 /**
  * Phase A (derived only): allocation-first operational status for a WO case.
  * Does NOT depend on MR/PR/PO/GRN status; uses stock/allocation/issue readiness only.
- * @returns {{ key: 'WAITING_RM'|'PARTIALLY_ALLOCATED'|'READY_FOR_ISSUE'|'READY_FOR_PRODUCTION', label: string, owner: string, nextAction: string }}
+ * @returns {{ key: 'WAITING_RM'|'PARTIALLY_ALLOCATED'|'READY_FOR_ISSUE'|'AWAITING_RELEASE'|'READY_FOR_PRODUCTION'|'RM_RECEIVED', label: string, owner: string, nextAction: string }}
  */
 function deriveAllocationFirstWoStatus({
   rmLines,
@@ -185,9 +185,10 @@ function deriveAllocationFirstWoStatus({
     };
   }
 
+  // Distinct from READY_FOR_ISSUE — issued PMR awaiting Store release must NOT deep-link to Material Issue.
   if (hasAwaitingStoreRelease(pmrStatus, workOrderReleased)) {
     return {
-      key: "READY_FOR_ISSUE",
+      key: "AWAITING_RELEASE",
       label: "Awaiting release to production",
       owner: "Store Department",
       nextAction: "Release to Production",
@@ -203,6 +204,8 @@ function deriveAllocationFirstWoStatus({
     };
   }
 
+  // Canonical Issue RM eligibility: submitted pending PMR with remaining qty + free stock.
+  // Stock-ready without an open PMR must never surface "Issue RM to Production".
   const waitingPmr = hasWaitingPmr(pmrStatus);
   if (waitingPmr && hasWorkOrder) {
     const issueable = lines.some(
@@ -216,23 +219,19 @@ function deriveAllocationFirstWoStatus({
         nextAction: "Issue RM to Production",
       };
     }
-  }
-
-  const anyIssueReady =
-    hasWorkOrder &&
-    !hasFullyIssuedPmr(pmrStatus) &&
-    lines.some(
+    const stockCoversWithoutPendingLine = lines.some(
       (l) =>
         l.blockerReason === "Ready for material issue" ||
         (n(l.freeStockQty) + QUEUE_EPS >= n(l.requiredQty) && n(l.requiredQty) > QUEUE_EPS),
     );
-  if (anyIssueReady) {
-    return {
-      key: "READY_FOR_ISSUE",
-      label: "Ready for issue",
-      owner: "Store Department",
-      nextAction: "Issue RM to Production",
-    };
+    if (stockCoversWithoutPendingLine) {
+      return {
+        key: "READY_FOR_ISSUE",
+        label: "Ready for issue",
+        owner: "Store Department",
+        nextAction: "Issue RM to Production",
+      };
+    }
   }
 
   const anyAllocatedOrIssued = lines.some((l) => n(l.activeAllocatedQty) > QUEUE_EPS || n(l.issuedToProductionQty) > QUEUE_EPS);
@@ -2564,6 +2563,9 @@ async function buildStoreIssuePendingDashboardRows(db = prisma, opts = {}) {
     const waitingPmr = (pmrByWorkOrder.get(woId)?.openPmrs || []).find((p) =>
       PMR_WAITING_ISSUE_STATUSES.includes(p.status),
     );
+    // Canonical Material Issue eligibility: submitted pending PMR with remaining qty only.
+    // Stock-ready without an open PMR must not surface "Issue RM to Production".
+    if (!waitingPmr?.id) continue;
     let pmrIssuedQty = 0;
     let pmrRemainingQty = 0;
     if (waitingPmr?.lines?.length) {
@@ -2572,6 +2574,7 @@ async function buildStoreIssuePendingDashboardRows(db = prisma, opts = {}) {
       const required = waitingPmr.lines.reduce((s, l) => s + Number(l.requiredQty ?? 0), 0);
       pmrRemainingQty = Math.max(0, required - pmrIssuedQty - waived);
     }
+    if (pmrRemainingQty <= QUEUE_EPS) continue;
     rows.push({
       materialRequirementId: row.materialRequirementId ?? 0,
       docNo: row.requisitionDocNo ?? null,
@@ -2672,7 +2675,12 @@ async function buildAllocationFirstDashboardRows(db = prisma, opts = {}) {
     if (!s) continue;
     const key = c.workOrderId ? `wo-${c.workOrderId}` : `so-${c.salesOrderId}`;
     if (seen.has(key)) continue;
-    if (c.workOrderId && !["WAITING_RM", "PARTIALLY_ALLOCATED", "READY_FOR_ISSUE"].includes(s.key)) continue;
+    if (
+      c.workOrderId &&
+      !["WAITING_RM", "PARTIALLY_ALLOCATED", "READY_FOR_ISSUE", "AWAITING_RELEASE"].includes(s.key)
+    ) {
+      continue;
+    }
     if (!c.workOrderId && s.key !== "RM_RECEIVED") continue;
     seen.add(key);
     out.push({
@@ -2687,9 +2695,11 @@ async function buildAllocationFirstDashboardRows(db = prisma, opts = {}) {
       nextActionKey:
         s.key === "READY_FOR_ISSUE"
           ? "ISSUE_RM"
-          : s.key === "RM_RECEIVED"
-            ? "CREATE_WO"
-            : "ALLOCATE_RM",
+          : s.key === "AWAITING_RELEASE"
+            ? "RELEASE_TO_PRODUCTION"
+            : s.key === "RM_RECEIVED"
+              ? "CREATE_WO"
+              : "ALLOCATE_RM",
     });
   }
   if (opts.limit > 0) return out.slice(0, opts.limit);
@@ -2708,6 +2718,7 @@ module.exports = {
   buildSupplyPanel,
   buildWoCaseSupplyPanel,
   buildWoShortageCase,
+  deriveAllocationFirstWoStatus,
   deriveCaseStoreAction,
   deriveWoEscalationLifecycle,
   deriveLineBlocker,

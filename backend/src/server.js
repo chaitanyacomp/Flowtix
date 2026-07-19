@@ -7,6 +7,7 @@ loadRuntimeEnv();
 const { bootstrapRuntime, getReleaseMeta } = require("./runtime/bootstrap");
 const { prisma } = require("./utils/prisma");
 const { ensureDefaultAdmin } = require("./utils/ensureDefaultAdmin");
+const { ensureRoleSeedUsers } = require("./utils/ensureRoleSeedUsers");
 const { ensureAppSettings } = require("./services/appSettings");
 const { ensureIndiaStatesSeeded, backfillLegacyStateLinks } = require("./services/stateMaster");
 const { ensureDefaultUnitsSeeded, backfillLegacyItemUnitLinks } = require("./services/unitMaster");
@@ -44,6 +45,7 @@ async function start() {
   resetBackupJobLockOnProcessStart();
 
   await ensureDefaultAdmin();
+  await ensureRoleSeedUsers();
   await ensureAppSettings();
   await ensureIndiaStatesSeeded();
   await backfillLegacyStateLinks();

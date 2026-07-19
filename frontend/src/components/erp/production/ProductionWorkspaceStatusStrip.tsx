@@ -26,7 +26,13 @@ function firstRowForBucket(
   for (const row of rows) {
     const woId = Number(row.workOrderId ?? 0);
     if (!(woId > 0)) continue;
-    if (bucket === "pendingQa" && (row.nextAction === "QC_PENDING" || row.hasPendingQc)) return row;
+    if (
+      bucket === "pendingQa" &&
+      (row.nextAction === "QC_PENDING" ||
+        (row.hasPendingQc && String(row.productionExecutionStatus ?? "").toUpperCase() === "COMPLETED"))
+    ) {
+      return row;
+    }
     if (
       bucket === "shortfallDecision" &&
       (row.nextAction === "PRODUCTION_SHORTFALL_DECISION" ||

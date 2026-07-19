@@ -26,13 +26,10 @@ export type NoQtyCycleDisplayStatus = {
 };
 
 const ACTIVE_PRODUCTION_ALIASES = new Set([
-  "Continue Production",
-  "Ready for Production",
   "Waiting for Production",
   "Production Pending",
   "In Production",
   "Running",
-  "Partially Produced",
   "Work Order",
 ]);
 
@@ -43,12 +40,15 @@ export function mapOperationalLabelToNoQtyDisplayLabel(operationalLabel: string)
   const lb = String(operationalLabel ?? "").trim();
   if (!lb) return "In Progress";
   if (lb === "Next Cycle" || lb === "Carry-forward Pending") return "Next Cycle Pending";
-  if (lb === "QC Pending") return "QC Pending";
+  if (lb === "QC Pending" || lb === "QA in progress") return "QC Pending";
+  if (lb === "Ready for Production" || lb === "Ready") return "Ready";
+  if (lb === "Continue" || lb === "Continue Production" || lb === "Partially Produced") return "Continue";
   if (DISPATCH_ALIASES.has(lb)) return "Waiting Dispatch";
   if (lb === "Carried Forward") return "Carried Forward";
   if (lb === "Production Complete" || lb === "Completed") return "Completed";
-  if (lb === "QA in progress" || lb === "QC Pending") return "QC Pending";
   if (lb === "Closed" || lb === "Closed Cycle") return "Closed";
+  if (lb === "Draft Pending") return "Draft Pending";
+  if (lb === "Paused") return "Paused";
   if (ACTIVE_PRODUCTION_ALIASES.has(lb)) return "In Progress";
   return lb;
 }

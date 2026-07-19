@@ -7,10 +7,12 @@ import { Card, CardContent } from "../components/ui/card";
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
 import { ErpRefreshingBadge } from "../components/erp/foundation/ErpRefreshingBadge";
 import { PendingActionBucketSkeleton } from "../components/erp/pending/PendingActionBucketSkeleton";
+import { RmAllowanceApprovalDetailModal } from "../components/erp/RmAllowanceApprovalDetailModal";
 import { useAuth } from "../hooks/useAuth";
 import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
 import { usePendingActionsPageData } from "../hooks/usePendingActionsPageData";
+import { bumpErpRefresh } from "../lib/erpRefresh";
 import { usePagePerf } from "../lib/performanceTiming";
 import {
   formatPendingActionAge,
@@ -24,8 +26,19 @@ import {
 import {
   groupPendingActionsIntoWorkBuckets,
   pendingActionsBucketNavigateState,
+  type PendingActionWorkBucket,
 } from "../lib/pendingActionsWorkBuckets";
+import {
+  RM_ALLOWANCE_APPROVAL_ACTION,
+  resolveAllowanceApprovalIdFromAction,
+} from "../lib/rmAllowanceApprovalApi";
 import { cn } from "../lib/utils";
+
+const RM_ALLOWANCE_APPROVAL_FOCUS = "rm-allowance-approval";
+
+function isRmAllowanceApprovalBucket(bucket: PendingActionWorkBucket): boolean {
+  return bucket.actionType === RM_ALLOWANCE_APPROVAL_ACTION;
+}
 
 type SortMode = "priority" | "age";
 
@@ -70,6 +83,7 @@ export function PendingActionsPage() {
   useListScrollRestoration();
   const navigate = useNavigate();
   const role = String(auth.user?.role ?? "").trim().toUpperCase();
+  const isAdmin = role === "ADMIN";
   const { patch, read } = useUrlQueryState({ sort: "priority" });
   const sortMode = read.enum("sort", ["priority", "age"] as const, "priority");
   const setSortMode = React.useCallback(
@@ -78,6 +92,30 @@ export function PendingActionsPage() {
   );
   const { firstLoadDone, initialLoading, refreshing, error, count, actions } = usePendingActionsPageData();
   usePagePerf("pending-actions", firstLoadDone, { role, count });
+
+  const focusParam = read.string("focus");
+  const allowanceApprovalIdParam = read.int("allowanceApprovalId", 0);
+  const activeAllowanceApprovalId =
+    isAdmin && focusParam === RM_ALLOWANCE_APPROVAL_FOCUS && allowanceApprovalIdParam > 0
+      ? allowanceApprovalIdParam
+      : null;
+
+  const openAllowanceApproval = React.useCallback(
+    (item: PendingAction) => {
+      const id = resolveAllowanceApprovalIdFromAction(item);
+      if (!id) return;
+      patch({ focus: RM_ALLOWANCE_APPROVAL_FOCUS, allowanceApprovalId: String(id) });
+    },
+    [patch],
+  );
+
+  const closeAllowanceApprovalModal = React.useCallback(() => {
+    patch({ focus: null, allowanceApprovalId: null });
+  }, [patch]);
+
+  const handleAllowanceApprovalDecided = React.useCallback(() => {
+    bumpErpRefresh("pending-actions");
+  }, []);
 
   const sorted = React.useMemo(() => sortActions(actions, sortMode), [actions, sortMode]);
   const buckets = React.useMemo(
@@ -168,7 +206,9 @@ export function PendingActionsPage() {
 
       {!showInitialBucketSkeleton && buckets.length > 0 ? (
         <div className="space-y-3" data-testid="pending-actions-buckets">
-          {buckets.map((bucket) => (
+          {buckets.map((bucket) => {
+            const isAllowanceBucket = isAdmin && isRmAllowanceApprovalBucket(bucket);
+            return (
             <div
               key={bucket.key}
               className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm"
@@ -185,14 +225,29 @@ export function PendingActionsPage() {
                     </span>
                   </div>
                   <ul className="mt-2 space-y-1 text-sm text-slate-800">
-                    {bucket.previewLines.map((line, idx) => (
-                      <li key={`${bucket.key}-${line.documentNo}-${idx}`} className="tabular-nums">
-                        <span className="font-medium">{line.documentNo}</span>
-                        {line.detail ? (
-                          <span className="ml-2 text-slate-600">{line.detail}</span>
-                        ) : null}
-                      </li>
-                    ))}
+                    {bucket.previewLines.map((line, idx) =>
+                      isAllowanceBucket && bucket.items[idx] ? (
+                        <li key={`${bucket.key}-${line.documentNo}-${idx}`} className="tabular-nums">
+                          <button
+                            type="button"
+                            className="text-left font-medium text-slate-900 underline-offset-2 hover:underline"
+                            onClick={() => openAllowanceApproval(bucket.items[idx])}
+                          >
+                            {line.documentNo}
+                          </button>
+                          {line.detail ? (
+                            <span className="ml-2 text-slate-600">{line.detail}</span>
+                          ) : null}
+                        </li>
+                      ) : (
+                        <li key={`${bucket.key}-${line.documentNo}-${idx}`} className="tabular-nums">
+                          <span className="font-medium">{line.documentNo}</span>
+                          {line.detail ? (
+                            <span className="ml-2 text-slate-600">{line.detail}</span>
+                          ) : null}
+                        </li>
+                      ),
+                    )}
                     {bucket.overflowCount > 0 ? (
                       <li className="text-slate-500">+{bucket.overflowCount} more…</li>
                     ) : null}
@@ -204,11 +259,15 @@ export function PendingActionsPage() {
                     size="sm"
                     variant="outline"
                     className="h-8 gap-1"
-                    onClick={() =>
+                    onClick={() => {
+                      if (isAllowanceBucket && bucket.items[0]) {
+                        openAllowanceApproval(bucket.items[0]);
+                        return;
+                      }
                       navigate(bucket.openHref, {
                         state: pendingActionsBucketNavigateState(bucket),
-                      })
-                    }
+                      });
+                    }}
                   >
                     {bucket.openLabel}
                     <ExternalLink className="h-3.5 w-3.5 opacity-60" aria-hidden />
@@ -216,8 +275,18 @@ export function PendingActionsPage() {
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
+      ) : null}
+
+      {isAdmin ? (
+        <RmAllowanceApprovalDetailModal
+          open={activeAllowanceApprovalId != null}
+          allowanceApprovalId={activeAllowanceApprovalId}
+          onClose={closeAllowanceApprovalModal}
+          onDecided={handleAllowanceApprovalDecided}
+        />
       ) : null}
     </PageContainer>
   );

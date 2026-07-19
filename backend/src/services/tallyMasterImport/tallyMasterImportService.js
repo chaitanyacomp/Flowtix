@@ -8,7 +8,12 @@ const { normalizeHsnOnSave } = require("../hsnNormalize");
 const { normalizeUnitKey } = require("../unitMaster");
 const { parseTallyMastersXml, strVal } = require("./parseTallyMastersXml");
 const { mapLedgerToParty, buildPartyMapDiagnostics, TALLY_IMPORT_PIPELINE_ID } = require("./mapLedgerToParty");
-const { mapStockItemToItem, mapTallyUnitMaster } = require("./mapStockItemToItem");
+const {
+  mapStockItemToItem,
+  mapTallyUnitMaster,
+  buildStockGroupTaxLookup,
+  resolveStockItemTaxFromStockGroups,
+} = require("./mapStockItemToItem");
 
 /** @typedef {"SKIP" | "UPDATE_EMPTY_FIELDS_ONLY"} DuplicateAction */
 /** @typedef {"RM" | "FG"} DefaultItemType */
@@ -705,9 +710,17 @@ async function buildPreviewPayload(db, xmlString, options) {
     }
   }
 
+  const stockGroupTaxLookup = buildStockGroupTaxLookup(parsed.stockGroups);
+
   for (const sRaw of parsed.stockItems) {
     const mi = mapStockItemToItem(sRaw, stockKeywordOpts);
     if (!mi) continue;
+    const tax = resolveStockItemTaxFromStockGroups(
+      { hsnCode: mi.hsnCode, gstRate: mi.gstRate, parentGroup: mi.parentGroup },
+      stockGroupTaxLookup,
+    );
+    const effectiveHsn = tax.hsnCode;
+    const effectiveGst = tax.gstRate;
     const nk = normalizeMasterNameKey(mi.itemName);
     const existing = itemByKey.get(nk);
     const rowWarnings = [];
@@ -724,27 +737,50 @@ async function buildPreviewPayload(db, xmlString, options) {
         reason: "Base unit missing in Tally stock item.",
       });
     }
-    if (!mi.hsnCode) {
+    if (!effectiveHsn) {
       pushFieldIssue(rowErrors, fieldIssues, {
         masterName: mi.itemName,
         masterType: "Item",
         field: "HSN",
-        actualValue: mi.hsnCode,
-        reason: "HSN missing in Tally stock item.",
+        actualValue: effectiveHsn,
+        reason: "HSN missing in Tally stock item and parent stock groups.",
       });
+    } else if (tax.hsnInheritedFrom) {
+      fieldIssues.push(
+        formatFieldIssue({
+          masterName: mi.itemName,
+          masterType: "Item",
+          field: "HSN",
+          actualValue: effectiveHsn,
+          reason: `HSN inherited from stock group ${tax.hsnInheritedFrom}.`,
+          disposition: "Inherited from STOCKGROUP",
+        }),
+      );
     }
 
-    const hsnNorm = mi.hsnCode ? normalizeHsnOnSave(mi.hsnCode) : null;
-    if (mi.hsnCode && !hsnNorm) {
+    const hsnNorm = effectiveHsn ? normalizeHsnOnSave(effectiveHsn) : null;
+    if (effectiveHsn && !hsnNorm) {
       pushFieldIssue(rowErrors, fieldIssues, {
         masterName: mi.itemName,
         masterType: "Item",
         field: "HSN",
-        actualValue: mi.hsnCode,
+        actualValue: effectiveHsn,
         reason: "HSN could not be normalized.",
       });
     }
-    const gstPct = normalizeGstRateForItem(mi.gstRate);
+    const gstPct = normalizeGstRateForItem(effectiveGst);
+    if (tax.gstInheritedFrom && gstPct != null) {
+      fieldIssues.push(
+        formatFieldIssue({
+          masterName: mi.itemName,
+          masterType: "Item",
+          field: "GST rate",
+          actualValue: gstPct,
+          reason: `GST rate inherited from stock group ${tax.gstInheritedFrom}.`,
+          disposition: "Inherited from STOCKGROUP",
+        }),
+      );
+    }
 
     const unitKey = mi.baseUnit ? normalizeUnitKey(mi.baseUnit) : "";
     const unitRow = unitKey ? tallyUnitsToImport.get(unitKey) : null;
@@ -762,7 +798,7 @@ async function buildPreviewPayload(db, xmlString, options) {
           gstEmpty ||
           isEmptyField(existing.unitId) ||
           isEmptyField(existing.unit);
-        const tallyHas = Boolean(hsnNorm) || mi.gstRate != null || Boolean(mi.baseUnit);
+        const tallyHas = Boolean(hsnNorm) || effectiveGst != null || Boolean(mi.baseUnit);
         proposedAction = empties && tallyHas ? "UPDATE_EMPTY_FIELDS" : "SKIP_DUPLICATE";
         if (proposedAction === "SKIP_DUPLICATE" && !empties) rowWarnings.push("Duplicate item name.");
       } else {
@@ -788,6 +824,7 @@ async function buildPreviewPayload(db, xmlString, options) {
       mapped: {
         itemName: normalizeMasterNameDisplay(mi.itemName),
         tallyStockGroup: mi.tallyStockGroup,
+        parentGroup: mi.parentGroup,
         autoDetectedItemType: mi.autoDetectedItemType,
         defaultItemType: options.defaultItemType,
         suggestedItemType,
@@ -795,6 +832,10 @@ async function buildPreviewPayload(db, xmlString, options) {
         baseUnit: mi.baseUnit ? normalizeMasterNameDisplay(mi.baseUnit) : "",
         hsnCode: hsnNorm,
         gstRate: gstPct,
+        hsnSource: tax.hsnSource,
+        gstSource: tax.gstSource,
+        hsnInheritedFrom: tax.hsnInheritedFrom,
+        gstInheritedFrom: tax.gstInheritedFrom,
         unitKey: unitKey || null,
         unitWillCreate: Boolean(unitRow && !erpUnit),
       },
@@ -899,10 +940,11 @@ async function buildPreviewPayload(db, xmlString, options) {
     runtime: {
       pipelineId: TALLY_IMPORT_PIPELINE_ID,
       pid: process.pid,
-      mapperModule: require.resolve("./mapLedgerToParty"),
-      parseModule: require.resolve("./parseTallyMastersXml"),
-      helpersModule: require.resolve("./tallyXmlListHelpers"),
-      gstinModule: require.resolve("../gstinNormalize"),
+      // Static module ids — do NOT use require.resolve() (breaks esbuild single-file server.js)
+      mapperModule: "tallyMasterImport/mapLedgerToParty",
+      parseModule: "tallyMasterImport/parseTallyMastersXml",
+      helpersModule: "tallyMasterImport/tallyXmlListHelpers",
+      gstinModule: "gstinNormalize",
     },
     ...(tallyImportDebug && partyDiagnostics.length ? { partyDiagnostics } : {}),
   };

@@ -115,7 +115,7 @@ describe("rmPurchaseWoContinuity", () => {
     expect(step.stageKey).toBe("START_PRODUCTION");
     expect(step.actionLabel).toBe("Start Production");
     expect(step.actionHref).toContain("/production");
-    expect(step.actionHref).toContain("woId=101");
+    expect(step.actionHref).toContain("workOrderId=101");
     expect(step.secondaryLabel).toBe("View Work Order");
   });
 

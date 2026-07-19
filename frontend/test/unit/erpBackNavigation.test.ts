@@ -96,7 +96,7 @@ describe("resolveERPBackTarget", () => {
     expect(target).toEqual({ to: "/dashboard", label: "Back to Dashboard" });
   });
 
-  it("resolves production-workspace return with bucket and work order", () => {
+  it("resolves production-workspace return to list bucket (not WO deep-link)", () => {
     const target = resolveERPBackTarget(
       {
         pathname: "/material-issue",
@@ -105,8 +105,9 @@ describe("resolveERPBackTarget", () => {
       },
       defaults,
     );
+    // Back from Material Issue restores the Production Workspace list filter, not a scoped WO route.
     expect(target).toEqual({
-      to: "/production?productionBucket=READY&workOrderId=99",
+      to: "/production?productionBucket=READY",
       label: "Back to Production Workspace",
     });
   });

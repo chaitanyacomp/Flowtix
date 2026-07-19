@@ -72,6 +72,8 @@ export function erpRefreshEventMatches(
 
 /**
  * Map successful mutation paths to refresh scopes (read-only GETs do not bump).
+ * Read-style POSTs (e.g. RM feasibility preview) must return [] — otherwise Work Order
+ * Planning soft-reloads itself in a continuous "Updating RM…" loop.
  */
 export function erpRefreshScopesForMutation(path: string, method: string): ErpRefreshScope[] {
   const m = String(method || "GET").toUpperCase();
@@ -80,6 +82,11 @@ export function erpRefreshScopesForMutation(path: string, method: string): ErpRe
   const p = String(path || "")
     .toLowerCase()
     .split("?")[0];
+
+  // Feasibility preview: POST body, no persisted mutation.
+  if (p.includes("/requirement-sheet") && p.includes("/execution/rm-preview")) {
+    return [];
+  }
 
   const scopes = new Set<ErpRefreshScope>(["reports", "dashboard"]);
 
@@ -95,6 +102,10 @@ export function erpRefreshScopesForMutation(path: string, method: string): ErpRe
   if (p.includes("material-return")) {
     scopes.add("pending-actions");
     scopes.add("stock");
+  }
+  if (p.includes("rm-allowance-approval")) {
+    scopes.add("pending-actions");
+    scopes.add("production");
   }
   if (p.includes("qc") || p.includes("scrap")) {
     scopes.add("qc");
@@ -115,6 +126,10 @@ export function erpRefreshScopesForMutation(path: string, method: string): ErpRe
     p.includes("/purchase")
   ) {
     scopes.add("stock");
+  }
+  if (p.includes("/boms")) {
+    scopes.add("requirement");
+    scopes.add("production");
   }
   if (
     p.includes("/sales-orders") ||

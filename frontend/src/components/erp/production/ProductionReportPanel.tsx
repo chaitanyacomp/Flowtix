@@ -15,7 +15,9 @@ import {
   type WastageDetailDraft,
   computeWastageClassificationBalance,
   isWastageClassificationComplete,
+  productionReportLeaveWarningMessage,
   resolveLiveWastageValidationMessage,
+  shouldBlockLeaveProductionReport,
   toWastageDetailPayload,
   validateWastageClassification,
 } from "../../../lib/productionWastageClassification";
@@ -26,13 +28,14 @@ import {
   saveProductionReportDraft,
   type ProductionReportLineInputDraft,
 } from "../../../lib/productionReportDraftCache";
+import {
+  computeRmLineWastageAllocation,
+  fmtRmQty,
+} from "../../../lib/productionReportRmAllocation";
 import { useUnsavedChangesGuard } from "../../../hooks/useUnsavedChangesGuard";
 
 function fmtQty(n: number | null | undefined): string {
-  const v = Number(n);
-  if (!Number.isFinite(v) || Math.abs(v) <= 1e-9) return "0";
-  const r = Math.round(v * 1000) / 1000;
-  return Math.abs(r - Math.round(r)) < 1e-9 ? String(Math.round(r)) : String(r);
+  return fmtRmQty(n);
 }
 
 function fmtWhen(iso: string | null | undefined): string {
@@ -49,11 +52,18 @@ function buildDefaultLineInputs(data: ProductionWorkOrderReport): Record<number,
   for (const ln of data.rmLines || []) {
     const consumed = Number(ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0);
     const issued = Number(ln.issuedQty ?? 0);
+    const runner = Number(ln.runnerWasteQty ?? 0);
+    const alloc = computeRmLineWastageAllocation({
+      issuedQty: issued,
+      consumedQty: consumed,
+      returnedQty: 0,
+      runnerWasteQty: runner,
+    });
     next[ln.itemId] = {
       rmConsumedQty: fmtQty(consumed),
       rmReturnQty: "0",
-      scrapWasteQty: fmtQty(Math.max(0, issued - consumed)),
-      varianceQty: fmtQty(issued - consumed),
+      scrapWasteQty: fmtQty(alloc.manualWasteQty),
+      varianceQty: fmtQty(alloc.unexplainedBalance),
       remarks: "",
     };
   }
@@ -103,17 +113,13 @@ export function ProductionReportPanel({
   const [lineInputs, setLineInputs] = React.useState<Record<number, LineInput>>({});
   const [wastageRows, setWastageRows] = React.useState<WastageDetailDraft[]>([]);
   const [remarks, setRemarks] = React.useState("");
+  const [remarksExpanded, setRemarksExpanded] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [recoveredDraft, setRecoveredDraft] = React.useState(false);
   const [localDirty, setLocalDirty] = React.useState(false);
   const skipDraftPersistRef = React.useRef(false);
-
-  useUnsavedChangesGuard({
-    isDirty: enableDraftCache && localDirty && !report?.confirmation?.confirmed,
-    message: "Production report has unsaved changes. Leave and discard them?",
-  });
 
   React.useEffect(() => {
     if (!workOrderId || workOrderId <= 0) {
@@ -188,20 +194,37 @@ export function ProductionReportPanel({
         const source = report?.rmLines.find((ln) => ln.itemId === itemId);
         const issued = Number(source?.issuedQty ?? 0);
         const consumedDefault = Number(source?.reportedConsumedQty ?? source?.ledgerConsumedQty ?? 0);
+        const runner = Number(source?.runnerWasteQty ?? 0);
+        const defaultAlloc = computeRmLineWastageAllocation({
+          issuedQty: issued,
+          consumedQty: consumedDefault,
+          returnedQty: 0,
+          runnerWasteQty: runner,
+        });
         const cur = prev[itemId] ?? {
           rmConsumedQty: fmtQty(consumedDefault),
           rmReturnQty: "0",
-          scrapWasteQty: "0",
-          varianceQty: fmtQty(issued - consumedDefault),
+          scrapWasteQty: fmtQty(defaultAlloc.manualWasteQty),
+          varianceQty: fmtQty(defaultAlloc.unexplainedBalance),
           remarks: "",
         };
         const next = { ...cur, [key]: value };
-        if (key === "rmReturnQty") {
+        if (key === "rmReturnQty" || key === "rmConsumedQty" || key === "scrapWasteQty") {
           const consumed = Number(next.rmConsumedQty) || 0;
-          const ret = Number(next.rmReturnQty) || 0;
-          const scrap = Math.max(0, issued - consumed - ret);
-          next.scrapWasteQty = fmtQty(scrap);
-          next.varianceQty = fmtQty(issued - consumed);
+          const returned = Number(next.rmReturnQty) || 0;
+          // Return/consumed changes re-open required allocation; refill manual wastage by default.
+          // Explicit scrap edits keep the typed manual qty and recompute unexplained only.
+          const alloc = computeRmLineWastageAllocation({
+            issuedQty: issued,
+            consumedQty: consumed,
+            returnedQty: returned,
+            runnerWasteQty: runner,
+            manualWasteQty: key === "scrapWasteQty" ? Number(next.scrapWasteQty) || 0 : null,
+          });
+          if (key !== "scrapWasteQty") {
+            next.scrapWasteQty = fmtQty(alloc.manualWasteQty);
+          }
+          next.varianceQty = fmtQty(alloc.unexplainedBalance);
         }
         return { ...prev, [itemId]: next };
       });
@@ -234,6 +257,62 @@ export function ProductionReportPanel({
 
   const confirmBlockedByWastage =
     totalWastageQty > 1e-6 && !isWastageClassificationComplete(wastageBalance, wastageRows);
+
+  const rmTotals = React.useMemo(() => {
+    if (!report?.rmLines?.length) {
+      return { issued: 0, accounted: 0, unexplained: 0, unit: "Kg" };
+    }
+    let issued = 0;
+    let accounted = 0;
+    let unexplained = 0;
+    for (const ln of report.rmLines) {
+      const issuedQty = Number(ln.issuedQty ?? 0);
+      issued += issuedQty;
+      if (reportConfirmed) {
+        const confirmedLine = report.confirmation?.lines.find((r) => r.itemId === ln.itemId);
+        const consumedQty = Number(confirmedLine?.rmConsumedQty ?? ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0);
+        const returnedQty = Number(confirmedLine?.rmReturnQty ?? 0);
+        const wasteQty = Number(confirmedLine?.scrapWasteQty ?? 0);
+        accounted += consumedQty + returnedQty + wasteQty;
+        unexplained += issuedQty - consumedQty - returnedQty - wasteQty;
+      } else {
+        const input = lineInputs[ln.itemId];
+        const consumedQty = Number(input?.rmConsumedQty ?? ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0);
+        const returnedQty = Number(input?.rmReturnQty ?? 0);
+        const wasteQty = Number(ln.runnerWasteQty ?? 0) + Number(input?.scrapWasteQty ?? 0);
+        accounted += consumedQty + returnedQty + wasteQty;
+        unexplained += issuedQty - consumedQty - returnedQty - wasteQty;
+      }
+    }
+    const unit = report.rmLines.find((ln) => ln.unit)?.unit?.trim() || "Kg";
+    return {
+      issued,
+      accounted: Number(fmtQty(accounted)),
+      unexplained: Number(fmtQty(unexplained)),
+      unit,
+    };
+  }, [lineInputs, report, reportConfirmed]);
+
+  const confirmBlockedByUnexplained = Math.abs(rmTotals.unexplained) > 1e-6;
+  const confirmBlocked = confirmBlockedByWastage || confirmBlockedByUnexplained;
+
+  const leaveBlocked =
+    enableDraftCache &&
+    shouldBlockLeaveProductionReport({
+      confirmed: reportConfirmed,
+      localDirty,
+      totalWastageQty,
+      wastageRows,
+    });
+
+  useUnsavedChangesGuard({
+    isDirty: leaveBlocked,
+    message: productionReportLeaveWarningMessage({
+      localDirty,
+      totalWastageQty,
+      wastageRows,
+    }),
+  });
 
   const wastageFooterFeedback = React.useMemo(() => {
     if (reportConfirmed || !(totalWastageQty > 1e-6)) return null;
@@ -275,6 +354,7 @@ export function ProductionReportPanel({
             itemId: ln.itemId,
             rmConsumedQty: Number(input?.rmConsumedQty ?? ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0),
             rmReturnQty: Number(input?.rmReturnQty ?? 0),
+            scrapWasteQty: Number(input?.scrapWasteQty ?? 0),
             remarks: input?.remarks || null,
           };
         }),
@@ -349,8 +429,12 @@ export function ProductionReportPanel({
             <th className={cn("px-2 text-right", compact ? "w-[4.25rem] py-0.5" : "py-1")}>Issued</th>
             <th className={cn("px-2 text-right", compact ? "w-[4.25rem] py-0.5" : "py-1")}>Consumed</th>
             <th className={cn("px-2 text-right", compact ? "w-[5rem] py-0.5" : "py-1")}>Returned</th>
-            <th className={cn("px-2 text-right", compact ? "w-[4.75rem] py-0.5" : "py-1")}>Total Wastage</th>
-            <th className={cn("px-2 text-right", compact ? "w-[4.25rem] py-0.5" : "py-1")}>Variance</th>
+            <th className={cn("px-2 text-right", compact ? "w-[4.75rem] py-0.5" : "py-1")}>
+              {compact ? "Wastage" : "Total Wastage"}
+            </th>
+            <th className={cn("px-2 text-right", compact ? "w-[5.5rem] py-0.5" : "py-1")}>
+              {compact ? "Unexplained Balance" : "Variance"}
+            </th>
             {!compact ? <th className="px-2 py-1 text-right">Returnable</th> : null}
             <th className={cn("px-2", compact ? "w-[6.5rem] py-0.5" : "py-1")}>Remarks</th>
           </tr>
@@ -366,6 +450,11 @@ export function ProductionReportPanel({
                 <td className={cn("px-2 font-medium", cellPy)}>
                   {ln.itemName}
                   {ln.unit ? <span className="ml-1 font-normal text-slate-500">{ln.unit}</span> : null}
+                  {Number(ln.runnerWasteQty ?? 0) > 0 ? (
+                    <span className="block text-[10px] font-normal text-slate-500" title="AUTO – Item Master">
+                      Runner wastage (auto): {fmtQty(ln.runnerWasteQty)} {ln.unit}
+                    </span>
+                  ) : null}
                 </td>
                 <td className={cn("px-2 text-right tabular-nums", cellPy)}>{fmtQty(ln.issuedQty)}</td>
                 <td className={cn("px-2 text-right tabular-nums", cellPy)}>
@@ -401,11 +490,11 @@ export function ProductionReportPanel({
                   className={cn(
                     "px-2 text-right tabular-nums",
                     cellPy,
-                    Number(variance ?? 0) > 0
-                      ? "text-rose-800"
-                      : Number(variance ?? 0) < 0
-                        ? "text-emerald-800"
-                        : "",
+                    Math.abs(Number(variance ?? 0)) <= 1e-6
+                      ? "text-slate-800"
+                      : Number(variance ?? 0) > 0
+                        ? "text-rose-800"
+                        : "text-emerald-800",
                   )}
                 >
                   {fmtQty(variance)}
@@ -456,25 +545,52 @@ export function ProductionReportPanel({
         rows={compact ? 2 : undefined}
       />
     </label>
-  ) : (
-    <label className="block text-[12px] font-semibold text-slate-700">
+  ) : remarksExpanded || remarks.trim() ? (
+    <label className="block text-[11px] font-semibold text-slate-700">
       Report remarks
       <textarea
-        className="mt-1 min-h-9 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-[13px] text-slate-900"
+        className="mt-0.5 min-h-8 w-full rounded border border-slate-300 px-2 py-1 text-[12px] text-slate-900"
         value={remarks}
         onChange={(e) => {
           setLocalDirty(true);
           setRemarks(e.target.value);
         }}
+        onBlur={() => {
+          if (!remarks.trim()) setRemarksExpanded(false);
+        }}
         disabled={confirmed}
         placeholder="Optional"
         rows={2}
+        autoFocus={remarksExpanded && !remarks.trim()}
       />
     </label>
+  ) : (
+    <button
+      type="button"
+      className="text-left text-[11px] font-semibold text-sky-800 underline-offset-2 hover:underline"
+      onClick={() => setRemarksExpanded(true)}
+      disabled={confirmed}
+      data-testid="production-report-add-remarks"
+    >
+      Add report remarks
+    </button>
   );
 
+  const footerStatusText = confirmed
+    ? "Report confirmed"
+    : confirmBlockedByUnexplained
+      ? `Unexplained balance ${fmtQty(Math.abs(rmTotals.unexplained))} ${rmTotals.unit}`
+      : confirmBlockedByWastage
+        ? wastageFooterFeedback?.message ?? "Classify wastage before close"
+        : `Balance ${fmtQty(rmTotals.unexplained)} ${rmTotals.unit} · Ready to close`;
+
   const confirmButton = !confirmed ? (
-    <div className={cn("shrink-0", isPremiumCompact || compact ? "w-full" : "space-y-1 sm:max-w-[16rem]")}>
+    <div
+      className={cn(
+        "shrink-0",
+        isPremiumCompact ? "w-auto" : isPremiumCompact || compact ? "w-full" : "space-y-1 sm:max-w-[16rem]",
+      )}
+    >
       {!isPremiumCompact && !compact && confirmHelperText ? (
         <p className="text-[10px] leading-snug text-slate-600">{confirmHelperText}</p>
       ) : null}
@@ -482,11 +598,13 @@ export function ProductionReportPanel({
         type="button"
         size={isPremiumCompact ? "default" : "sm"}
         className={cn(
-          isPremiumCompact ? "h-10 w-full text-[14px] font-semibold" : "w-full",
+          isPremiumCompact
+            ? "h-9 whitespace-nowrap px-4 text-[13px] font-semibold"
+            : "w-full",
           !isPremiumCompact && compact ? "h-9 text-[12px] font-semibold" : !isPremiumCompact ? "text-[12px]" : "",
         )}
         onClick={handleConfirm}
-        disabled={saving || confirmBlockedByWastage}
+        disabled={saving || confirmBlocked}
         data-testid="confirm-report-close-wo-btn"
       >
         {saving ? "Working…" : confirmButtonLabel ?? "Confirm Report"}
@@ -494,25 +612,36 @@ export function ProductionReportPanel({
     </div>
   ) : null;
 
-  /** Compact/premium: true 3-zone containment — header / scroll middle / pinned action footer. */
+  const fgUnit = report?.fgUnit?.trim() || "Nos";
+  const plannedQty = Number(report?.summary?.plannedQty ?? 0);
+  const producedQty = Number(report?.summary?.producedQty ?? 0);
+  const shortageExtraLabel =
+    producedQty + 1e-6 < plannedQty
+      ? `Short ${fmtQty(plannedQty - producedQty)}`
+      : producedQty > plannedQty + 1e-6
+        ? `Extra ${fmtQty(producedQty - plannedQty)}`
+        : "—";
+  const reportStatusLabel = confirmed ? "Confirmed" : "Report Pending";
+
+  /** Compact/premium: true 3-zone containment — header+strip / middle / pinned action footer. */
   if (compact) {
     return (
       <div
         className={cn(
-          "flex h-full min-h-0 max-h-[min(100%,calc(100dvh-11rem))] flex-1 flex-col overflow-hidden rounded-lg border border-slate-200/90 bg-white shadow-sm",
+          "flex h-full min-h-0 max-h-[min(100%,calc(100dvh-11rem))] flex-1 flex-col overflow-hidden rounded-lg border border-slate-200/90 bg-white shadow-sm max-[800px]:max-h-none",
           className,
         )}
         role="region"
         aria-label="Production report and RM consumption"
         data-testid="production-report-panel"
       >
-        {/* ZONE 1 — fixed header: title + RM summary */}
-        <div className="shrink-0 border-b border-slate-100 bg-slate-50/90 px-3 py-2" data-testid="production-report-header">
+        {/* ZONE 1 — fixed header + compact summary strip */}
+        <div className="shrink-0 border-b border-slate-100 bg-slate-50/90 px-2.5 py-1.5" data-testid="production-report-header">
           <div className="flex items-center justify-between gap-2">
             <div
               className={cn(
                 "font-semibold text-slate-900",
-                isPremiumCompact ? "text-[14px]" : "text-[12px]",
+                isPremiumCompact ? "text-[13px]" : "text-[12px]",
               )}
             >
               Production Report
@@ -530,6 +659,63 @@ export function ProductionReportPanel({
               </span>
             ) : null}
           </div>
+          {report?.hasApprovedProduction ? (
+            <dl
+              className="mt-1.5 grid grid-cols-4 gap-x-2 gap-y-1 rounded border border-slate-200 bg-white px-2 py-1 text-[10px] sm:grid-cols-7"
+              data-testid="production-report-summary-strip"
+            >
+              <div>
+                <dt className="font-semibold uppercase tracking-wide text-slate-500">Planned</dt>
+                <dd className="mt-0.5 font-bold tabular-nums text-slate-900">
+                  {fmtQty(plannedQty)} {fgUnit}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-semibold uppercase tracking-wide text-slate-500">Produced</dt>
+                <dd className="mt-0.5 font-bold tabular-nums text-slate-900">
+                  {fmtQty(producedQty)} {fgUnit}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-semibold uppercase tracking-wide text-slate-500">Shortage/Extra</dt>
+                <dd className="mt-0.5 font-bold tabular-nums text-slate-900">{shortageExtraLabel}</dd>
+              </div>
+              <div>
+                <dt className="font-semibold uppercase tracking-wide text-slate-500">RM Issued</dt>
+                <dd className="mt-0.5 font-bold tabular-nums text-slate-900">
+                  {fmtQty(rmTotals.issued)} {rmTotals.unit}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-semibold uppercase tracking-wide text-slate-500">Accounted</dt>
+                <dd className="mt-0.5 font-bold tabular-nums text-slate-900">
+                  {fmtQty(rmTotals.accounted)} {rmTotals.unit}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-semibold uppercase tracking-wide text-slate-500">Balance</dt>
+                <dd
+                  className={cn(
+                    "mt-0.5 font-bold tabular-nums",
+                    Math.abs(rmTotals.unexplained) <= 1e-6 ? "text-emerald-800" : "text-rose-800",
+                  )}
+                >
+                  {fmtQty(rmTotals.unexplained)} {rmTotals.unit}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-semibold uppercase tracking-wide text-slate-500">Status</dt>
+                <dd
+                  className={cn(
+                    "mt-0.5 font-bold",
+                    confirmed ? "text-emerald-800" : "text-amber-900",
+                  )}
+                >
+                  {reportStatusLabel}
+                </dd>
+              </div>
+            </dl>
+          ) : null}
         </div>
 
         {loading ? (
@@ -543,18 +729,18 @@ export function ProductionReportPanel({
         ) : (
           <>
             {rmTable ? (
-              <div className="shrink-0 space-y-1 border-b border-slate-100 px-2.5 py-2" data-testid="production-report-rm-zone">
+              <div className="shrink-0 space-y-1 border-b border-slate-100 px-2.5 py-1.5" data-testid="production-report-rm-zone">
                 {rmTable}
               </div>
             ) : null}
 
-            {/* ZONE 2 — middle: wastage scrolls internally; remarks stay above footer */}
+            {/* ZONE 2 — middle: bounded wastage; remarks compact above footer */}
             <div
-              className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-2.5 py-2"
+              className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden px-2.5 py-1.5"
               data-testid="production-report-scroll-body"
             >
               {showWastage ? (
-                <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="shrink-0">
                   <ProductionReportWastageDetails
                     wastageTypes={report.wastageTypes ?? []}
                     rows={wastageRows}
@@ -563,8 +749,8 @@ export function ProductionReportPanel({
                     readOnly={confirmed}
                     compact={compact}
                     hideInlineValidation={!confirmed}
-                    scrollableRows={!confirmed}
-                    fillAvailableHeight={!confirmed}
+                    scrollableRows={false}
+                    fillAvailableHeight={false}
                     onChange={(rows) => {
                       setLocalDirty(true);
                       setWastageRows(rows);
@@ -587,17 +773,30 @@ export function ProductionReportPanel({
               <div className="shrink-0">{remarksField}</div>
             </div>
 
-            {/* ZONE 3 — pinned footer: validation + Confirm only */}
+            {/* ZONE 3 — pinned footer: reconciliation status + Confirm */}
             <div
               className="shrink-0 border-t border-slate-200 bg-white px-2.5 py-2 shadow-[0_-4px_12px_-2px_rgba(15,23,42,0.08)]"
               data-testid="production-report-sticky-footer"
             >
-              <div className="flex flex-col gap-2">
-                {wastageFooterFeedback ? (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p
+                  className={cn(
+                    "min-w-0 flex-1 text-[12px] font-semibold tabular-nums",
+                    confirmed || !confirmBlocked
+                      ? "text-emerald-800"
+                      : confirmBlockedByUnexplained
+                        ? "text-rose-800"
+                        : "text-amber-900",
+                  )}
+                  data-testid="production-report-footer-status"
+                >
+                  {footerStatusText}
+                </p>
+                {wastageFooterFeedback && confirmBlockedByWastage && !confirmBlockedByUnexplained ? (
                   <p
                     className={cn(
-                      "rounded border px-2 py-1.5 font-medium",
-                      isPremiumCompact ? "text-[12px]" : "text-[11px]",
+                      "w-full rounded border px-2 py-1 font-medium sm:hidden",
+                      isPremiumCompact ? "text-[11px]" : "text-[11px]",
                       wastageFooterFeedback.tone,
                     )}
                     data-testid="production-wastage-validation"

@@ -171,6 +171,7 @@ function mapConfirmedReportRow(row) {
     plannedQty: round3(n(row.plannedQty)),
     producedQty: round3(n(row.producedQty)),
     remainingQty: round3(n(row.remainingQty)),
+    productionResult: row.productionResult ?? null,
     lines: (row.lines || []).map((ln) => ({
       id: ln.id,
       itemId: ln.itemId,
@@ -181,6 +182,7 @@ function mapConfirmedReportRow(row) {
       rmReturnQty: round3(n(ln.rmReturnQty)),
       scrapWasteQty: round3(n(ln.scrapWasteQty)),
       varianceQty: round3(n(ln.varianceQty)),
+      runnerWasteQty: round3(n(ln.runnerWasteQty)),
       remarks: ln.remarks ?? null,
     })),
     returnPendings: (row.returnPendings || []).map((p) => ({
@@ -220,7 +222,7 @@ async function loadConfirmedReport(db, workOrderId) {
         orderBy: { id: "asc" },
       },
       wastageDetails: {
-        include: { wastageType: { select: { id: true, code: true, name: true, category: true, isActive: true } } },
+        include: { wastageType: { select: { id: true, code: true, name: true, category: true, isActive: true } }, item: { select: { id: true, itemName: true, unit: true } } },
         orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
       },
     },
@@ -360,6 +362,23 @@ async function buildWorkOrderProductionReport(db = prisma, workOrderId) {
 
   const authorityByItem = aggregateRmAuthorityLines(batches);
   const authorityMap = new Map(authorityByItem.map((r) => [r.itemId, r]));
+  // BOM line baseQty already contains its allocated runner share. Recover that
+  // share for the report by applying the approved BOM runner/shot ratio to the
+  // immutable theoretical consumption snapshot; this does not add RM again.
+  const runnerWasteByItem = new Map();
+  for (const batch of batches) {
+    if (!batch.fgItemId) continue;
+    const bom = db.bom?.findFirst ? await db.bom.findFirst({
+      where: { fgItemId: batch.fgItemId, status: "APPROVED" },
+      orderBy: { revisionNo: "desc" },
+      select: { fgWeight: true, runnerWeight: true },
+    }) : null;
+    const shotWeight = n(bom?.fgWeight) + n(bom?.runnerWeight);
+    const runnerRatio = shotWeight > EPS ? n(bom?.runnerWeight) / shotWeight : 0;
+    for (const line of batch.rmLines || []) {
+      runnerWasteByItem.set(line.itemId, round3(n(runnerWasteByItem.get(line.itemId)) + n(line.standardQty) * runnerRatio));
+    }
+  }
 
   const rmLines = (rmLedger.lines || []).map((ln) => {
     const auth = authorityMap.get(ln.itemId);
@@ -372,9 +391,14 @@ async function buildWorkOrderProductionReport(db = prisma, workOrderId) {
       returnedQty: ln.returnedQty,
       returnableQty: ln.returnableQty,
       unusedQty: ln.unusedQty,
+      availableForContinuationQty: Math.max(
+        0,
+        round3(n(ln.grossIssuedQty) - n(ln.consumedQty) - n(ln.returnedQty)),
+      ),
       standardQty: auth?.standardQty ?? null,
       reportedConsumedQty: auth?.actualQty ?? null,
       varianceQty: auth?.varianceQty ?? null,
+      runnerWasteQty: runnerWasteByItem.get(ln.itemId) ?? 0,
     };
   });
 
@@ -389,9 +413,11 @@ async function buildWorkOrderProductionReport(db = prisma, workOrderId) {
       returnedQty: null,
       returnableQty: null,
       unusedQty: null,
+      availableForContinuationQty: null,
       standardQty: auth.standardQty,
       reportedConsumedQty: auth.actualQty,
       varianceQty: auth.varianceQty,
+      runnerWasteQty: runnerWasteByItem.get(auth.itemId) ?? 0,
     });
   }
   rmLines.sort((a, b) => a.itemId - b.itemId);
@@ -402,13 +428,10 @@ async function buildWorkOrderProductionReport(db = prisma, workOrderId) {
   const wastageTypes = db.wastageType?.findMany ? await listWastageTypes(db, { includeInactive: false }) : [];
   const totalWastageQty = confirmedReport
     ? round3((confirmedReport.lines || []).reduce((acc, ln) => acc + Math.max(0, n(ln.scrapWasteQty)), 0))
-    : round3(
-        (rmLines || []).reduce((acc, ln) => {
-          const issued = ln.issuedQty == null ? 0 : round3(n(ln.issuedQty));
-          const consumed = round3(n(ln.reportedConsumedQty ?? ln.ledgerConsumedQty ?? 0));
-          return acc + Math.max(0, issued - consumed);
-        }, 0),
-      );
+    : 0;
+  const rmAvailableForContinuation = round3(
+    (rmLines || []).reduce((acc, ln) => acc + Math.max(0, n(ln.availableForContinuationQty)), 0),
+  );
 
   return {
     workOrderId: wo.id,
@@ -448,6 +471,7 @@ async function buildWorkOrderProductionReport(db = prisma, workOrderId) {
     },
     batches,
     rmLines,
+    rmAvailableForContinuation,
     wastageTypes,
     totalWastageQty,
     confirmation: mapConfirmedReportRow(confirmedReport),
@@ -465,6 +489,15 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
 
   await assertProductionReportNotConfirmed(db, id);
   const report = await assertProductionReportHasApprovedEntries(db, id);
+  const openDraftCount = db.productionEntry?.count ? await db.productionEntry.count({
+    where: { workOrderLine: { workOrderId: id }, workflowStatus: "DRAFT" },
+  }) : 0;
+  if (openDraftCount > 0) {
+    const err = new Error("Cancel or finalize every editable production draft before confirming the Production Report.");
+    err.statusCode = 409;
+    err.code = "PRODUCTION_REPORT_OPEN_DRAFT";
+    throw err;
+  }
 
   const inputByItem = normalizeInputLines(input.lines);
   const lineCreates = [];
@@ -476,8 +509,10 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
         ? inputLine.rmConsumedQty
         : round3(n(rm.reportedConsumedQty ?? rm.ledgerConsumedQty ?? 0));
     const returnQty = round3(n(inputLine.rmReturnQty ?? 0));
-    const scrapWasteQty = round3(Math.max(0, issuedQty - consumedQty - returnQty));
-    const varianceQty = round3(issuedQty - consumedQty);
+    const manualWasteQty = round3(n(inputLine.scrapWasteQty ?? 0));
+    const runnerWasteQty = round3(n(rm.runnerWasteQty ?? 0));
+    const scrapWasteQty = round3(manualWasteQty + runnerWasteQty);
+    const varianceQty = round3(issuedQty - consumedQty - returnQty - scrapWasteQty);
 
     if (consumedQty < -EPS || returnQty < -EPS || scrapWasteQty < -EPS) {
       const err = new Error("Production Report quantities cannot be negative.");
@@ -489,9 +524,10 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
       err.statusCode = 400;
       throw err;
     }
-    if (issuedQty > EPS && consumedQty + returnQty + scrapWasteQty > issuedQty + EPS) {
-      const err = new Error(`Consumed + return + scrap exceeds issued qty for ${rm.itemName || rm.itemId}.`);
-      err.statusCode = 400;
+    if (Math.abs(varianceQty) > EPS) {
+      const err = new Error(`RM reconciliation is incomplete for ${rm.itemName || rm.itemId}: unexplained balance ${varianceQty} ${rm.unit || ""}. Allocate it to RM return and/or classified wastage before confirming.`);
+      err.statusCode = 409;
+      err.code = "PRODUCTION_REPORT_RM_RECONCILIATION_INCOMPLETE";
       throw err;
     }
 
@@ -501,6 +537,8 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
       rmConsumedQty: String(round3(consumedQty)),
       rmReturnQty: String(returnQty),
       scrapWasteQty: String(scrapWasteQty),
+      manualWasteQty,
+      runnerWasteQty: String(runnerWasteQty),
       varianceQty: String(varianceQty),
       remarks: inputLine.remarks ?? null,
       itemName: rm.itemName,
@@ -508,20 +546,33 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
     });
   }
 
-  const totalWastageQty = round3(lineCreates.reduce((acc, ln) => acc + n(ln.scrapWasteQty), 0));
+  const totalWastageQty = round3(lineCreates.reduce((acc, ln) => acc + n(ln.manualWasteQty), 0));
   const wastageUnit =
     lineCreates.find((ln) => n(ln.scrapWasteQty) > EPS && ln.unit)?.unit ||
     report.rmLines.find((ln) => ln.unit)?.unit ||
     "Kg";
   const wastageDetails = normalizeWastageDetailsInput(input.wastageDetails);
   if (wastageDetails.length > 0 && db.wastageType?.findMany) {
-    const activeTypeIds = new Set(
-      (await db.wastageType.findMany({ where: { isActive: true }, select: { id: true } })).map((row) => row.id),
-    );
+    const activeTypes = await db.wastageType.findMany({ where: { isActive: true }, select: { id: true, code: true, name: true } });
+    const activeTypeIds = new Set(activeTypes.map((row) => row.id));
+    const typeById = new Map(activeTypes.map((row) => [row.id, row]));
     for (const row of wastageDetails) {
       if (!activeTypeIds.has(row.wastageTypeId)) {
         const err = new Error("One or more wastage types are inactive or invalid.");
         err.statusCode = 400;
+        throw err;
+      }
+      const type = typeById.get(row.wastageTypeId);
+      if (/runner/i.test(`${type?.code || ""} ${type?.name || ""}`)) {
+        const err = new Error("Runner Wastage is calculated automatically from Item Master and cannot be entered manually.");
+        err.statusCode = 400;
+        err.code = "RUNNER_WASTAGE_MANUAL_FORBIDDEN";
+        throw err;
+      }
+      if (/^other$/i.test(String(type?.name || "").trim()) && !row.remarks) {
+        const err = new Error("Remarks are required for Other wastage.");
+        err.statusCode = 400;
+        err.code = "OTHER_WASTAGE_REMARKS_REQUIRED";
         throw err;
       }
     }
@@ -535,6 +586,7 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
       plannedQty: String(report.summary.plannedQty),
       producedQty: String(report.summary.producedQty),
       remainingQty: String(report.summary.remainderQty),
+      productionResult: report.summary.remainderQty > EPS ? "SHORTAGE" : report.summary.surplusQty > EPS ? "EXTRA" : "EQUAL",
       remarks: cleanRemarks(input.remarks),
       confirmedByUserId: actor.userId ?? actor.actorUserId ?? null,
       lines: {
@@ -545,18 +597,26 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
           rmReturnQty: ln.rmReturnQty,
           scrapWasteQty: ln.scrapWasteQty,
           varianceQty: ln.varianceQty,
+          runnerWasteQty: ln.runnerWasteQty,
           remarks: ln.remarks,
         })),
       },
       ...(wastageDetails.length > 0 && db.productionWorkOrderReportWastageDetail?.create
         ? {
             wastageDetails: {
-              create: wastageDetails.map((row, index) => ({
+              create: [
+                ...lineCreates.filter((line) => n(line.runnerWasteQty) > EPS).map((line, index) => ({
+                  wastageTypeId: null, itemId: line.itemId, source: "AUTO_ITEM_MASTER",
+                  qty: line.runnerWasteQty, remarks: "AUTO – Item Master", sortOrder: index,
+                })),
+                ...wastageDetails.map((row, index) => ({
                 wastageTypeId: row.wastageTypeId,
+                itemId: row.itemId ?? null,
+                source: "MANUAL_PRODUCTION",
                 qty: String(row.qty),
                 remarks: row.remarks,
-                sortOrder: row.sortOrder ?? index,
-              })),
+                sortOrder: row.sortOrder ?? lineCreates.length + index,
+              }))],
             },
           }
         : {}),

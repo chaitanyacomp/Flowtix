@@ -243,6 +243,32 @@ describe("buildOperationalSoActions", () => {
     expect(actions).toHaveLength(1);
     expect(actions[0]?.actionLabel).toBe("Issue RM to Production");
   });
+
+  it("routes AWAITING_RELEASE to production-release, not material-issue", () => {
+    const actions = buildOperationalSoActions(
+      [],
+      { rmShortageBlocking: [], purchaseGrnPending: [], readyForWoCreation: [] },
+      null,
+      [
+        {
+          workOrderId: 88,
+          workOrderNo: "WO-26-0008",
+          salesOrderId: 1,
+          salesOrderDocNo: "SO-26-0001",
+          primaryFgName: "Square Box",
+          operationalKey: "AWAITING_RELEASE",
+          operationalLabel: "Awaiting release to production",
+          nextActionKey: "RELEASE_TO_PRODUCTION",
+        },
+      ],
+    );
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.stageLabel).toBe("Awaiting release to production");
+    expect(actions[0]?.actionLabel).toBe("Release to Production");
+    expect(actions[0]?.actionTo).toContain("/production-release");
+    expect(actions[0]?.actionTo).toContain("workOrderId=88");
+    expect(actions[0]?.actionTo).not.toContain("/material-issue");
+  });
 });
 
 describe("resolvePurchaseExecutionCta", () => {

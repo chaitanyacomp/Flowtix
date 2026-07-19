@@ -67,6 +67,7 @@ const TITLES: Record<string, string> = {
   "/customer-returns/qc-hold": "Customer Return · Hold for Checking",
   "/customer-returns/rework": "Customer Return · Rework",
   "/admin/settings": "Admin settings",
+  "/admin/users": "Users",
   "/admin/company-profile": "Company Profile",
   "/admin/rate-contracts": "Rate contracts",
   "/admin/database-cleanup": "Database cleanup",

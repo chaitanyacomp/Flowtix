@@ -55,12 +55,19 @@ import {
   buildProductionWorkspaceListHref,
   productionHrefFromProductionWorkspace,
 } from "../lib/manufacturingNavigationContinuity";
+import { buildProductionWorkspaceOverviewHref } from "../lib/productionWorkspaceRouteContract";
+import {
+  isProductionReportCloseDecision,
+  shouldClearProductionReportTransition,
+  shouldForceProductionReportTransition,
+  shouldIgnoreClearedExecutionSummaryDuringReportTransition,
+} from "../lib/productionReportTransition";
 import { buildProductionScopedHref } from "../lib/productionNavigation";
 import {
   materialRequestsQueueHref,
   rmControlCenterHref,
 } from "../lib/materialWorkflowLinks";
-import { OperationalProductionWorkspace, PendingStoreTasksPanel } from "../components/erp/OperationalProductionWorkspace";
+import { OperationalProductionWorkspace } from "../components/erp/OperationalProductionWorkspace";
 import { ProductionWorkspaceStatusStrip } from "../components/erp/production/ProductionWorkspaceStatusStrip";
 import { ProductionExecutionPanel } from "../components/erp/production/ProductionExecutionPanel";
 import { ProductionReportPanel } from "../components/erp/production/ProductionReportPanel";
@@ -86,7 +93,9 @@ import {
   type ProductionExecutionClosedOutcome,
 } from "../lib/productionCompletionUx";
 import {
+  buildPostProductionReportCloseHref,
   buildProductionCloseSuccessToast,
+  shouldRedirectLegacyOrphanNoQtyProductionSearch,
 } from "../lib/productionCloseCompletionUx";
 import {
   coerceExecutionSummaryForWorkOrder,
@@ -108,6 +117,7 @@ import {
 } from "../components/erp/ProductionRmReadinessStrip";
 import { ProductionRmConsumptionReviewModal } from "../components/erp/ProductionRmConsumptionReviewModal";
 import type { DashboardProductionStatusSource } from "../lib/dashboardProductionStatus";
+import { canAcceptNewProductionEntry } from "../lib/productionActiveEligibility";
 import {
   resolveNoQtyCycleDisplayStatus,
   resolveNoQtyCycleDisplayStatusForWorkOrder,
@@ -140,12 +150,9 @@ import {
   hasExecutableProductionWork,
   pickFirstExecutableProductionLine,
   resolvePostProductionReportConfirmAdvance,
+  resolvePostProductionPauseAdvance,
   sortProductionLinesFifo,
 } from "../lib/productionWorkspaceQueue";
-import {
-  pickFreshExecutableProductionLine,
-  type ProductionReadinessFetchResult,
-} from "../lib/productionWorkspaceReadiness";
 import {
   inferProductionFlowFromLegacy,
   parseProductionFlowParam,
@@ -336,11 +343,13 @@ function resolveProductionRegularBack(args: {
   fromParam: string;
   sourceParam: string;
   fromStepParam?: string;
+  returnToParam?: string;
   salesOrderId: number;
   productionBucket?: string | null;
 }): { label: string; to: string } {
   const from = args.fromParam.trim().toLowerCase();
   const src = args.sourceParam.trim().toLowerCase();
+  const returnTo = String(args.returnToParam ?? "").trim().toLowerCase();
   const fromStep = (args.fromStepParam ?? "").trim().toLowerCase();
   const sid = args.salesOrderId;
   const soQs = sid > 0 ? `?salesOrderId=${encodeURIComponent(String(sid))}` : "";
@@ -356,6 +365,9 @@ function resolveProductionRegularBack(args: {
       label: "Back to Dispatch",
       to: sid > 0 ? `/dispatch?salesOrderId=${encodeURIComponent(String(sid))}` : "/dispatch",
     };
+  }
+  if (from === "pending-actions" || src === "pending-actions" || returnTo === "pending-actions") {
+    return { label: "Back to Pending Actions", to: "/pending-actions" };
   }
   if (from === "work-order-workspace")
     return { label: "Back to Work Order Workspace", to: "/work-orders" };
@@ -549,12 +561,16 @@ export function ProductionPage() {
     Number.isFinite(workOrderLineIdFromUrl) && workOrderLineIdFromUrl > 0;
   /** Deep-link WO/line in URL — authoritative; auto-pick and clear effects must not override. */
   const urlWoSelectionAuthority = woIdFromUrlValid || workOrderLineIdFromUrlValid;
-  /** Any scoped target in URL — not bare sidebar Production Workspace entry. */
+  /**
+   * Scoped shop-floor target in URL — not left-menu / Pending Actions overview.
+   * `from=pending-actions` alone (with optional productionBucket) is an unscoped overview;
+   * only WO/SO/flow pins force scoped mode.
+   */
   const productionScopedDeepLink =
     searchParams.get("fromDashboard") === "1" ||
-    fromPendingActions ||
     urlWoSelectionAuthority ||
-    focusSoIdValid;
+    focusSoIdValid ||
+    fromNoQtySo;
 
   const [workOrders, setWorkOrders] = React.useState<WoRow[]>([]);
   const [entries, setEntries] = React.useState<ProdEntryRow[]>([]);
@@ -776,6 +792,19 @@ export function ProductionPage() {
   const [rowBusy, setRowBusy] = React.useState<number | null>(null);
   const [reverseModalEntry, setReverseModalEntry] = React.useState<ProdEntryRow | null>(null);
   const [consumptionApproveId, setConsumptionApproveId] = React.useState<number | null>(null);
+  type RemainingDisposition = "CONTINUE" | "PAUSE" | "END_WITH_SHORTAGE";
+  type ApprovalExtras = { remainingDisposition?: RemainingDisposition; pauseReason?: string; dispositionRemarks?: string | null };
+  const [consumptionApprovalExtras, setConsumptionApprovalExtras] = React.useState<ApprovalExtras>({});
+  const [reviewFinalizeEntryId, setReviewFinalizeEntryId] = React.useState<number | null>(null);
+  const [reviewDisposition, setReviewDisposition] = React.useState<RemainingDisposition>("CONTINUE");
+  const [reviewPauseReason, setReviewPauseReason] = React.useState("MACHINE_BREAKDOWN");
+  const [reviewRemarks, setReviewRemarks] = React.useState("");
+  /** Sticky gate: End/Equal/Extra finalize → report. Blocks Continue/runner flash until report layout mounts. */
+  const [productionReportTransitionWoId, setProductionReportTransitionWoId] = React.useState(0);
+  const productionReportTransitionWoIdRef = React.useRef(0);
+  React.useEffect(() => {
+    productionReportTransitionWoIdRef.current = productionReportTransitionWoId;
+  }, [productionReportTransitionWoId]);
   const [reverseQtyDraft, setReverseQtyDraft] = React.useState("");
   const [reverseReasonDraft, setReverseReasonDraft] = React.useState("");
   const [reverseModalError, setReverseModalError] = React.useState<string | null>(null);
@@ -796,6 +825,33 @@ export function ProductionPage() {
     resetProducedQtyField();
   }, [resetProducedQtyField]);
 
+  /** Left-menu / PA overview: drop stale WO selection so Active Production is primary. */
+  React.useEffect(() => {
+    const overview =
+      !urlWoSelectionAuthority &&
+      !focusSoIdValid &&
+      !fromNoQtySo &&
+      searchParams.get("fromDashboard") !== "1";
+    if (!overview) return;
+    if (woId === 0 && wolId === 0 && userLockedFlowMode == null) {
+      urlSelectionAppliedRef.current = false;
+      return;
+    }
+    clearWoLineSelection({ force: true });
+    resetScopedProductionWorkspaceState();
+    urlSelectionAppliedRef.current = false;
+  }, [
+    urlWoSelectionAuthority,
+    focusSoIdValid,
+    fromNoQtySo,
+    searchParams,
+    woId,
+    wolId,
+    userLockedFlowMode,
+    clearWoLineSelection,
+    resetScopedProductionWorkspaceState,
+  ]);
+
   React.useEffect(() => {
     if (!woIdFromUrlValid || woIdFromUrlPick <= 0) return;
     const woRow = workOrders.find((w) => w.id === woIdFromUrlPick);
@@ -809,7 +865,14 @@ export function ProductionPage() {
     if (action === "redirect_dashboard") {
       resetScopedProductionWorkspaceState();
       clearWoLineSelection({ force: true });
-      navigate(buildProductionWorkspaceListHref({ productionBucket: productionBucketFilter }), { replace: true });
+      navigate(
+        buildPostProductionReportCloseHref({
+          from: searchParams.get("from"),
+          returnTo: searchParams.get("returnTo"),
+          source: searchParams.get("source"),
+        }),
+        { replace: true },
+      );
     }
   }, [
     woIdFromUrlValid,
@@ -819,8 +882,22 @@ export function ProductionPage() {
     navigate,
     resetScopedProductionWorkspaceState,
     clearWoLineSelection,
-    productionBucketFilter,
+    searchParams,
   ]);
+
+  /** Orphan NO_QTY URLs (no SO/WO) render the obsolete Select-WO screen — send them to Ready to Start. */
+  React.useEffect(() => {
+    if (!initialRefreshDone) return;
+    if (!shouldRedirectLegacyOrphanNoQtyProductionSearch(searchParams)) return;
+    navigate(
+      buildPostProductionReportCloseHref({
+        from: searchParams.get("from"),
+        returnTo: searchParams.get("returnTo"),
+        source: searchParams.get("source"),
+      }),
+      { replace: true },
+    );
+  }, [initialRefreshDone, searchParams, navigate]);
 
   const [noQtyShortageHistorySheets, setNoQtyShortageHistorySheets] = React.useState<NoQtyShortageHistorySheet[]>([]);
   const [noQtyShortageHistoryWorkOrders, setNoQtyShortageHistoryWorkOrders] = React.useState<WoRow[]>([]);
@@ -925,6 +1002,14 @@ export function ProductionPage() {
 
   const handleScopedWoExecutionSummaryChange = React.useCallback(
     (summary: ProductionExecutionSummary | null) => {
+      if (
+        shouldIgnoreClearedExecutionSummaryDuringReportTransition({
+          transitionWorkOrderId: productionReportTransitionWoIdRef.current,
+          summary,
+        })
+      ) {
+        return;
+      }
       handleScopedExecutionSummaryChange(summary, effectiveScopedWoId);
     },
     [handleScopedExecutionSummaryChange, effectiveScopedWoId],
@@ -1126,6 +1211,8 @@ export function ProductionPage() {
 
   const openProductionFromWorkspace = React.useCallback(
     (row: DashboardProductionStatusSource) => {
+      // Terminal-for-production WOs stay out of Active Production; never reopen editable entry.
+      if (!canAcceptNewProductionEntry(row)) return;
       resetScopedProductionWorkspaceState();
       const href = productionHrefFromProductionWorkspace({
         orderType: row.orderType,
@@ -1741,6 +1828,9 @@ export function ProductionPage() {
       effectiveScopedWoId,
       { allowCarryForwardContinue: noQtyAllowShopFloorContinue },
     );
+    const siblingActionableProductionCount = noQtyAutoPickLines.filter(
+      (l) => effectiveScopedWoId <= 0 || Number(l.workOrderId) !== Number(effectiveScopedWoId),
+    ).length;
     return shouldHideNoQtyAddProductionEntry({
       navigateNoQtyContext,
       showNoQtyScopedProductionCard,
@@ -1753,6 +1843,7 @@ export function ProductionPage() {
       currentWoHasProducibleLine,
       currentWoHasApprovedProduction,
       currentWoIsClosed: isScopedWorkOrderClosed(scopedWoRow?.status),
+      siblingActionableProductionCount,
     });
   }, [
     navigateNoQtyContext,
@@ -1763,7 +1854,7 @@ export function ProductionPage() {
     noQtyWorkbenchSoId,
     workOrders,
     noQtyLineProducibility,
-    noQtyAutoPickLines.length,
+    noQtyAutoPickLines,
     noQtyNextRsReady,
     noQtyBlockProductionEntry,
     noQtyPendingShortfallDecision,
@@ -1795,7 +1886,12 @@ export function ProductionPage() {
     noQtyLineProducibility,
   ]);
 
-  const hideScopedProductionEntry = hideNoQtyAddProductionEntry;
+  const forceProductionReportTransition = shouldForceProductionReportTransition({
+    transitionWorkOrderId: productionReportTransitionWoId,
+    effectiveScopedWoId,
+  });
+
+  const hideScopedProductionEntry = hideNoQtyAddProductionEntry || forceProductionReportTransition;
 
   const greenLevelProductionQueueRows = React.useMemo(
     () =>
@@ -2002,16 +2098,6 @@ export function ProductionPage() {
     ],
   );
 
-  const fetchFreshProductionRmReadiness = React.useCallback(
-    async (workOrderLineId: number): Promise<ProductionReadinessFetchResult> => {
-      if (!(workOrderLineId > 0)) return null;
-      return apiFetch<ProductionReadinessFetchResult>(
-        `/api/production/work-order-lines/${workOrderLineId}/rm-readiness?fresh=${Date.now()}`,
-      );
-    },
-    [],
-  );
-
   const returnToProductionWorkspaceDashboard = React.useCallback(
     (opts?: { refreshAfter?: boolean }) => {
       if (productionCloseReturnTimerRef.current != null) {
@@ -2023,7 +2109,15 @@ export function ProductionPage() {
       urlWoSelectionAuthorityRef.current = false;
       setUserLockedFlowMode(null);
       resetScopedProductionWorkspaceState();
-      navigate(buildProductionWorkspaceListHref({ productionBucket: productionBucketFilter }), { replace: true });
+      // Navigate FIRST to card workspace Ready to Start — never orphan NO_QTY Select-WO URLs.
+      navigate(
+        buildPostProductionReportCloseHref({
+          from: searchParams.get("from"),
+          returnTo: searchParams.get("returnTo"),
+          source: searchParams.get("source"),
+        }),
+        { replace: true },
+      );
       if (opts?.refreshAfter) {
         bumpErpRefresh([...PRODUCTION_REPORT_CONFIRM_REFRESH_SCOPES]);
         void refresh().then(() => {
@@ -2031,20 +2125,16 @@ export function ProductionPage() {
         });
       }
     },
-    [clearWoLineSelection, navigate, resetScopedProductionWorkspaceState, refresh, productionBucketFilter],
+    [clearWoLineSelection, navigate, resetScopedProductionWorkspaceState, refresh, searchParams],
   );
 
   const handleProductionExecutionClosed = React.useCallback(
     async (payload: { workOrderId: number; outcome: ProductionExecutionClosedOutcome }) => {
-      resetScopedProductionWorkspaceState();
-      bumpErpRefresh([...PRODUCTION_REPORT_CONFIRM_REFRESH_SCOPES]);
-      await refresh();
-      setExecutionPanelRefreshTick((t) => t + 1);
-
+      // Navigate to Ready to Start before refresh so mid-refresh never paints legacy NO_QTY chrome.
       toast.showSuccess(buildProductionCloseSuccessToast(payload.outcome));
       returnToProductionWorkspaceDashboard({ refreshAfter: true });
     },
-    [refresh, toast, returnToProductionWorkspaceDashboard, resetScopedProductionWorkspaceState],
+    [toast, returnToProductionWorkspaceDashboard],
   );
 
   const handleProductionReportConfirmed = React.useCallback(
@@ -2058,6 +2148,20 @@ export function ProductionPage() {
 
       const confirmedWoRow = workOrders.find((w) => w.id === confirmedWoId);
       const woLabel = displayWorkOrderNo(confirmedWoId, confirmedWoRow?.docNo ?? null);
+      const closedByConfirm = Boolean(meta.executionCloseOutcome);
+
+      // WO closed via Confirm Report & Close WO — never auto-open another WO or keep NO_QTY runner.
+      if (closedByConfirm) {
+        toast.showSuccess(buildProductionCloseSuccessToast(
+          String(meta.executionCloseOutcome).toUpperCase() === "CARRY_FORWARD"
+            ? "CARRY_FORWARD"
+            : String(meta.executionCloseOutcome).toUpperCase() === "SURPLUS"
+              ? "SURPLUS"
+              : "COMPLETE",
+        ));
+        returnToProductionWorkspaceDashboard({ refreshAfter: true });
+        return;
+      }
 
       bumpErpRefresh([...PRODUCTION_REPORT_CONFIRM_REFRESH_SCOPES]);
 
@@ -2075,8 +2179,14 @@ export function ProductionPage() {
         requiresShortfallDecision: navigateGreenLevelContext
           ? false
           : meta.requiresShortfallDecision,
-        forceAdvanceFromConfirmedWorkOrder: Boolean(meta.executionCloseOutcome),
+        forceAdvanceFromConfirmedWorkOrder: false,
       });
+
+      if (advance.kind === "workspace") {
+        toast.showSuccess(`Production report confirmed for ${woLabel}.`);
+        returnToProductionWorkspaceDashboard({ refreshAfter: true });
+        return;
+      }
 
       if (advance.kind === "stay") {
         toast.showSuccess(`Production report confirmed for ${woLabel}.`);
@@ -2091,60 +2201,18 @@ export function ProductionPage() {
         return;
       }
 
+      // Non-close advance with another executable WO (rare) — still prefer card workspace over legacy NO_QTY.
       toast.showSuccess(`Production report confirmed for ${woLabel}.`);
-      clearWoLineSelection({ force: true });
-      urlSelectionAppliedRef.current = false;
-      urlWoSelectionAuthorityRef.current = false;
-
-      const params = new URLSearchParams(searchParams);
-      params.delete("workOrderId");
-      params.delete("woId");
-      params.delete("workOrderLineId");
-      if (navigateNoQtyContext) {
-        params.set("source", "no_qty_so");
-        const soId = noQtyWorkbenchSoId > 0 ? noQtyWorkbenchSoId : focusSoIdValid ? focusSoId : 0;
-        if (soId > 0) params.set("salesOrderId", String(soId));
-        if (effectiveNoQtyCycleId != null && Number(effectiveNoQtyCycleId) > 0) {
-          params.set("cycleId", String(effectiveNoQtyCycleId));
-        }
-      }
-
-      const freshAdvance = await pickFreshExecutableProductionLine(
-        queueLines.filter((line) => line.workOrderId !== confirmedWoId),
-        fetchFreshProductionRmReadiness,
-        productionQueueByLineId,
-      );
-
-      if (freshAdvance?.line) {
-        const fullLine = nextFlat.find((l) => l.id === freshAdvance.line.id);
-        if (fullLine) {
-          setSeededRmReadiness(freshAdvance.readiness);
-          setRmReadiness(freshAdvance.readiness);
-          setRmReadinessLoading(false);
-          setRmReadinessRefreshTick((t) => t + 1);
-          openExecutableProductionLine(fullLine);
-          return;
-        }
-      }
-
-      navigate(`/production?${params.toString()}`, { replace: true });
+      returnToProductionWorkspaceDashboard({ refreshAfter: true });
     },
     [
       effectiveScopedWoId,
       workOrders,
       refresh,
       toast,
-      clearWoLineSelection,
-      searchParams,
-      navigateNoQtyContext,
-      noQtyWorkbenchSoId,
-      focusSoIdValid,
-      focusSoId,
-      effectiveNoQtyCycleId,
-      fetchFreshProductionRmReadiness,
+      returnToProductionWorkspaceDashboard,
+      navigateGreenLevelContext,
       openExecutableProductionLine,
-      navigate,
-      productionQueueByLineId,
     ],
   );
 
@@ -2215,7 +2283,7 @@ export function ProductionPage() {
   const [rmReadiness, setRmReadiness] = React.useState<ProductionRmReadiness | null>(null);
   const [rmReadinessLoading, setRmReadinessLoading] = React.useState(false);
   const [seededRmReadiness, setSeededRmReadiness] = React.useState<ProductionRmReadiness | null>(null);
-  const [rmReadinessRefreshTick, setRmReadinessRefreshTick] = React.useState(0);
+  const [rmReadinessRefreshTick] = React.useState(0);
   const isNoQtyProductionFlow =
     fromNoQtySo || productionFlowMode === "NO_QTY" || navigateNoQtyContext;
   const showRegularRmReadiness = wolId > 0 && isRegularFlow;
@@ -2562,11 +2630,18 @@ export function ProductionPage() {
     return fromQueue > 1e-6 ? fromQueue : null;
   }, [productionFlowMode, woId, selected?.workOrderId, noQtyProductionQueue]);
 
+  const [recentEntriesScope, setRecentEntriesScope] = React.useState<"CURRENT_WO" | "GLOBAL">("CURRENT_WO");
+
   const visibleEntries = React.useMemo(() => {
-    if (entryFilter === "ALL") return entries;
-    if (entryFilter === "DRAFT") return entries.filter((e) => isDraft(e));
-    return entries.filter((e) => isApproved(e));
-  }, [entries, entryFilter]);
+    let list = entries;
+    // Default Recent Entries / runner history to the scoped WO only (stable WO id).
+    if (recentEntriesScope === "CURRENT_WO" && effectiveScopedWoId > 0) {
+      list = list.filter((e) => Number(e.workOrderLine?.workOrder?.id ?? 0) === effectiveScopedWoId);
+    }
+    if (entryFilter === "ALL") return list;
+    if (entryFilter === "DRAFT") return list.filter((e) => isDraft(e));
+    return list.filter((e) => isApproved(e));
+  }, [entries, entryFilter, recentEntriesScope, effectiveScopedWoId]);
 
   const noQtyProductionStatusMsg = React.useMemo(() => {
     if (!navigateNoQtyContext || !focusSoIdValid) return "";
@@ -2809,6 +2884,30 @@ export function ProductionPage() {
 
   const productionWorkspaceWoSummary = showProductionWorkspaceCompactLayout ? hardenedWoSummary : null;
 
+  const productionReportClosureReady =
+    showProductionWorkspaceCompactLayout &&
+    showProductionReport &&
+    Boolean(hardenedWoSummary);
+
+  /** Single stable surface while Finalize→Report settles — never the Continue runner. */
+  const showOpeningProductionReportGate =
+    forceProductionReportTransition && !productionReportClosureReady;
+
+  React.useEffect(() => {
+    if (
+      shouldClearProductionReportTransition({
+        transitionWorkOrderId: productionReportTransitionWoId,
+        showProductionReport,
+        showCompactClosureLayout: productionReportClosureReady,
+      })
+    ) {
+      // Defer clear one frame so the compact report layout paints before gate drops.
+      const t = window.setTimeout(() => setProductionReportTransitionWoId(0), 0);
+      return () => window.clearTimeout(t);
+    }
+    return undefined;
+  }, [productionReportTransitionWoId, showProductionReport, productionReportClosureReady]);
+
   const qcBannerHref = React.useMemo(() => {
     if (qcBannerSoId <= 0) return "";
     const ot =
@@ -2844,15 +2943,33 @@ export function ProductionPage() {
     canProd &&
     Boolean(selected);
 
+  /**
+   * Partial production rule: finalized entry QC must not dead-end the process screen when
+   * an executable remaining balance remains (Continue Production).
+   */
+  const hasExecutableRemainingBalance = Boolean(
+    selectedMetrics &&
+      selectedMetrics.remainingQty > 1e-6 &&
+      canProd &&
+      !woProductionLifecycleBlocked &&
+      !rmProductionEntryBlocked &&
+      !latestDraftForSelectedWoLine,
+  );
+
   /** One primary QC / dispatch CTA surface — suppress in-card duplicates when the top strip is shown. */
   const showRegularQcNextStrip = Boolean(
-    !navigateNoQtyContext && selectedWoQcPending && (regularQcBannerHref || !canOpenQaFromProduction),
+    !navigateNoQtyContext &&
+      selectedWoQcPending &&
+      (regularQcBannerHref || !canOpenQaFromProduction) &&
+      !hasExecutableRemainingBalance,
   );
   const showNoQtyQcNextStrip = Boolean(
     navigateNoQtyContext &&
       showQcNextBanner &&
       (qcBannerHref || !canOpenQaFromProduction) &&
-      !hideTopQcNextStrip,
+      !hideTopQcNextStrip &&
+      !hasExecutableRemainingBalance &&
+      !(noQtyAllowShopFloorContinue && selectedMetrics && selectedMetrics.remainingQty > 1e-6),
   );
   const showTopQcNextStrip = showRegularQcNextStrip || showNoQtyQcNextStrip;
   const suppressDuplicateQcWorkflowUi = showTopQcNextStrip;
@@ -2952,19 +3069,24 @@ export function ProductionPage() {
       if (fromState > 0) soScopeId = fromState;
     }
     const soScopeQs = soScopeId > 0 && !navigateGreenLevelContext ? `&salesOrderId=${soScopeId}` : "";
+    const scopedWoForEntries =
+      recentEntriesScope === "CURRENT_WO" && effectiveScopedWoId > 0 ? effectiveScopedWoId : 0;
+    const entriesQs = (() => {
+      const params = new URLSearchParams();
+      if (scopedWoForEntries > 0) {
+        params.set("workOrderId", String(scopedWoForEntries));
+      } else if (navigateNoQtyContext && focusSoIdValid) {
+        params.set("salesOrderId", String(focusSoId));
+        if (effectiveNoQtyCycleId != null) {
+          params.set("cycleId", String(effectiveNoQtyCycleId));
+        }
+      }
+      const q = params.toString();
+      return q ? `?${q}` : "";
+    })();
     const [w, e] = await Promise.all([
       apiFetch<WoRow[]>(`/api/production/work-orders?pendingOnly=1${includeQs}${soScopeQs}`),
-      apiFetch<ProdEntryRow[]>(
-        `/api/production/production-entries${
-          navigateNoQtyContext && focusSoIdValid
-            ? `?salesOrderId=${focusSoId}${
-                effectiveNoQtyCycleId != null
-                  ? `&cycleId=${encodeURIComponent(String(effectiveNoQtyCycleId))}`
-                  : ""
-              }`
-            : ""
-        }`,
-      ),
+      apiFetch<ProdEntryRow[]>(`/api/production/production-entries${entriesQs}`),
     ]);
     setWorkOrders((prev) => {
       const prevSig = prev
@@ -3023,6 +3145,15 @@ export function ProductionPage() {
       .finally(() => setInitialRefreshDone(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productionFlowMode, focusSoIdValid, noQtyWorkbenchSoId, focusSoId, effectiveNoQtyCycleId, liveTick]);
+
+  // Recent Entries scope toggle (current WO vs loaded SO/cycle history).
+  React.useEffect(() => {
+    if (!initialRefreshDone) return;
+    void refresh().catch(() => {
+      /* refresh sets its own error */
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recentEntriesScope, effectiveScopedWoId]);
 
   // When scoped to a confirmed NO_QTY SO, show a context-aware empty state if nothing is eligible.
   React.useEffect(() => {
@@ -3406,17 +3537,141 @@ export function ProductionPage() {
     _id: number,
     approvedRow: ProdEntryRow | undefined,
     consumptionWarnings?: string[],
+    approvalExtras: ApprovalExtras = {},
+    remainingDispositionResult?: { outcome?: string; summary?: ProductionExecutionSummary | null } | null,
   ) {
     setEditing(null);
     setNoQtyRmShortage(null);
     const approvedBatchQty = Number(approvedRow?.producedQty ?? 0);
-    await refresh();
+    const pausedWoId = approvedRow ? Number(approvedRow.workOrderLine?.workOrder?.id ?? 0) : 0;
+    const wasPause = approvalExtras.remainingDisposition === "PAUSE";
+    const awaitsProductionReport =
+      approvalExtras.remainingDisposition === "END_WITH_SHORTAGE" ||
+      String(remainingDispositionResult?.outcome ?? "").toUpperCase() === "AWAITING_PRODUCTION_REPORT";
+
+    // End / equal / extra: apply report-pending summary BEFORE refresh so the runner never paints.
+    if (awaitsProductionReport && pausedWoId > 0) {
+      setProductionReportTransitionWoId(pausedWoId);
+      const apiSummary = remainingDispositionResult?.summary ?? null;
+      const planned = Number(apiSummary?.plannedQty ?? 0);
+      const produced = Number(
+        apiSummary?.producedQty ??
+          (Number(approvedRow?.producedQty ?? 0) > 0
+            ? Number(approvedRow?.producedQty)
+            : approvedBatchQty),
+      );
+      const remainder = Number(
+        apiSummary?.remainderQty ?? Math.max(0, planned > 0 ? planned - produced : 0),
+      );
+      const surplus = Number(apiSummary?.surplusQty ?? Math.max(0, produced - planned));
+      setNoQtyExecutionSummary({
+        workOrderId: pausedWoId,
+        workOrderDocNo: apiSummary?.workOrderDocNo ?? null,
+        workOrderStatus: String(apiSummary?.workOrderStatus ?? "IN_PROGRESS"),
+        executionStatus: "SHORTFALL_PENDING",
+        plannedQty: planned,
+        producedQty: produced,
+        remainderQty: remainder,
+        surplusQty: surplus,
+        productionPendingQty: 0,
+        hasShortfall: remainder > 1e-6,
+        hasSurplus: surplus > 1e-6,
+        pendingShortfallResolution: true,
+        blockReasons: apiSummary?.blockReasons ?? [],
+        resolutionReasons: apiSummary?.resolutionReasons ?? [],
+        lines: apiSummary?.lines ?? [],
+      });
+      setCompletionEvaluateTick(0);
+      setCompletionEvaluateBatchQty(0);
+
+      const replaceParams = new URLSearchParams();
+      if (navigateGreenLevelContext) {
+        replaceParams.set("flow", PRODUCTION_FLOW_GREEN_LEVEL);
+      } else if (navigateNoQtyContext) {
+        replaceParams.set("source", "no_qty_so");
+        replaceParams.set("flow", PRODUCTION_FLOW_NO_QTY);
+        if (focusSoIdValid) replaceParams.set("salesOrderId", String(focusSoId));
+        else if (approvedRow?.workOrderLine?.workOrder?.salesOrderId) {
+          replaceParams.set(
+            "salesOrderId",
+            String(approvedRow.workOrderLine.workOrder.salesOrderId),
+          );
+        }
+        const cycleForReplace =
+          effectiveNoQtyCycleId ?? approvedRow?.workOrderLine?.workOrder?.cycleId ?? null;
+        if (cycleForReplace != null && Number(cycleForReplace) > 0) {
+          replaceParams.set("cycleId", String(cycleForReplace));
+        }
+      }
+      replaceParams.set("workOrderId", String(pausedWoId));
+      const wolNav = Number(approvedRow?.workOrderLine?.id ?? effectiveScopedWolId ?? 0);
+      if (Number.isFinite(wolNav) && wolNav > 0) {
+        replaceParams.set("workOrderLineId", String(wolNav));
+      }
+      replaceParams.set("focusReport", "1");
+      const fromPa = searchParams.get("from");
+      const returnTo = searchParams.get("returnTo");
+      if (fromPa) replaceParams.set("from", fromPa);
+      if (returnTo) replaceParams.set("returnTo", returnTo);
+      const nextSearch = `?${replaceParams.toString()}`;
+      if (location.search !== nextSearch) {
+        navigate(`/production${nextSearch}`, { replace: true });
+      }
+
+      // Refresh after optimistic report-pending paint — never before.
+      await refresh();
+      setExecutionPanelRefreshTick((t) => t + 1);
+      toast.showSuccess(
+        consumptionWarnings?.length
+          ? `Batch finalized — complete Production Report. ${consumptionWarnings.join(" ")}`
+          : "Batch finalized and sent to QC. Complete the mandatory Production Report to close this WO.",
+      );
+      return;
+    }
+
+    const { flatLines: nextFlat, entries: nextEntries } = await refresh();
     setExecutionPanelRefreshTick((t) => t + 1);
-    if (useHardenedProductionShell) {
+
+    if (useHardenedProductionShell && !wasPause) {
       setCompletionEvaluateBatchQty(approvedBatchQty);
       setCompletionEvaluateTick((t) => t + 1);
     }
-    const woIdNav = approvedRow ? Number(approvedRow.workOrderLine?.workOrder?.id ?? 0) : 0;
+
+    // Pause: leave the paused runner — never trap the operator on production inputs.
+    if (wasPause && pausedWoId > 0) {
+      const qcPendingByWolId = buildQcPendingByWorkOrderLineId(nextEntries);
+      const queueLines = buildProductionQueueLines(nextFlat, qcPendingByWolId);
+      const advance = resolvePostProductionPauseAdvance({
+        pausedWorkOrderId: pausedWoId,
+        lines: queueLines,
+      });
+      resetScopedProductionWorkspaceState();
+      clearWoLineSelection({ force: true });
+      urlSelectionAppliedRef.current = false;
+      urlWoSelectionAuthorityRef.current = false;
+      toast.showSuccess(
+        consumptionWarnings?.length
+          ? `Production paused. ${consumptionWarnings.join(" ")}`
+          : "Production paused. Batch sent to QC.",
+      );
+      if (advance.kind === "advance" && advance.line) {
+        const fullLine = nextFlat.find((l) => l.id === advance.line!.id);
+        if (fullLine) {
+          openExecutableProductionLine(fullLine);
+          return;
+        }
+      }
+      navigate(
+        buildProductionWorkspaceOverviewHref({
+          pwSection: "paused",
+          pwFocus: pausedWoId,
+        }),
+        { replace: true },
+      );
+      return;
+    }
+
+    const woIdNav = pausedWoId;
     if (navigateGreenLevelContext && Number.isFinite(woIdNav) && woIdNav > 0) {
       const replaceParams = new URLSearchParams();
       replaceParams.set("flow", PRODUCTION_FLOW_GREEN_LEVEL);
@@ -3459,7 +3714,7 @@ export function ProductionPage() {
     }
   }
 
-  async function approveDraftDirect(id: number) {
+  async function approveDraftDirect(id: number, approvalExtras: ApprovalExtras = {}) {
     const row = entries.find((e) => e.id === id);
     const greenLevelBatch =
       navigateGreenLevelContext || isGreenLevelProductionEntry(row);
@@ -3474,12 +3729,25 @@ export function ProductionPage() {
     setRowBusy(id);
     const approvedRow = entries.find((e) => e.id === id);
     try {
-      await apiFetch(`/api/production/production-entries/${id}/approve`, {
+      const res = await apiFetch<{
+        consumptionWarnings?: string[];
+        remainingDispositionResult?: {
+          outcome?: string;
+          summary?: ProductionExecutionSummary | null;
+        } | null;
+      }>(`/api/production/production-entries/${id}/approve`, {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify(approvalExtras),
       });
-      await afterProductionApproveSuccess(id, approvedRow);
+      await afterProductionApproveSuccess(
+        id,
+        approvedRow,
+        res.consumptionWarnings,
+        approvalExtras,
+        res.remainingDispositionResult,
+      );
     } catch (err) {
+      setProductionReportTransitionWoId(0);
       if (err instanceof ApiRequestError && err.code === "INSUFFICIENT_RM_FOR_NO_QTY_PRODUCTION" && err.body) {
         setNoQtyRmShortage(err.body as NoQtyRmShortagePayload);
         setError(null);
@@ -3507,18 +3775,46 @@ export function ProductionPage() {
     setRowBusy(null);
   }, []);
 
-  function approveDraft(id: number) {
+  function executeDraftFinalization(id: number, approvalExtras: ApprovalExtras = {}) {
     const row = entries.find((e) => e.id === id);
     if (
       navigateGreenLevelContext ||
       isGreenLevelProductionEntry(row) ||
       !entryUsesRmConsumptionReview(row)
     ) {
-      void approveDraftDirect(id);
+      void approveDraftDirect(id, approvalExtras);
       return;
     }
     setRowBusy(id);
+    setConsumptionApprovalExtras(approvalExtras);
     setConsumptionApproveId(id);
+  }
+
+  function draftFinalizationReview(id: number) {
+    const row = entries.find((e) => e.id === id);
+    if (!row) return null;
+    const lineId = Number(row.workOrderLine?.id ?? 0);
+    const line = flatLines.find((l) => Number(l.id) === lineId);
+    const planned = Number(line?.qty ?? 0);
+    const previouslyFinalized = entries
+      .filter((e) => e.id !== id && isApproved(e) && Number(e.workOrderLine?.id ?? 0) === lineId)
+      .reduce((sum, e) => sum + Number(e.producedQty ?? 0), 0);
+    const currentDraft = Number(row.producedQty ?? 0);
+    const remaining = Math.max(0, planned - previouslyFinalized - currentDraft);
+    return { row, planned, previouslyFinalized, currentDraft, totalAfter: previouslyFinalized + currentDraft, remaining };
+  }
+
+  function approveDraft(id: number) {
+    const review = draftFinalizationReview(id);
+    const hardened = navigateNoQtyContext || navigateGreenLevelContext || isGreenLevelProductionEntry(review?.row);
+    if (review && hardened) {
+      setReviewFinalizeEntryId(id);
+      setReviewDisposition("CONTINUE");
+      setReviewPauseReason("MACHINE_BREAKDOWN");
+      setReviewRemarks("");
+      return;
+    }
+    executeDraftFinalization(id);
   }
 
   function renderApproveButtonLabel(entryId: number, idleLabel: string, _compact?: boolean): string {
@@ -3746,7 +4042,7 @@ export function ProductionPage() {
         title: "Draft Production Entry Awaiting Approval",
         subtitle: `Qty ${fmtProdQty(latestDraftForSelectedWoLine.producedQty)} · Approve, edit, or cancel from the entries table below`,
         primaryAction: {
-          label: "Approve Production",
+          label: "Review & Finalize",
           testId: "next-approve-production-draft",
           onClick: () => approveDraft(latestDraftForSelectedWoLine.latest.id),
         },
@@ -3887,6 +4183,8 @@ export function ProductionPage() {
       }
       if (
         noQtyShowContinueProductionCta &&
+        !noQtyPendingShortfallDecision &&
+        !forceProductionReportTransition &&
         selectedMetrics &&
         selectedMetrics.remainingQty > 1e-6 &&
         canProd &&
@@ -3984,7 +4282,9 @@ export function ProductionPage() {
       !latestDraftForSelectedWo &&
       !regularCreateFormLockedByDraft &&
       !rmProductionEntryBlocked &&
-      !woProductionLifecycleBlocked
+      !woProductionLifecycleBlocked &&
+      !noQtyPendingShortfallDecision &&
+      !forceProductionReportTransition
     ) {
       const rmCap =
         showRegularRmReadiness && rmReadiness
@@ -4046,6 +4346,9 @@ export function ProductionPage() {
     woProductionLifecycleMessage,
     selectedWoForLifecycle,
     resumeWoBusy,
+    noQtyShowContinueProductionCta,
+    noQtyPendingShortfallDecision,
+    forceProductionReportTransition,
   ]);
 
   const productionPrimaryStripCoversDraft = draftApprovalPendingRegular;
@@ -4095,7 +4398,7 @@ export function ProductionPage() {
           disabled={rowBusy === latest.id}
           onClick={() => approveDraft(latest.id)}
         >
-          {renderApproveButtonLabel(latest.id, "Approve Production")}
+          {renderApproveButtonLabel(latest.id, "Review & Finalize")}
         </Button>
         <Button
           type="button"
@@ -4237,10 +4540,11 @@ export function ProductionPage() {
       fromParam,
       sourceParam: source,
       fromStepParam,
+      returnToParam: searchParams.get("returnTo") ?? "",
       salesOrderId: sid,
       productionBucket: productionBucketFilter,
     });
-    if (openedFromWorkOrderWorkspace || openedFromProductionWorkspace) return back;
+    if (openedFromWorkOrderWorkspace || openedFromProductionWorkspace || fromPendingActions) return back;
     if (navigateNoQtyContext || navigateGreenLevelContext) return null;
     return back;
   }, [
@@ -4248,12 +4552,14 @@ export function ProductionPage() {
     navigateGreenLevelContext,
     openedFromWorkOrderWorkspace,
     openedFromProductionWorkspace,
+    fromPendingActions,
     selected?.salesOrderId,
     focusSoIdValid,
     focusSoId,
     fromParam,
     fromStepParam,
     source,
+    searchParams,
     productionBucketFilter,
   ]);
 
@@ -4267,17 +4573,22 @@ export function ProductionPage() {
 
   const regularWorkflowStageLabel = React.useMemo(() => {
     if (navigateNoQtyContext) return "";
-    if (draftApprovalPendingRegular) return "Draft approval pending";
-    if (selectedWoQcPending && (regularQcBannerHref || !canOpenQaFromProduction)) return "QC pending";
+    if (draftApprovalPendingRegular) return "Draft Pending";
     if (woProductionLifecycleBlocked && isWorkOrderPausedStatus(selectedWoForLifecycle?.status)) return "Paused";
     if (rmProductionEntryBlocked && showRegularRmReadiness) return "Waiting for RM issue";
-    if (selectedMetrics && selectedMetrics.remainingQty > 1e-6) return "In progress";
+    if (selectedMetrics && selectedMetrics.remainingQty > 1e-6) {
+      const produced = Number(selectedMetrics.usedQty ?? 0);
+      return produced > 1e-6 ? "Continue" : "Ready";
+    }
+    if (selectedWoQcPending && (regularQcBannerHref || !canOpenQaFromProduction)) return "QC Pending";
     if (showQcCompletedStrip) return "Complete";
     if (selectedMetrics && selectedMetrics.remainingQty <= 1e-6) return "Line complete";
     if (!selected && wolId > 0) {
       const lineEntries = entries.filter((e) => Number(e.workOrderLine?.id ?? 0) === wolId);
-      if (lineEntries.some((e) => qcPendingEntry(e))) return "QC pending";
-      if (lineEntries.some((e) => isDraft(e))) return "Draft";
+      if (lineEntries.some((e) => qcPendingEntry(e)) && !(selectedMetrics && selectedMetrics.remainingQty > 1e-6)) {
+        return "QC Pending";
+      }
+      if (lineEntries.some((e) => isDraft(e))) return "Draft Pending";
       if (lineEntries.some((e) => isApproved(e))) return "Approved";
     }
     if (productionStickyContext) return "Production";
@@ -4630,6 +4941,9 @@ export function ProductionPage() {
       visibleEntries={visibleEntries}
       entryFilter={entryFilter}
       onEntryFilterChange={setEntryFilter}
+      recentEntriesScope={recentEntriesScope}
+      onRecentEntriesScopeChange={setRecentEntriesScope}
+      showRecentEntriesScopeToggle={effectiveScopedWoId > 0}
       workOrdersCount={workOrders.length}
       showProductionWorkspace={showProductionWorkspace}
       canProd={canProd}
@@ -4656,7 +4970,7 @@ export function ProductionPage() {
         !useProductionPageNaturalScroll &&
           (navigateNoQtyContext
             ? cn(
-                "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden",
+                "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden max-[800px]:max-h-none max-[800px]:overflow-y-auto",
                 noQtyPremiumViewport
                   ? showNoQtyOperatorChrome
                     ? "lg:h-[calc(100dvh-7.75rem)]"
@@ -4664,8 +4978,8 @@ export function ProductionPage() {
                   : "lg:h-[calc(100dvh-11.25rem)]",
               )
             : showProductionWorkspace
-              ? "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden lg:h-[calc(100dvh-10rem)]"
-              : "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden lg:h-[calc(100dvh-13.25rem)]"),
+              ? "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden lg:h-[calc(100dvh-10rem)] max-[800px]:max-h-none max-[800px]:overflow-y-auto"
+              : "lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden lg:h-[calc(100dvh-13.25rem)] max-[800px]:max-h-none max-[800px]:overflow-y-auto"),
       )}
     >
       {fromNoQtySo && !embedNoQtyRecentEntries ? (
@@ -4827,10 +5141,7 @@ export function ProductionPage() {
         <div className="flex flex-col gap-2" data-testid="production-workspace-dashboard">
           <div className="shrink-0 space-y-2">
             <ProductionWorkspaceStatusStrip />
-            <div className="grid gap-2 xl:grid-cols-[minmax(0,1fr)_minmax(260px,340px)]">
-              <OperationalProductionWorkspace onOpenRow={openProductionFromWorkspace} productionBucket={productionBucketFilter} />
-              <PendingStoreTasksPanel />
-            </div>
+            <OperationalProductionWorkspace onOpenRow={openProductionFromWorkspace} productionBucket={productionBucketFilter} />
           </div>
           <div className="pb-2">{renderRecentEntriesPanel(false, { containedScroll: false })}</div>
         </div>
@@ -4892,6 +5203,18 @@ export function ProductionPage() {
                           />
                         ) : null}
                       </form>
+                    </CardContent>
+                  ) : showOpeningProductionReportGate ? (
+                    <CardContent className="space-y-2 px-3 py-4" data-testid="production-report-opening-gate">
+                      <ErpPageLoader
+                        variant="panel"
+                        hint="Opening Production Report…"
+                        data-testid="production-report-opening-loader"
+                      />
+                      <p className="text-center text-[12px] font-medium text-slate-600">
+                        Finalizing this batch and preparing the mandatory RM Production Report. Production entry stays
+                        locked.
+                      </p>
                     </CardContent>
                   ) : (
                     <>
@@ -5318,8 +5641,8 @@ export function ProductionPage() {
                                       Production paused with remaining qty
                                     </div>
                                     <p className="mt-2 text-[12px] leading-snug text-slate-700">
-                                      Use the production status panel above to resume production, or Confirm Report &amp;
-                                      Close WO to carry the remaining qty forward automatically.
+                                      Resume this WO to restore Continue Production. Final report, RM reconciliation,
+                                      wastage, closure and carry-forward are unavailable while paused.
                                     </p>
                                   </>
                                 ) : (
@@ -5376,9 +5699,8 @@ export function ProductionPage() {
                                       Production paused with remaining qty
                                     </div>
                                     <p className="mt-2 text-[12px] leading-snug text-slate-700">
-                                      Use the production status panel above to resume production, or Confirm Report &amp;
-                                      Close WO to finish this work order. Remaining qty will be recalculated in next Green
-                                      Level planning.
+                                      Resume this WO to restore Continue Production. Final report, RM reconciliation,
+                                      wastage and closure are unavailable while paused.
                                     </p>
                                   </>
                                 ) : (
@@ -5452,7 +5774,7 @@ export function ProductionPage() {
                                         Draft approval pending
                                       </div>
                                       <p className="mt-1 text-[12px] leading-snug text-slate-600">
-                                        Use Approve Production on the draft strip above to continue.
+                                        Use Review & Finalize on the draft strip above to continue.
                                       </p>
                                     </>
                                   ) : (
@@ -5495,8 +5817,14 @@ export function ProductionPage() {
                                 }
                                 const eps = 1e-6;
                                 const produced = selected.approvedProducedQty ?? 0;
+                                const remCompact = lineRemaining(selected);
                                 const qcPendingLine = noQtyQcPendingByWolId.get(selected.id) ?? 0;
-                                if (qcPendingLine > eps && !suppressDuplicateQcWorkflowUi) {
+                                // Entry QC with remaining balance → continue production (do not dead-end).
+                                if (
+                                  qcPendingLine > eps &&
+                                  remCompact <= eps &&
+                                  !suppressDuplicateQcWorkflowUi
+                                ) {
                                   const cycleIdNav = effectiveNoQtyCycleId ?? null;
                                   const pendingEntryOnLine = entries.find(
                                     (e) => Number(e.workOrderLine?.id ?? 0) === Number(selected.id) && qcPendingEntry(e),
@@ -5671,8 +5999,8 @@ export function ProductionPage() {
                                 Production paused with remaining qty
                               </div>
                               <p className="mt-2 text-[12px] leading-snug text-slate-700">
-                                Use the production status panel above to resume production, or Confirm Report &amp; Close WO
-                                to carry the remaining qty forward automatically.
+                                Resume this WO to restore Continue Production. Final report, RM reconciliation, wastage,
+                                closure and carry-forward are unavailable while paused.
                               </p>
                             </>
                           ) : (
@@ -5727,8 +6055,8 @@ export function ProductionPage() {
                                 Production paused with remaining qty
                               </div>
                               <p className="mt-2 text-[12px] leading-snug text-slate-700">
-                                Use the production status panel above to resume production, or Confirm Report &amp; Close WO
-                                to finish this work order. Remaining qty will be recalculated in next Green Level planning.
+                                Resume this WO to restore Continue Production. Final report, RM reconciliation, wastage
+                                and closure are unavailable while paused.
                               </p>
                             </>
                           ) : (
@@ -5801,7 +6129,7 @@ export function ProductionPage() {
                                 Draft approval pending
                               </div>
                               <p className="mt-1 text-[12px] leading-snug text-slate-600">
-                                Use Approve Production on the draft strip above to continue.
+                                Use Review & Finalize on the draft strip above to continue.
                               </p>
                             </>
                           ) : (
@@ -5868,7 +6196,8 @@ export function ProductionPage() {
                         const rem = lineRemaining(selected);
                         const produced = selected.approvedProducedQty ?? 0;
                         const qcPendingLine = noQtyQcPendingByWolId.get(selected.id) ?? 0;
-                        if (qcPendingLine > eps && !suppressDuplicateQcWorkflowUi) {
+                        // Entry QC alone must not hide Continue when remaining quantity is executable.
+                        if (qcPendingLine > eps && rem <= eps && !suppressDuplicateQcWorkflowUi) {
                           const cycleIdNav = effectiveNoQtyCycleId ?? null;
                           const pendingEntryOnLine = entries.find(
                             (e) => Number(e.workOrderLine?.id ?? 0) === Number(selected.id) && qcPendingEntry(e),
@@ -6675,20 +7004,129 @@ export function ProductionPage() {
       productionEntryId={consumptionApproveId}
       onClose={closeConsumptionApproveModal}
       onPreviewSettled={onConsumptionPreviewSettled}
+      approvalExtras={consumptionApprovalExtras}
       onApproved={(res) => {
+        const extrasSnapshot = consumptionApprovalExtras;
         setConsumptionApproveId((openId) => {
           if (openId != null) {
             const approvedRow = entries.find((e) => e.id === openId);
             setRowBusy(openId);
-            void afterProductionApproveSuccess(openId, approvedRow, res.consumptionWarnings).finally(
-              () => setRowBusy(null),
-            );
+            void afterProductionApproveSuccess(
+              openId,
+              approvedRow,
+              res.consumptionWarnings,
+              extrasSnapshot,
+              res.remainingDispositionResult as
+                | { outcome?: string; summary?: ProductionExecutionSummary | null }
+                | null
+                | undefined,
+            ).finally(() => setRowBusy(null));
           }
           return null;
         });
       }}
     />
   );
+
+  const reviewFinalize = reviewFinalizeEntryId != null ? draftFinalizationReview(reviewFinalizeEntryId) : null;
+  const reviewFinalizeModal = reviewFinalize ? (
+    <ErpModal onClose={() => setReviewFinalizeEntryId(null)} aria-labelledby="review-finalize-title">
+      <div className="w-full max-w-3xl space-y-4 rounded-xl bg-white p-5 shadow-xl">
+        <div>
+          <h2 id="review-finalize-title" className="text-xl font-semibold text-slate-900">Review &amp; Finalize</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Finalizing confirms this output and sends it to QC. Choose what happens to the remaining WO balance.
+          </p>
+        </div>
+        <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm sm:grid-cols-3">
+          <div><span className="text-slate-500">WO planned</span><div className="font-semibold">{fmtProdQty(reviewFinalize.planned)}</div></div>
+          <div><span className="text-slate-500">Previously finalized</span><div className="font-semibold">{fmtProdQty(reviewFinalize.previouslyFinalized)}</div></div>
+          <div><span className="text-slate-500">Current draft</span><div className="font-semibold">{fmtProdQty(reviewFinalize.currentDraft)}</div></div>
+          <div><span className="text-slate-500">Total after entry</span><div className="font-semibold">{fmtProdQty(reviewFinalize.totalAfter)}</div></div>
+          <div><span className="text-slate-500">WO quantity balance</span><div className="font-semibold text-amber-800">{fmtProdQty(reviewFinalize.remaining)}</div></div>
+          <div><span className="text-slate-500">UOM</span><div className="font-semibold">{reviewFinalize.row.workOrderLine?.fgItem?.unit || "—"}</div></div>
+          <div><span className="text-slate-500">RM-supported production max</span><div className="font-semibold">{rmEntryQtyCap != null ? fmtProdQty(rmEntryQtyCap) : "Validated at finalization"}</div></div>
+          <div><span className="text-slate-500">Unused RM-supported capacity</span><div className="font-semibold">{rmEntryQtyCap != null ? fmtProdQty(Math.max(0, Number(rmEntryQtyCap) - reviewFinalize.totalAfter)) : "—"}</div></div>
+          <div><span className="text-slate-500">Approved tolerance</span><div className="font-semibold">WO plan + 5% where applicable</div></div>
+        </div>
+        {reviewFinalize.remaining > 1e-6 ? <div className="grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="Remaining work order disposition">
+          {([
+            ["CONTINUE", "Continue Production", "Finalize this entry and keep the balance active in the same WO."],
+            ["PAUSE", "Pause Production", "Finalize this entry and preserve the balance paused in the same WO. No Production Report yet."],
+            ["END_WITH_SHORTAGE", "End Production with Shortage", "Finalize this entry, then complete the mandatory RM Production Report. The shortage transfers only when that report closes production."],
+          ] as const).map(([id, title, description]) => (
+            <button
+              key={id}
+              type="button"
+              role="radio"
+              aria-checked={reviewDisposition === id}
+              onClick={() => setReviewDisposition(id)}
+              className={cn("min-h-32 rounded-lg border-2 p-4 text-left transition", reviewDisposition === id ? "border-emerald-600 bg-emerald-50" : "border-slate-200 bg-white hover:border-slate-400")}
+            >
+              <span className="block text-base font-semibold text-slate-900">{title}</span>
+              <span className="mt-2 block text-sm leading-relaxed text-slate-600">{description}</span>
+            </button>
+          ))}
+        </div> : (
+          <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+            <p className="font-medium">WO quantity balance is complete — Production Report is still required.</p>
+            <p className="text-amber-900/90">
+              Finalizing confirms this batch and sends it to QC. It does <span className="font-semibold">not</span> close the
+              work order. Unused RM-supported capacity is not wastage until you allocate material in the Production Report
+              (return to Store and/or documented wastage). Close only via Confirm Report &amp; Close WO when unexplained RM
+              balance is zero.
+            </p>
+          </div>
+        )}
+        {reviewFinalize.remaining > 1e-6 && reviewDisposition === "PAUSE" ? (
+          <label className="block text-sm font-medium text-slate-700">Pause reason
+            <select className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" value={reviewPauseReason} onChange={(e) => setReviewPauseReason(e.target.value)}>
+              <option value="MACHINE_BREAKDOWN">Machine Breakdown</option><option value="WAITING_FOR_RM">Waiting for RM</option><option value="TOOL_MOULD_MAINTENANCE">Tool / Mould Maintenance</option><option value="QUALITY_CONCERN">Quality Concern</option><option value="POWER_UTILITY_FAILURE">Power / Utility Failure</option><option value="MANAGEMENT_HOLD">Management Hold</option><option value="OTHER">Other</option>
+            </select>
+          </label>
+        ) : null}
+        <label className="block text-sm font-medium text-slate-700">Remarks (optional)
+          <textarea className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" rows={2} value={reviewRemarks} onChange={(e) => setReviewRemarks(e.target.value)} />
+        </label>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => setReviewFinalizeEntryId(null)}>Back to Draft</Button>
+          <Button type="button" variant={reviewDisposition === "END_WITH_SHORTAGE" ? "destructive" : "default"} onClick={() => {
+            const id = reviewFinalizeEntryId;
+            const closeDecision = isProductionReportCloseDecision({
+              remainingAfterEntry: reviewFinalize.remaining,
+              disposition: reviewDisposition,
+            });
+            const woForReport = Number(
+              reviewFinalize.row.workOrderLine?.workOrder?.id ?? effectiveScopedWoId ?? 0,
+            );
+            // Gate BEFORE modal close / API — no Continue/runner frame.
+            if (closeDecision && woForReport > 0) {
+              setProductionReportTransitionWoId(woForReport);
+            }
+            setReviewFinalizeEntryId(null);
+            if (id != null) {
+              executeDraftFinalization(
+                id,
+                reviewFinalize.remaining > 1e-6
+                  ? {
+                      remainingDisposition: reviewDisposition,
+                      pauseReason: reviewDisposition === "PAUSE" ? reviewPauseReason : undefined,
+                      dispositionRemarks: reviewRemarks.trim() || null,
+                    }
+                  : { dispositionRemarks: reviewRemarks.trim() || null },
+              );
+            }
+          }}>
+            {reviewFinalize.remaining <= 1e-6
+              ? "Finalize & Open Production Report"
+              : reviewDisposition === "END_WITH_SHORTAGE"
+                ? "End & Open Production Report"
+                : "Finalize Production"}
+          </Button>
+        </div>
+      </div>
+    </ErpModal>
+  ) : null;
 
   /**
    * Identity resolving state — placed BEFORE the REGULAR branch return.
@@ -6704,6 +7142,24 @@ export function ProductionPage() {
     return (
       <PageContainer className="erp-flow-page -mt-1 max-w-none space-y-2 pb-2">
         <ErpPageLoader variant="panel" hint="Resolving production context…" data-testid="production-identity-resolving" />
+      </PageContainer>
+    );
+  }
+
+  // Full-page gate while End/Equal/Extra finalize settles — never paint Continue / runner chrome.
+  if (showOpeningProductionReportGate && useHardenedProductionShell) {
+    return (
+      <PageContainer className="erp-flow-page -mt-1 max-w-none space-y-2 pb-2">
+        <ErpPageLoader
+          variant="workspace"
+          hint="Opening Production Report…"
+          data-testid="production-report-opening-page"
+        />
+        <p className="text-center text-[12px] font-medium text-slate-600">
+          Finalizing this batch and preparing the mandatory RM Production Report.
+        </p>
+        {rmConsumptionApproveModal}
+        {reviewFinalizeModal}
       </PageContainer>
     );
   }
@@ -6739,6 +7195,7 @@ export function ProductionPage() {
           </OperationalContextSticky>
           {main}
           {rmConsumptionApproveModal}
+          {reviewFinalizeModal}
         </PageContainer>
       );
     }
@@ -6920,7 +7377,9 @@ export function ProductionPage() {
               !latestDraftForSelectedWo &&
               !draftApprovalPendingRegular &&
               canProd &&
-              !rmProductionEntryBlocked ? (
+              !rmProductionEntryBlocked &&
+              !noQtyPendingShortfallDecision &&
+              !forceProductionReportTransition ? (
                 <button
                   type="button"
                   className="text-left text-sky-900 underline-offset-2 hover:underline"
@@ -7002,6 +7461,7 @@ export function ProductionPage() {
         </OperationalContextSticky>
         {main}
         {rmConsumptionApproveModal}
+        {reviewFinalizeModal}
       </PageContainer>
     );
   }
@@ -7311,6 +7771,7 @@ export function ProductionPage() {
         {main}
       </div>
       {rmConsumptionApproveModal}
+      {reviewFinalizeModal}
       <GreenLevelProductionWoSwitchDialog
         open={glWoSwitchPrompt != null}
         woLabel={glWoSwitchPrompt?.fromWoLabel ?? "Work order"}

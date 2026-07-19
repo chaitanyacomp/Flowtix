@@ -24,6 +24,7 @@ const {
   assertDispatchEligibleForBillingFinalize,
 } = require("./salesBillEligibility");
 const { shipToFromDispatchOrSo } = require("./dispatchDeliveryLocation");
+const { calculateSalesBillSnapshot } = require("./salesBillCalculationService");
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -159,6 +160,7 @@ const billInclude = {
   },
   exportedBy: { select: { id: true, name: true } },
   lines: { include: { item: true }, orderBy: { id: "asc" } },
+  dispatchAllocations: { include: { dispatch: { include: { item: true } } }, orderBy: { id: "asc" } },
   receipts: { orderBy: { id: "asc" }, include: { createdBy: { select: { id: true, name: true } } } },
 };
 
@@ -314,25 +316,19 @@ async function getEligibleDispatches(prisma) {
     include: { salesOrder: { include: { customer: { include: { stateRef: true } }, po: { include: { customer: true } }, lines: true } }, item: true },
   });
   const ids = dispatches.map((d) => d.id);
-  const finalizedBlocked = await loadFinalizedBillDispatchIdSet(prisma, ids);
-  const drafts = await prisma.salesBill.findMany({
-    where: {
-      dispatchId: { in: ids },
-      status: "DRAFT",
-      cancelledAt: null,
-    },
-    select: { id: true, dispatchId: true },
-    orderBy: { id: "desc" },
-  });
+  const allocationRows = prisma.salesBillDispatchAllocation?.findMany ? await prisma.salesBillDispatchAllocation.findMany({
+    where: { dispatchId: { in: ids }, OR: [{ finalizedAt: { not: null } }, { salesBill: { status: "DRAFT" } }] },
+    select: { dispatchId: true, salesBillId: true, allocatedQty: true, finalizedAt: true, salesBill: { select: { status: true } } },
+  }) : [];
   const draftByDispatchId = new Map();
-  for (const d of drafts) {
+  for (const d of allocationRows.filter((row) => row.salesBill.status === "DRAFT")) {
     if (!draftByDispatchId.has(d.dispatchId)) {
-      draftByDispatchId.set(d.dispatchId, d.id);
+      draftByDispatchId.set(d.dispatchId, d.salesBillId);
     }
   }
   return dispatches
-    .filter((d) => !finalizedBlocked.has(d.id))
     .filter((d) => isPositiveDispatchQty(d.dispatchedQty))
+    .filter((d) => allocationRows.filter((row) => row.dispatchId === d.id).reduce((sum, row) => sum + Number(row.allocatedQty), 0) < Number(d.dispatchedQty) - 1e-6)
     .map((d) => ({
       dispatchId: d.id,
       dispatchNo: d.docNo || `D-${String(d.id).padStart(2, "0")}-${String(d.id).padStart(4, "0")}`,
@@ -346,6 +342,40 @@ async function getEligibleDispatches(prisma) {
       draftBillId: draftByDispatchId.get(d.id) ?? null,
       hasDraftBill: draftByDispatchId.has(d.id),
     }));
+}
+
+async function getEligibleDispatchesForSalesOrder(prisma, soId, excludeBillId = null) {
+  const id = Number(soId);
+  if (!(id > 0)) throw friendlyError("Invalid sales order id.");
+  const dispatches = await prisma.dispatch.findMany({
+    where: { ...BILLABLE_FORWARD_DISPATCH_WHERE, soId: id },
+    orderBy: [{ date: "asc" }, { id: "asc" }],
+    include: { salesOrder: { include: { customer: true } }, item: true },
+  });
+  const allocationRows = prisma.salesBillDispatchAllocation?.findMany
+    ? await prisma.salesBillDispatchAllocation.findMany({
+        where: { dispatchId: { in: dispatches.map((row) => row.id) }, OR: [{ finalizedAt: { not: null } }, { salesBill: { status: "DRAFT" } }] },
+        select: { dispatchId: true, salesBillId: true, allocatedQty: true, finalizedAt: true, salesBill: { select: { status: true } } },
+      })
+    : [];
+  return dispatches.map((dispatch) => {
+    const allocations = allocationRows.filter((row) => row.dispatchId === dispatch.id);
+    const finalizedQty = allocations.filter((row) => row.finalizedAt != null).reduce((sum, row) => sum + Number(row.allocatedQty), 0);
+    const ownDraftQty = allocations.filter((row) => row.salesBillId === excludeBillId).reduce((sum, row) => sum + Number(row.allocatedQty), 0);
+    const reservedOtherDraftQty = allocations
+      .filter((row) => row.salesBill.status === "DRAFT" && row.salesBillId !== excludeBillId)
+      .reduce((sum, row) => sum + Number(row.allocatedQty), 0);
+    const dispatchedQty = Number(dispatch.dispatchedQty);
+    return {
+      dispatchId: dispatch.id, dispatchNo: dispatch.docNo || `D-${dispatch.id}`, dispatchDate: dispatch.date,
+      salesOrderId: dispatch.soId, customerId: dispatch.salesOrder?.customerId ?? null,
+      customerName: dispatch.salesOrder?.customer?.name ?? null, itemId: dispatch.itemId,
+      itemName: dispatch.item?.itemName ?? null, hsnCode: dispatch.item?.hsnCode ?? null,
+      unit: dispatch.item?.unit ?? null, dispatchedQty: String(dispatchedQty),
+      previouslyBilledQty: String(finalizedQty), reservedOtherDraftQty: String(reservedOtherDraftQty),
+      ownDraftQty: String(ownDraftQty), availableQty: String(Math.max(0, dispatchedQty - finalizedQty - reservedOtherDraftQty)),
+    };
+  });
 }
 
 /**
@@ -730,13 +760,25 @@ async function patchDraftSalesBillLineRate(prisma, billId, lineId, rateInput) {
 
 async function finalizeBill(prisma, billId, userId) {
   return prisma.$transaction(async (tx) => {
-    const bill = await tx.salesBill.findUnique({
+    let bill = await tx.salesBill.findUnique({
       where: { id: billId },
       include: { ...billInclude, lines: { orderBy: { id: "asc" }, include: { item: true } } },
     });
     if (!bill) throw friendlyError("Sales bill not found.", 404);
     if (bill.status !== "DRAFT") throw friendlyError("This bill is already finalized or cancelled.");
-    await assertDispatchEligibleForBillingFinalize(tx, bill.dispatchId);
+    if (bill.dispatchAllocations?.length) {
+      await rebuildDraftFromAllocations(
+        tx,
+        billId,
+        bill.dispatchAllocations.map((row) => ({ dispatchId: row.dispatchId, allocatedQty: Number(row.allocatedQty) })),
+        { amount: bill.transportationAmount, chargedBy: bill.transportationChargedBy,
+          transporterName: bill.transporterName, referenceNo: bill.transportationReferenceNo, remarks: bill.transportationRemarks },
+        userId,
+      );
+      bill = await tx.salesBill.findUnique({ where: { id: billId }, include: { ...billInclude, lines: { orderBy: { id: "asc" }, include: { item: true } } } });
+    } else if (bill.dispatchId != null) {
+      await assertDispatchEligibleForBillingFinalize(tx, bill.dispatchId);
+    }
     if (
       !bill.customer?.stateRef?.stateCode &&
       !trimCommercialSnapshot(bill.customerStateCodeSnapshot)
@@ -758,6 +800,14 @@ async function finalizeBill(prisma, billId, userId) {
     const intra = resolveSalesIntraForBilling({ bill, customer: bill.customer, companyState }).intraState;
     const rebuilt = [];
     for (const ln of bill.lines) {
+      if (["MULTI_DISPATCH_TRANSPORT_V2", "GST_BUCKET_SPLIT_V3", "GST_COMPONENT_BUCKET_V4"].includes(bill.calculationVersion)) {
+        rebuilt.push({
+          id: ln.id, basicAmount: Number(ln.basicAmount), cgstAmount: Number(ln.cgstAmount),
+          sgstAmount: Number(ln.sgstAmount), igstAmount: Number(ln.igstAmount),
+          totalTax: Number(ln.cgstAmount) + Number(ln.sgstAmount) + Number(ln.igstAmount), lineTotal: Number(ln.lineTotal),
+        });
+        continue;
+      }
       const qty = Number(ln.qty);
       const rate = Number(ln.rate);
       const gstRate = Number(ln.gstRate);
@@ -776,7 +826,10 @@ async function finalizeBill(prisma, billId, userId) {
         },
       });
     }
-    const totals = sumTotals(rebuilt.map((l) => ({ ...l })));
+    const totals = ["MULTI_DISPATCH_TRANSPORT_V2", "GST_BUCKET_SPLIT_V3", "GST_COMPONENT_BUCKET_V4"].includes(bill.calculationVersion)
+      ? { totalBasic: Number(bill.totalBasic), totalCgst: Number(bill.totalCgst), totalSgst: Number(bill.totalSgst),
+          totalIgst: Number(bill.totalIgst), totalTax: Number(bill.totalTax), netAmount: Number(bill.netAmount) }
+      : sumTotals(rebuilt.map((l) => ({ ...l })));
     const finalized = await tx.salesBill.update({
       where: { id: billId },
       data: {
@@ -795,6 +848,10 @@ async function finalizeBill(prisma, billId, userId) {
       },
       include: billInclude,
     });
+
+    if (tx.salesBillDispatchAllocation && bill.dispatchAllocations?.length) {
+      await tx.salesBillDispatchAllocation.updateMany({ where: { salesBillId: billId }, data: { finalizedAt: new Date() } });
+    }
 
     return withSalesBillGstBreakup(finalized, { intraState: intra, companyState });
   });
@@ -1208,10 +1265,155 @@ async function patchDraftShipTo(prisma, billId, body, opts = {}) {
   });
 }
 
+function transportInputFromBill(bill, override = {}) {
+  return {
+    amount: override.amount ?? bill.transportationAmount ?? 0,
+    chargedBy: override.chargedBy ?? bill.transportationChargedBy ?? "OUR_COMPANY",
+  };
+}
+
+async function rebuildDraftFromAllocations(tx, billId, requestedAllocations, transportation = {}, actorUserId = null) {
+  const bill = await tx.salesBill.findUnique({ where: { id: billId }, include: billInclude });
+  if (!bill) throw friendlyError("Sales bill not found.", 404);
+  if (bill.status !== "DRAFT") throw friendlyError("Only draft Sales Bills can be edited.", 409);
+  const normalized = (requestedAllocations || []).map((row) => ({ dispatchId: Number(row.dispatchId), allocatedQty: Number(row.billNowQty ?? row.allocatedQty) }));
+  if (!normalized.length) throw friendlyError("Select at least one dispatch allocation.");
+  if (normalized.some((row) => !(row.dispatchId > 0) || !(row.allocatedQty > 0))) throw friendlyError("Bill Now quantity must be greater than zero.");
+  if (new Set(normalized.map((row) => row.dispatchId)).size !== normalized.length) throw friendlyError("A dispatch can appear only once on a bill.");
+  const ids = normalized.map((row) => row.dispatchId).sort((a, b) => a - b);
+  if (typeof tx.$queryRawUnsafe === "function") {
+    await tx.$queryRawUnsafe(`SELECT id FROM Dispatch WHERE id IN (${ids.join(",")}) ORDER BY id FOR UPDATE`);
+  }
+  const dispatches = await tx.dispatch.findMany({
+    where: { id: { in: ids } },
+    include: { salesOrder: { include: { customer: { include: { stateRef: true } }, po: { include: { customer: true } }, lines: true } }, item: true },
+  });
+  if (dispatches.length !== ids.length) throw friendlyError("One or more selected dispatches no longer exist.", 409);
+  const soIds = new Set(dispatches.map((row) => row.soId));
+  if (soIds.size !== 1) throw friendlyError("All selected dispatches must belong to the same Sales Order.", 409);
+  const soId = dispatches[0].soId;
+  const customerIds = new Set(dispatches.map((row) => row.salesOrder?.customerId ?? row.salesOrder?.po?.customerId ?? null));
+  if (customerIds.size !== 1 || !customerIds.has(bill.customerId)) throw friendlyError("All selected dispatches must belong to the bill customer.", 409);
+  if (bill.soId != null && Number(bill.soId) !== soId) throw friendlyError("Selected dispatch belongs to a different Sales Order.", 409);
+  for (const dispatch of dispatches) await assertDispatchEligibleForBillingFinalize(tx, dispatch.id);
+
+  const competing = await tx.salesBillDispatchAllocation.findMany({
+    where: { dispatchId: { in: ids }, salesBillId: { not: billId }, OR: [{ finalizedAt: { not: null } }, { salesBill: { status: "DRAFT" } }] },
+    select: { dispatchId: true, allocatedQty: true },
+  });
+  for (const requested of normalized) {
+    const dispatch = dispatches.find((row) => row.id === requested.dispatchId);
+    const used = competing.filter((row) => row.dispatchId === requested.dispatchId).reduce((sum, row) => sum + Number(row.allocatedQty), 0);
+    if (requested.allocatedQty > Number(dispatch.dispatchedQty) - used + 1e-6) {
+      throw friendlyError(`Dispatch ${dispatch.docNo || dispatch.id} no longer has the requested unbilled quantity.`, 409);
+    }
+  }
+
+  const companyState = await getCompanyState(tx);
+  const intraState = resolveSalesIntraForBilling({ bill, customer: bill.customer, companyState }).intraState;
+  const allocationRows = [];
+  for (const requested of normalized) {
+    const dispatch = dispatches.find((row) => row.id === requested.dispatchId);
+    const so = dispatch.salesOrder;
+    const isNoQty = so.orderType === "NO_QTY";
+    const contract = isNoQty ? await findApplicableRateContractLine(tx, { customerId: bill.customerId, itemId: dispatch.itemId, asOf: bill.billDate }) : null;
+    if (isNoQty && !contract) throw friendlyError(`No approved rate contract for ${dispatch.item.itemName} on the bill date.`, 409);
+    const rate = contract ? Number(contract.rate) : await deriveSalesRateForSoItem(tx, so, dispatch.itemId);
+    const gstRate = contract?.gstRate != null ? Number(contract.gstRate) : Number(dispatch.item.gstRate ?? 0);
+    if (!(rate > 0)) throw friendlyError(`Sales rate is missing for ${dispatch.item.itemName}.`, 409);
+    if (!String(dispatch.item.hsnCode || "").trim()) throw friendlyError(`HSN/SAC is missing for ${dispatch.item.itemName}.`, 409);
+    allocationRows.push({
+      dispatchId: dispatch.id, allocatedQty: requested.allocatedQty, itemId: dispatch.itemId,
+      itemName: dispatch.item.itemName, hsnCode: dispatch.item.hsnCode, unit: dispatch.item.unit,
+      rate, discountRate: 0, gstRate, taxTreatment: "GOODS", rateEffectiveFrom: contract?.effectiveFrom ?? null,
+    });
+  }
+  const snapshot = calculateSalesBillSnapshot({ allocationRows, transportation: transportInputFromBill(bill, transportation), intraState });
+  await tx.salesBillDispatchAllocation.deleteMany({ where: { salesBillId: billId } });
+  await tx.salesBillLine.deleteMany({ where: { salesBillId: billId } });
+  for (const line of snapshot.lines) {
+    const createdLine = await tx.salesBillLine.create({ data: {
+      salesBillId: billId, dispatchId: line.sourceAllocations[0]?.dispatchId ?? null, soId,
+      itemId: line.itemId, itemNameSnapshot: String(line.itemName || ""), hsnCodeSnapshot: String(line.hsnCode || ""),
+      unitSnapshot: String(line.unit || ""), qty: line.qty.toString(), rate: DString(line.rate), discountRate: DString(line.discountRate || 0),
+      taxTreatmentSnapshot: line.taxTreatment || "GOODS", goodsTaxableAmount: line.goodsTaxable.toString(),
+      basicAmount: line.basicAmount.toString(), gstRate: DString(line.gstRate),
+      transportationAllocation: line.transportationAllocation.toString(),
+      transportationCgstAmount: line.transportationCgstAmount.toString(), transportationSgstAmount: line.transportationSgstAmount.toString(),
+      transportationIgstAmount: line.transportationIgstAmount.toString(), cgstAmount: line.cgstAmount.toString(),
+      sgstAmount: line.sgstAmount.toString(), igstAmount: line.igstAmount.toString(), lineTotal: line.lineTotal.toString(),
+      rateEffectiveFrom: line.rateEffectiveFrom ?? null,
+    } });
+    await tx.salesBillDispatchAllocation.createMany({ data: line.sourceAllocations.map((source) => ({
+      salesBillId: billId, salesBillLineId: createdLine.id, dispatchId: source.dispatchId,
+      allocatedQty: source.allocatedQty.toString(), createdById: actorUserId,
+    })) });
+  }
+  const totals = snapshot.totals;
+  await tx.salesBill.update({ where: { id: billId }, data: {
+    soId, dispatchId: ids[0], activeBillDispatchKey: null,
+    goodsTaxableValue: totals.goodsTaxableValue.toString(), transportationAmount: totals.transportationAmount.toString(),
+    transportationChargedBy: snapshot.transportation.chargedBy,
+    transportationAllocationMethod: snapshot.transportation.allocationMethod,
+    transportationTaxableValue: totals.transportationTaxableValue.toString(),
+    transporterName: transportation.transporterName === undefined ? bill.transporterName : (transportation.transporterName || null),
+    transportationReferenceNo: transportation.referenceNo === undefined ? bill.transportationReferenceNo : (transportation.referenceNo || null),
+    transportationRemarks: transportation.remarks === undefined ? bill.transportationRemarks : (transportation.remarks || null),
+    totalBasic: totals.totalBasic.toString(), totalCgst: totals.totalCgst.toString(), totalSgst: totals.totalSgst.toString(),
+    totalIgst: totals.totalIgst.toString(), totalTax: totals.totalTax.toString(), roundOffAmount: totals.roundOffAmount.toString(),
+    netAmount: totals.netAmount.toString(), calculationVersion: "GST_COMPONENT_BUCKET_V4", calculatedAt: new Date(), calculatedById: actorUserId,
+  } });
+  return tx.salesBill.findUnique({ where: { id: billId }, include: billInclude });
+}
+
+function DString(value) { return String(value ?? 0); }
+
+async function createDraftFromSalesOrder(prisma, input, actorUserId = null) {
+  const allocations = input.allocations || [];
+  if (!allocations.length) throw friendlyError("Select at least one dispatch.");
+  const firstDispatchId = Number(allocations[0].dispatchId);
+  return prisma.$transaction(async (tx) => {
+    const dispatch = await tx.dispatch.findUnique({ where: { id: firstDispatchId }, include: {
+      salesOrder: { include: { customer: { include: { stateRef: true } }, po: { include: { customer: true } }, lines: true } }, item: true,
+    } });
+    if (!dispatch?.salesOrder) throw friendlyError("Dispatch or Sales Order not found.", 404);
+    const so = dispatch.salesOrder;
+    const customer = so.customer ?? so.po?.customer ?? null;
+    if (!customer) throw friendlyError("Customer is required before creating a Sales Bill.", 409);
+    const companyState = await getCompanyState(tx);
+    let snapshots = await resolveSalesBillCommercialSnapshots(tx, so, { companyStateCode: companyState?.companyStateRef?.stateCode ?? null });
+    const dispatchShip = shipToFromDispatchOrSo(dispatch, null);
+    if (dispatchShip?.fromDispatchSnapshot) {
+      const billTo = { name: snapshots.customerNameSnapshot, address: snapshots.billToAddressSnapshot, gstin: snapshots.billToGstinSnapshot,
+        stateName: snapshots.customerStateNameSnapshot, stateCode: snapshots.customerStateCodeSnapshot };
+      const pos = buildPosFromShipAndBillTo({ shipTo: dispatchShip, billTo, companyStateCode: companyState?.companyStateRef?.stateCode ?? null });
+      const shipSnaps = mapShipToAndPosToBillSnapshots(dispatchShip, pos);
+      snapshots = { ...snapshots, ...shipSnaps, ...mapInvoiceShipToToDispatchSnapshots(shipSnaps) };
+    }
+    const billDate = normalizeUtcDateOnly(input.billDate) ?? normalizeUtcDateOnly(new Date());
+    const created = await tx.salesBill.create({ data: {
+      docNo: await allocateDocNo(tx, { docType: DocType.SALES_BILL, date: billDate }), billDate,
+      customerId: customer.id, dispatchId: dispatch.id, soId: so.id, cycleId: dispatch.cycleId ?? null,
+      status: "DRAFT", ...snapshots, shipToAddressId: dispatch.deliveryLocationId ?? so.shipToAddressId ?? null,
+      dispatchNoSnapshot: dispatch.docNo || `D-${dispatch.id}`, dispatchDateSnapshot: dispatch.date, soIdSnapshot: so.id,
+      calculationVersion: "GST_COMPONENT_BUCKET_V4",
+    } });
+    const bill = await rebuildDraftFromAllocations(tx, created.id, allocations, input.transportation || {}, actorUserId);
+    return { bill, created: true };
+  });
+}
+
+async function updateDraftAllocations(prisma, billId, input, actorUserId = null) {
+  return prisma.$transaction((tx) => rebuildDraftFromAllocations(tx, billId, input.allocations, input.transportation || {}, actorUserId));
+}
+
 module.exports = {
   listSalesBills,
   getEligibleDispatches,
+  getEligibleDispatchesForSalesOrder,
   createDraftFromDispatch,
+  createDraftFromSalesOrder,
+  updateDraftAllocations,
   updateDraft,
   patchDraftSalesBillLineRate,
   finalizeBill,

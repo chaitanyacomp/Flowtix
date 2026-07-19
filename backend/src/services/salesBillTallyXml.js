@@ -256,29 +256,62 @@ function buildSalesBillTallyXml(payload) {
   const igstTotal = n2(Math.abs(Number(payload?.tax?.totalIgst ?? 0)));
 
   const lines = Array.isArray(payload?.lines) ? payload.lines : [];
+  const taxBuckets = Array.isArray(payload?.taxBuckets) ? payload.taxBuckets : [];
+  const freight = Math.abs(Number(payload?.transportation?.taxableAmount ?? 0));
+  const freightLedger = payload?.transportation?.ledger ?? null;
+  const roundOff = Number(payload?.tax?.roundOffAmount ?? 0);
+  const roundOffLedger = payload?.transportation?.roundOffLedger ?? null;
 
   assertAllowedLedgerName(partyName, { allowParty: true });
   const salesLedger = payload?.tally?.ledgers?.sales ?? null;
   const cgstLedger = payload?.tally?.ledgers?.cgst ?? null;
   const sgstLedger = payload?.tally?.ledgers?.sgst ?? null;
   const igstLedger = payload?.tally?.ledgers?.igst ?? null;
-  assertAllowedLedgerName(salesLedger);
+  if (taxBuckets.length <= 1) assertAllowedLedgerName(salesLedger);
+  for (const bucket of taxBuckets) {
+    assertAllowedLedgerName(bucket.salesLedger);
+    if (bucket.cgstLedger) assertAllowedLedgerName(bucket.cgstLedger);
+    if (bucket.sgstLedger) assertAllowedLedgerName(bucket.sgstLedger);
+    if (bucket.igstLedger) assertAllowedLedgerName(bucket.igstLedger);
+  }
+  if (freight > 0) {
+    if (!freightLedger) throw new Error(`Sales Tally XML: transportation ledger mapping is missing for ${payload?.salesBillId}.`);
+    assertAllowedLedgerName(freightLedger);
+  }
+  if (Math.abs(roundOff) > 0.0001) assertAllowedLedgerName(roundOffLedger);
   if (cgstLedger) assertAllowedLedgerName(cgstLedger);
   if (sgstLedger) assertAllowedLedgerName(sgstLedger);
   if (igstLedger) assertAllowedLedgerName(igstLedger);
 
   // Enforce "either CGST+SGST or IGST" and ensure we never post summary ledgers.
+  // When taxIntraState is unknown, still require a ledger for any non-zero tax total.
   const taxIntraState = payload?.tax?.taxIntraState;
-  if (taxIntraState === true) {
+  const billRef = payload?.bill?.docNo || payload?.docNo || payload?.billId || "unknown bill";
+  if (taxBuckets.length > 1) {
+    if (taxIntraState === true && igstTotal !== "0.00") throw new Error("Sales Tally XML: intra-state bill cannot have IGST.");
+    if (taxIntraState === false && (cgstTotal !== "0.00" || sgstTotal !== "0.00")) throw new Error("Sales Tally XML: inter-state bill cannot have CGST/SGST.");
+  } else if (taxIntraState === true) {
     if (igstTotal !== "0.00") throw new Error("Sales Tally XML: intra-state bill cannot have IGST.");
     if (igstLedger) throw new Error("Sales Tally XML: intra-state bill cannot have IGST ledger.");
     if ((cgstTotal !== "0.00" && !cgstLedger) || (sgstTotal !== "0.00" && !sgstLedger)) {
-      throw new Error("Sales Tally XML: intra-state tax ledger missing.");
+      throw new Error(`Sales Tally XML: intra-state tax ledger missing for ${billRef}.`);
     }
   } else if (taxIntraState === false) {
     if (cgstTotal !== "0.00" || sgstTotal !== "0.00") throw new Error("Sales Tally XML: inter-state bill cannot have CGST/SGST.");
     if (cgstLedger || sgstLedger) throw new Error("Sales Tally XML: inter-state bill cannot have CGST/SGST ledgers.");
-    if (igstTotal !== "0.00" && !igstLedger) throw new Error("Sales Tally XML: inter-state IGST ledger missing.");
+    if (igstTotal !== "0.00" && !igstLedger) {
+      throw new Error(`Sales Tally XML: inter-state IGST ledger missing for ${billRef}.`);
+    }
+  } else {
+    if (cgstTotal !== "0.00" && !cgstLedger) {
+      throw new Error(`Sales Tally XML: CGST ledger missing for ${billRef} (tax jurisdiction unresolved).`);
+    }
+    if (sgstTotal !== "0.00" && !sgstLedger) {
+      throw new Error(`Sales Tally XML: SGST ledger missing for ${billRef} (tax jurisdiction unresolved).`);
+    }
+    if (igstTotal !== "0.00" && !igstLedger) {
+      throw new Error(`Sales Tally XML: IGST ledger missing for ${billRef} (tax jurisdiction unresolved).`);
+    }
   }
 
   const inventoryEntries = lines
@@ -303,7 +336,7 @@ function buildSalesBillTallyXml(payload) {
         `<BILLEDQTY>${xmlEscape(qtyWithUnit)}</BILLEDQTY>`,
         buildBatchAllocationXml({ godownName, batchName, qtyWithUnit, amount: amt }),
         "<ACCOUNTINGALLOCATIONS.LIST>",
-        `<LEDGERNAME>${xmlEscape(salesLedger)}</LEDGERNAME>`,
+        `<LEDGERNAME>${xmlEscape(ln.salesLedger || salesLedger)}</LEDGERNAME>`,
         "<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>",
         `<AMOUNT>${xmlEscape(amt)}</AMOUNT>`,
         "</ACCOUNTINGALLOCATIONS.LIST>",
@@ -312,6 +345,11 @@ function buildSalesBillTallyXml(payload) {
     })
     .join("");
 
+  const bucketTaxEntries = taxBuckets.length > 1 ? taxBuckets.flatMap((bucket) => [
+    Number(bucket.cgst) ? `<LEDGERENTRIES.LIST><LEDGERNAME>${xmlEscape(bucket.cgstLedger)}</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>${n2(bucket.cgst)}</AMOUNT></LEDGERENTRIES.LIST>` : "",
+    Number(bucket.sgst) ? `<LEDGERENTRIES.LIST><LEDGERNAME>${xmlEscape(bucket.sgstLedger)}</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>${n2(bucket.sgst)}</AMOUNT></LEDGERENTRIES.LIST>` : "",
+    Number(bucket.igst) ? `<LEDGERENTRIES.LIST><LEDGERNAME>${xmlEscape(bucket.igstLedger)}</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>${n2(bucket.igst)}</AMOUNT></LEDGERENTRIES.LIST>` : "",
+  ]) : [];
   const ledgerEntries = [
     // Party (debit) — invoice view uses negative amount with deemed positive Yes.
     [
@@ -322,7 +360,7 @@ function buildSalesBillTallyXml(payload) {
       "</LEDGERENTRIES.LIST>",
     ].join(""),
     // Tax ledgers (credit) – output tax, positive amounts in invoice view.
-    cgstTotal !== "0.00"
+    taxBuckets.length <= 1 && cgstTotal !== "0.00"
       ? [
           "<LEDGERENTRIES.LIST>",
           `<LEDGERNAME>${xmlEscape(cgstLedger)}</LEDGERNAME>`,
@@ -331,7 +369,7 @@ function buildSalesBillTallyXml(payload) {
           "</LEDGERENTRIES.LIST>",
         ].join("")
       : "",
-    sgstTotal !== "0.00"
+    taxBuckets.length <= 1 && sgstTotal !== "0.00"
       ? [
           "<LEDGERENTRIES.LIST>",
           `<LEDGERNAME>${xmlEscape(sgstLedger)}</LEDGERNAME>`,
@@ -340,7 +378,7 @@ function buildSalesBillTallyXml(payload) {
           "</LEDGERENTRIES.LIST>",
         ].join("")
       : "",
-    igstTotal !== "0.00"
+    taxBuckets.length <= 1 && igstTotal !== "0.00"
       ? [
           "<LEDGERENTRIES.LIST>",
           `<LEDGERNAME>${xmlEscape(igstLedger)}</LEDGERNAME>`,
@@ -349,6 +387,9 @@ function buildSalesBillTallyXml(payload) {
           "</LEDGERENTRIES.LIST>",
         ].join("")
       : "",
+    ...bucketTaxEntries,
+    freight > 0 ? `<LEDGERENTRIES.LIST><LEDGERNAME>${xmlEscape(freightLedger)}</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>${n2(freight)}</AMOUNT></LEDGERENTRIES.LIST>` : "",
+    Math.abs(roundOff) > 0.0001 ? `<LEDGERENTRIES.LIST><LEDGERNAME>${xmlEscape(roundOffLedger)}</LEDGERNAME><ISDEEMEDPOSITIVE>${roundOff < 0 ? "Yes" : "No"}</ISDEEMEDPOSITIVE><AMOUNT>${n2(Math.abs(roundOff))}</AMOUNT></LEDGERENTRIES.LIST>` : "",
   ]
     .filter(Boolean)
     .join("");
@@ -358,12 +399,12 @@ function buildSalesBillTallyXml(payload) {
   const taxSum = Math.abs(Number(payload?.tax?.gstTotal ?? 0));
   const net = Math.abs(Number(payload?.tax?.totalAmount ?? 0));
   const eps = 0.05;
-  if (Math.abs(baseSum - Number(taxable)) > eps || Math.abs(baseSum + taxSum - net) > eps) {
+  if (Math.abs(baseSum + freight - Number(taxable)) > eps || Math.abs(baseSum + freight + taxSum + roundOff - net) > eps) {
     throw new Error("Sales Tally XML: totals mismatch. Refusing to generate XML.");
   }
 
   // Balance check (ledger entries must sum to 0): -party + base + taxes
-  const ledgerNet = -net + baseSum + taxSum;
+  const ledgerNet = -net + baseSum + freight + taxSum + roundOff;
   if (Math.abs(ledgerNet) > 0.05) {
     throw new Error("Sales Tally XML: voucher does not balance. Refusing to generate XML.");
   }
@@ -418,7 +459,8 @@ function buildSalesBillTallyXml(payload) {
 
   // Hard safety: Sales Bill XML must reference only Party + Sales + Output tax ledgers.
   const allowed = new Set(
-    [partyName, salesLedger, cgstLedger, sgstLedger, igstLedger]
+    [partyName, salesLedger, cgstLedger, sgstLedger, igstLedger, freightLedger, roundOffLedger,
+      ...taxBuckets.flatMap((bucket) => [bucket.salesLedger, bucket.cgstLedger, bucket.sgstLedger, bucket.igstLedger])]
       .filter(Boolean)
       .map((x) => xmlEscape(String(x))),
   );
@@ -430,14 +472,63 @@ function buildSalesBillTallyXml(payload) {
       throw new Error(`Tally XML: summary ledger is not allowed in export: "${ln}"`);
     }
     if (!allowed.has(ln)) {
-      throw new Error(`Tally XML: unexpected ledger referenced in Sales Bill export: "${ln}"`);
+      const billRef = payload?.bill?.docNo || payload?.docNo || payload?.billId || "unknown bill";
+      const emptyHint =
+        !String(ln || "").trim()
+          ? " (empty LEDGERNAME — usually missing CGST/SGST/IGST or Sales ledger mapping)"
+          : "";
+      throw new Error(
+        `Tally XML: unexpected ledger referenced in Sales Bill export for ${billRef}: "${ln}"${emptyHint}`,
+      );
     }
   }
   return xml;
 }
 
+/** Extract every TALLYMESSAGE body (stock masters + voucher) from a single-bill envelope. */
+function extractAllTallyMessageBodies(xml) {
+  const out = [];
+  const re = /<TALLYMESSAGE>([\s\S]*?)<\/TALLYMESSAGE>/gi;
+  let m;
+  while ((m = re.exec(String(xml))) != null) {
+    out.push(m[1]);
+  }
+  if (!out.length) throw new Error("Invalid Tally XML structure");
+  return out;
+}
+
+/** Combine multiple sales bill envelopes into one Tally import file (all TALLYMESSAGEs preserved). */
+function buildSalesBillTallyBulkXml(payloads) {
+  if (!Array.isArray(payloads) || !payloads.length) {
+    throw new Error("No sales bills to export");
+  }
+  if (payloads.length === 1) {
+    return buildSalesBillTallyXml(payloads[0]);
+  }
+  const bodies = payloads.flatMap((p) => extractAllTallyMessageBodies(buildSalesBillTallyXml(p)));
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    "<ENVELOPE>",
+    "<HEADER>",
+    "<TALLYREQUEST>Import Data</TALLYREQUEST>",
+    "</HEADER>",
+    "<BODY>",
+    "<IMPORTDATA>",
+    "<REQUESTDESC>",
+    "<REPORTNAME>Vouchers</REPORTNAME>",
+    "</REQUESTDESC>",
+    "<REQUESTDATA>",
+    ...bodies.map((b) => `<TALLYMESSAGE>${b}</TALLYMESSAGE>`),
+    "</REQUESTDATA>",
+    "</IMPORTDATA>",
+    "</BODY>",
+    "</ENVELOPE>",
+  ].join("");
+}
+
 module.exports = {
   buildSalesBillTallyXml,
+  buildSalesBillTallyBulkXml,
   buildCommercialVoucherXml,
   splitAddressLines,
 };

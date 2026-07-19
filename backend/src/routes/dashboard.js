@@ -41,6 +41,7 @@ const {
   ALL_APP_ROLES,
 } = require("../constants/erpRoles");
 const { getAccountsDashboard } = require("../services/accountsDashboardService");
+const { getStoreProductionMonitorPayload } = require("../services/storeProductionMonitorService");
 const {
   dispositionPendingExcludingReworkReady,
   dispositionHoldRemaining,
@@ -57,6 +58,8 @@ const DISPATCH_BACKLOG_ACCESS_DENIED =
   "Access denied. Only administrators and store staff can view dispatch backlog.";
 const PRODUCTION_QUEUE_ACCESS_DENIED =
   "Access denied. Only administrators and production staff can view the production queue.";
+const PRODUCTION_MONITOR_ACCESS_DENIED =
+  "Access denied. Only administrators, store, and production staff can view the production monitor.";
 const QC_QUEUE_ACCESS_DENIED = "Access denied. Only administrators and QA staff can view the QA queue.";
 const RM_RISK_ACCESS_DENIED =
   "Access denied. Only administrators, store, purchase, and production staff can view RM risk.";
@@ -71,6 +74,11 @@ const dashboardSummaryRoles = requireRole(["ADMIN"], DASHBOARD_SUMMARY_ACCESS_DE
 const continueWorkingRoles = requireRole(["ADMIN", "STORE", "PRODUCTION", "QA"], CONTINUE_WORKING_ACCESS_DENIED);
 const dispatchBacklogRoles = requireRole([...DISPATCH_READ_ROLES], DISPATCH_BACKLOG_ACCESS_DENIED);
 const productionQueueRoles = requireRole(["ADMIN", "PRODUCTION"], PRODUCTION_QUEUE_ACCESS_DENIED);
+/** Read-only Store Production Monitor — does not open the mutable production-queue CTA surface to STORE. */
+const productionMonitorRoles = requireRole(
+  ["ADMIN", "STORE", "PRODUCTION"],
+  PRODUCTION_MONITOR_ACCESS_DENIED,
+);
 const qcQueueRoles = requireRole(["ADMIN", "QA"], QC_QUEUE_ACCESS_DENIED);
 const rmRiskRoles = requireRole([...RM_CONTROL_CENTER_ROLES], RM_RISK_ACCESS_DENIED);
 const purchaseSummaryRoles = requireRole(["ADMIN", "PURCHASE", "STORE"], PURCHASE_SUMMARY_ACCESS_DENIED);
@@ -113,6 +121,16 @@ dashboardRouter.get("/production-queue", requireAuth, productionQueueRoles, asyn
     return res.json(rows);
   } catch (err) {
     return dashboardErrorResponse(res, err, "/api/dashboard/production-queue");
+  }
+});
+
+dashboardRouter.get("/production-monitor", requireAuth, productionMonitorRoles, async (req, res, next) => {
+  console.log("Dashboard API called", { endpoint: "/api/dashboard/production-monitor" });
+  try {
+    const payload = await getStoreProductionMonitorPayload();
+    return res.json(payload);
+  } catch (err) {
+    return dashboardErrorResponse(res, err, "/api/dashboard/production-monitor");
   }
 });
 

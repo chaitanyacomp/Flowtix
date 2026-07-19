@@ -1590,6 +1590,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
 
   const showOperationsClearStrip =
     !demo.enabled &&
+    (pendingActionsDeskProps?.loading !== false || pendingActionsDeskProps.count === 0) &&
     userHasOperationalSummaryWidgets &&
     opsQueuesReady &&
     noOperationalFetchErrors &&
@@ -1986,7 +1987,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
           key="dispatch-prep"
           tier="ready"
           title="Waiting for dispatch ? all flows"
-          detail={`${prepLines} line(s) still in dispatch prep`}
+          detail={`${prepLines} line(s) with prepare headroom`}
           actionLabel="Open Dispatch Workspace"
           href="/dispatch?source=dashboard"
         />,
@@ -1997,8 +1998,8 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
         if (prepLines > 0) {
           dRegular +=
             dispatchDashNoQty.length > 0
-              ? ` ? ${prepLines} line(s) in dispatch prep (all SO types)`
-              : ` ? ${prepLines} line(s) still in dispatch prep`;
+              ? ` — ${prepLines} line(s) with prepare headroom (all SO types)`
+              : ` — ${prepLines} line(s) with prepare headroom`;
         }
         regularFlowDashAlertNodes.push(
           <OperationalDashCard

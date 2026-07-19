@@ -429,7 +429,7 @@ Engine-generated only.
 | `MFG_PMR_GEN` | WO Active; no PMR | Generate PMR |
 | `MFG_PMR_SUBMIT` | PMR Draft complete | Submit PMR (freeze) |
 | `MFG_ISSUE` | PMR Submitted; open lines | Post Material Issue |
-| `MFG_ISSUE_PARTIAL` | Partial PMR issue | Issue remaining RM |
+| `MFG_ISSUE_PARTIAL` | Partial PMR issue | Continue RM Issue (Material Issue → Partially Issued queue) |
 | `MFG_ARR` | Shortage beyond PMR | Create ARR |
 | `MFG_RETURN` | Return from production | Process Material Return |
 

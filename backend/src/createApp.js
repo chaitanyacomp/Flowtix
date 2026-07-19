@@ -44,6 +44,7 @@ const { locationsRouter } = require("./routes/locations");
 const { adminDatabaseCleanupRouter } = require("./routes/adminDatabaseCleanup");
 const { adminBackupsRouter } = require("./routes/adminBackups");
 const { adminSecurityRouter } = require("./routes/adminSecurity");
+const { adminUsersRouter } = require("./routes/adminUsers");
 const { tallyMasterImportRouter } = require("./routes/tallyMasterImport");
 const { openingStockRouter } = require("./routes/openingStock");
 const { rateContractsRouter } = require("./routes/rateContracts");
@@ -165,6 +166,8 @@ function createApp(options = {}) {
   app.use("/api/material-issues", materialIssueRouter);
   const { pmrRouter } = require("./routes/productionMaterialRequests");
   app.use("/api/production-material-requests", pmrRouter);
+  const { rmAllowanceApprovalRouter } = require("./routes/rmAllowanceApprovals");
+  app.use("/api/rm-allowance-approvals", rmAllowanceApprovalRouter);
   const { productionMaterialReturnRouter } = require("./routes/productionMaterialReturns");
   app.use("/api/production-material-returns", productionMaterialReturnRouter);
   app.use("/api/no-qty", noQtyNextActionRouter);
@@ -185,6 +188,7 @@ function createApp(options = {}) {
   app.use("/api/admin", adminDatabaseCleanupRouter);
   app.use("/api/admin", adminBackupsRouter);
   app.use("/api/admin", adminSecurityRouter);
+  app.use("/api/admin", adminUsersRouter);
   app.use("/api/admin", tallyMasterImportRouter);
   app.use("/api", openingStockRouter);
 

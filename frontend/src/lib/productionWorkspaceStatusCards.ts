@@ -14,6 +14,16 @@ export type RmReturnPendingRow = {
   workOrderNo?: string;
 };
 
+/**
+ * Header KPI counts for Production Workspace.
+ *
+ * - readyToStart / shortfallDecision / pendingQa: distinct work orders from production-queue
+ *   rows classified by `classifyProductionQueueBucketFromBackend` (not production-entry rows).
+ * - waitingRmReturn: distinct WOs from pending RM-return Store tasks (separate API).
+ *
+ * Pending QA is intentionally WO-scoped: two Pending QC production entries on the same WO
+ * count as 1 here, while Recent Production Entries lists each entry.
+ */
 export function buildProductionWorkspaceStatusCounts(
   queueRows: DashboardProductionStatusSource[],
   rmReturnPending: RmReturnPendingRow[],
@@ -47,6 +57,6 @@ export function buildProductionWorkspaceStatusCounts(
 export const PRODUCTION_STATUS_CARD_LABELS: Record<ProductionWorkspaceStatusBucket, string> = {
   readyToStart: "Ready to Start",
   waitingRmReturn: "Pending Store Tasks",
-  shortfallDecision: "Ready for Shortfall Decision",
+  shortfallDecision: "Production Report Pending",
   pendingQa: "Pending QA",
 };

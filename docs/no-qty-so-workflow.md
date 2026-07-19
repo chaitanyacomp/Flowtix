@@ -12,6 +12,10 @@ This document describes the **NO_QTY Sales Order** workflow only.
 - **4)** **Lock Requirement Sheet**
 - **5)** Create **Work Order** from the locked Requirement Sheet
 - **6)** Record **Production**, then approve the batch
+- **6b)** On **Confirm Report** with shortfall **Carried Forward**: WO stays open until Store approves RM return; it leaves **Active Production** (editing locked) and appears under **Pending Store Tasks**. Further production for the shortfall is on the next WO/cycle — not by reopening the finalized WO. Residual planned − produced alone does not keep the WO in Active Production.
+- **6c)** Pending Actions **Open Production Workspace** for a multi-WO Ready/Continue bucket opens the matching Workbench tab (`pwSection=ready` or `active`) without pinning a completed sibling WO/cycle. Single Ready focuses the card (`pwFocus`); single Continue opens the executable remaining-balance screen.
+- **6d) Pause / Resume:** Partial production may leave an entry in Pending QC while the WO stays In Progress with remaining qty. Pause (reason required) → execution BLOCKED / Paused Production; Resume → same WO Active. Confirm Report & Close WO is the only production finalization; shortfall/CF only at that point.
+- **6e) Planned Process Allowance:** Store enters **Add Qty** only; Allowance % is server-calculated from applicable BOM. Excess starts above applicable BOM + Add Qty. Above 5%–10% requires reason + async Admin approval (no stock until Store final issue). Theoretical RM already includes runner. Planned allowance is issue planning—not actual wastage—and is reconciled against actual wastage in the mandatory Production Report.
 - **7)** Record **QC** until the relevant qty is finalized
 - **8)** Do **Dispatch** (only usable QC-passed stock, within cycle cap)
 - **9)** Create **Sales Bill** from confirmed dispatch
@@ -135,7 +139,7 @@ Where:
 \[
 billableQty = validDispatchedQty - alreadyBilledQty
 \]
-Phase-1 system is **dispatch-wise billing** (1 dispatch → 1 bill), so bill eligibility is based on **unbilled confirmed dispatch**.
+Billing is quantity-allocation based. One Sales Bill may reserve and bill partial quantities from multiple locked dispatches belonging to the same Sales Order and customer. Commercial invoice lines may aggregate compatible sources while dispatch-wise allocations remain traceable and protected from duplicate billing.
 
 #### 6) Export qty (Tally)
 \[
@@ -226,3 +230,13 @@ NO_QTY dispatchable quantity is `min(remaining locked customer/cycle demand, rem
 - Customer Demand edits refresh Net Production Requirement immediately in the draft grid (live allocation preview). Save Draft and Finalize both persist demand and recalculate accepted surplus atomically; Finalize is blocked while the draft is marked dirty.
 - Unused balance rolls through the cumulative formula. Suggested WO and monthly planning consume Net Production Requirement only.
 - Unused excess when demand < available pool is retained for future cycles (example: demand 300, pool 500 → net 0, unused 200).
+# Multi-WO independence
+
+See [Production multi-WO canonical rule](PRODUCTION_MULTI_WO_CANONICAL_RULE.md). One RS FG/cycle may have multiple concurrent, independent WOs; a later sibling never carries forward or replaces an earlier sibling.
+
+Partial production and Pending QC do not close a NO_QTY WO. With remaining quantity, Pause preserves the batch, moves the WO to Paused Production (operator leaves the runner), and Resume returns it to Continue Production. Equal/extra production (plan met within RM-supported cap) parks **Production Report Pending**. Only explicit **Confirm Report & Close WO** assesses return, actual wastage, shortfall, carry-forward, and closure. After close, the operator lands on the **card Production Workspace → Ready to Start** — never the obsolete Select Work Order / Work queue / Log production screen.
+
+For a draft Production Entry, the remaining-balance decision occurs at **Review & Finalize**, before posting. Continue and Pause retain remaining quantity in the same WO/cycle and never open the Production Report. **End Production with Shortage**, equal completion, and approved extra completion all require the mandatory Production Report before close; shortage recovery (`PRODUCTION_SHORTFALL`) is emitted only on report-confirmed closure. Draft quantities never contribute to produced totals or recovery. RM report reconciliation remains separate from production-entry finalization and from QC.
+# Production-end RM reconciliation clarification (2026-07)
+
+Draft quantities are not finalized production. Continue and Pause preserve the unproduced balance in the same WO and RS cycle. **End Production with Shortage**, equal production, and extra production (within RM cap) all require confirmation of the mandatory Production Report before WO close. Only after that confirmation does shortage enter Keep/Waive / next-cycle recovery. The report does not wait for QC; QC remains entry-specific and independent. Unused RM-supported FG capacity is not wastage until the operator allocates actual RM in RM UOM.

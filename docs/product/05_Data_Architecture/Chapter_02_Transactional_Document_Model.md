@@ -602,6 +602,8 @@ For each document: **purpose**, **business identity**, **owner**, **parents/chil
 | **Correlation** | Same `correlationId` |
 | **Audit** | Finalize |
 
+`SalesBillLine` may aggregate compatible commercial sources. `SalesBillDispatchAllocation` is the normalized draft reservation and finalized trace to Dispatch. Transportation and line-wise tax allocations are reproducible snapshots. Legacy records retain historical links and totals.
+
 #### Billing Export (Export Batch)
 
 | Attribute | Value |

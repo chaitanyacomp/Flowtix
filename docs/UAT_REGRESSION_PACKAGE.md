@@ -402,6 +402,49 @@ Authoritative SSOT: FT-PD-022 §7.3 / FT-PD-031 §7.2 / Planning State Machine �
 
 The Release-1 gate covers Primary Unit, one Alternate Unit, precision, missing Unit/Location, external-ID/GSTIN/duplicate/ambiguous/inactive matching, HSN/GST, location-wise opening quantity/rate/value, approval and safe rerun, BOM history protection, invoice generation, duplicate-attempt prevention, acknowledgement, rejection persistence and retry. Deferred features must be reported as unsupported, never silently ignored. See the [Tally Compatibility Contract](./product/05_Data_Architecture/Tally_Compatibility_Contract.md).
 
+## Production Pause / Resume (1,500 → 500 → pause → resume → continue)
+
+1. NO_QTY WO planned 1,500; produce/approve **500**; confirm entry may show Pending QC in Recent Entries.
+2. Confirm WO remains **Active** with **1,000** remaining (not removed because of entry QC).
+3. Pause with reason → Pending Actions “Production Paused”; Workspace **Paused Production** shows WO with remaining 1,000; production API rejects new entries.
+4. Resume → same WO under **Active Production**; continue producing remainder without duplicating the 500 entry.
+5. Confirm Report & Close WO only then finalizes; no carry-forward before that confirmation.
+6. RM-return pending (if any) appears under Awaiting Store Approval, not Active.
+
+## Pending Actions → Production Workspace routing
+
+1. Seed two Ready to Start NO_QTY WOs (e.g. WO-26-0003, WO-26-0004) on the same or different SOs; leave a prior completed WO on the same cycle if available.
+2. Pending Actions → Ready to Start Production (2) → **Open Production Workspace**.
+3. Expect **Ready to Start** tab with both cards — **not** empty Continue Production, and **not** “Production entry completed for this cycle”.
+4. URL must include `productionBucket=readyToStart`, `pwSection=ready`, and `from`/`returnTo=pending-actions`, and must **not** pin a completed `workOrderId` / stale `salesOrderId`+`cycleId`.
+5. Continue Production (partial + prior Pending QC + remaining) opens executable Continue screen — not Waiting for QA only.
+6. Back returns to Pending Actions; left-menu Production Workspace opens bare `/production` overview.
+7. Single-item Ready Pending Action still opens that WO directly; completed WO history link stays read-only when no siblings are actionable.
+
+## Production Workspace — Active Production eligibility (UI classification)
+
+Preserve WO closure only after Store RM-return approval. Fix classification only:
+
+1. Partially produce a NO_QTY WO (planned > produced), leave execution open → WO appears in **Active Production**; Open enters editable production.
+2. Confirm production report with shortfall **Carried Forward** → WO **leaves Active Production**; production editing locked; WO still open; appears under **Pending Store Tasks / Awaiting Store Approval**; Recent Production Entries still show the batch (e.g. Pending QC).
+3. Fully produce with Pending QC only → not in Active Production; counts under **Pending QA** (WO-scoped).
+4. Same SO/cycle: another WO that can still accept production remains in Active Production.
+5. Open from Active Production must not reopen a finalized/terminal-for-production WO into editable entry.
+6. Pending QA KPI matches distinct WOs with pending QC on the production queue (may be 1 while Recent shows 2 Pending QC rows on that WO).
+
+## Material Issue — Planned Process Allowance
+
+1. Load a PMR with Theoretical RM **27 Kg** and sufficient stock.
+2. Enter Allowance Qty **1 Kg** → percentage is approximately **3.5714%**, Recommended is **28 Kg**.
+3. Enter **Add Qty** so Issue Now defaults to applicable BOM + Add Qty (e.g. BOM 27 + Add 1 → Issue Now **28 Kg**) and status is Ready / Normal · No approval required when ≤5%.
+4. Enter Issue Now **29 Kg** → “Excess issue: 1 Kg above recommended.”
+5. Enter Issue Now **27 Kg** → below recommended by 1 Kg, but not a true BOM short.
+6. Enter Issue Now **26 Kg** → true short against theoretical RM.
+7. Enter **7%** → reason required and Admin approval required. Enter **11%** → blocked; use Additional RM Issue.
+8. Edit Allowance % on one of several RM lines; verify other lines do not recalculate.
+9. At desktop/tablet/mobile widths verify no nested horizontal scroll, no clipped controls, normal rows remain compact, and only the line needing approval expands.
+10. Confirm the issue-line audit snapshot includes source, entered/calculated allowance, recommended/actual issue, UOM/conversion, approval, user/time. Confirm no wastage is posted until Production Report.
+
 ## NO_QTY RM-supported overproduction UAT
 
 - WO 2,000 / RM capacity 2,050: 2,020 saves with a non-blocking 20 excess warning.
@@ -483,3 +526,18 @@ Use SO-26-0001: Cycle 1 demand 6,000; WOs planned 2,000 each; production 2,000 +
 | NAV-013 | List → Record → Back | Sales Orders / WO with filters | Filters and scroll restore; no restored action/modal |
 | NAV-014 | Dispatch boot | Open `/dispatch` with pending work | No false “Dispatch complete” before load |
 | NAV-015 | Dispatch finalize retry | Finalize with same key after network fail | No duplicate stock post; key reused until success |
+# Multi-WO production acceptance
+
+For Cycle 1 demand Round Plate 5,000 and Square Box 3,000, create WOs 3,000 / 2,000 and 2,000 / 1,000 respectively. Verify four canonical business numbers, four Active/Ready WOs, four Pending Actions, four WO-needs-action records, no Carried Forward row, correct links, and Operations Clear false. Repeat after pausing/resuming one WO, partial production, sibling QA, explicit finalized shortfall, and terminal closure; only the targeted WO may change.
+
+For WO 3,000, issue 41 Kg, approve 1,500 consuming 20.25 Kg, and leave the entry Pending QC. Verify WO remains Active with 1,500 remaining and 20.75 Kg available. Pause with Machine Breakdown: only paused summary, Resume, and read-only history render; report/finalization APIs reject. Resume and save the remaining quantity without duplicating the first entry. Only explicit final confirmation may resolve return/actual wastage and close.
+## Production Review & Finalize disposition UAT
+
+1. WO 6,000: save Draft 3,000; verify no stock/QC/shortage posting.
+2. Review & Finalize -> Continue; verify 3,000 Pending QC and 3,000 active in the same WO.
+3. Repeat with Pause; start another WO, then Resume the original and verify only its balance returns active.
+4. Repeat with Close WO with Shortage; verify terminal WO and exactly one 3,000 `PRODUCTION_SHORTFALL` source after retry/refresh and next-cycle creation.
+5. Verify Pending Actions/deep links open Ready, Continue, Paused, draft Review & Finalize, or QC according to persisted state.
+# Production RM planning/reconciliation acceptance
+
+Verify 0%, 2.5%, and Admin-approved 7% allowance calculations; above-10% blocking; runner included once; Continue and Pause without report/carry-forward; Equal/Shortage/Extra routing to a QC-independent Production Report; automatic runner plus manual non-runner wastage; explained variance; Store-confirmed return; and exactly-once shortage recovery after report confirmation.

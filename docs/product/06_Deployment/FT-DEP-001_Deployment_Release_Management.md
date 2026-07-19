@@ -4,7 +4,7 @@
 |-------|-------|
 | **Document ID** | FT-DEP-001 |
 | **Title** | Deployment & Release Management Standard |
-| **Version** | 1.14.1 |
+| **Version** | 1.14.2 |
 | **Status** | Active — Operational Standard (Batches 1–11 + Milestones 2–4 commercial delivery) |
 | **Effective date** | 2026-07-09 |
 | **Author** | FT ERP Product Team |
@@ -57,6 +57,8 @@
 | 1.13.0 | 2026-07-17 | FT ERP Product Team | Milestone 4 — customer delivery media (`create-customer-media`), demo pack, customer guides + acceptance, checksums/manifest, branding About/support placeholders |
 | 1.14.0 | 2026-07-17 | FT ERP Product Team | Hotfix — installer place-release self-wipe: skip archive refresh when `--source` is `{home}\releases\…`; promote `app`/`web` only; certify-install regression |
 | 1.14.1 | 2026-07-18 | FT ERP Product Team | Hotfix — Inno `[Run]` invokes `post-install.bat` directly (cmd `/C` quoting dropped args); `existing_install` allows env-only first bootstrap; admin hard-fail only when service/firewall requested; full RCA + rebuild/certify docs synchronized |
+| 1.14.2 | 2026-07-18 | FT ERP Product Team | Hotfix — packaged runtime: remove Tally `require.resolve` of source-relative modules; Control Tower Decimal via `prismaClientPackage` (not bare `@prisma/client`); `packagedRuntimeBundle` regression |
+| 1.14.3 | 2026-07-18 | FT ERP Product Team | Deployment UAT — production leave/wastage integrity; Issue RM eligibility; Tally HSN inheritance; backup-db install-home; Admin Users + login messaging; BOM/RS refresh; Sales Bill bulk Tally; viewport/dispatch draft stability |
 
 **Supersedes:** Informal client install notes; ad-hoc “copy the repo to the server” practices.
 
@@ -1094,6 +1096,25 @@ release/Flowtix-vX.Y.Z/
 
 `prismaClientPackage.js` resolves the client via `getPackageRoot()` so both source and bundled layouts work.
 
+### 28.5.1 Packaged-runtime hazards (v1.14.2)
+
+Application code that works under `node backend/src/server.js` **can fail** in `app/server.js` if it assumes a multi-file source tree or the default `@prisma/client` generate path.
+
+| Hazard | Failure mode | Required pattern |
+|--------|--------------|------------------|
+| `require.resolve("./relativeModule")` (or dynamic `require` of a sibling `.js` not shipped) | `Cannot find module './…'` at runtime — siblings are inlined into `server.js`, not on disk | Prefer **static** `require("./…")` at load time (bundled). For diagnostics, emit **static module id strings**, never `require.resolve` of source-relative paths |
+| `const { Prisma } = require("@prisma/client")` then `new Prisma.Decimal(…)` | `Prisma.Decimal is not a constructor` when custom output `client-v2` is the only generated client shipped under `app/prisma/` | Always `require("../prismaClientPackage")` (or equivalent) for `Prisma` / enums / `Decimal` |
+| Bare `@prisma/client` for query filters | Same Decimal / namespace mismatch in packaged `app/` | Same — use generated client via `prismaClientPackage` |
+
+**Incidents fixed in v1.14.2:**
+
+1. **Tally Master Preview** (`POST /api/admin/tally-import/preview`) — `buildPreviewPayload` / diagnostics called `require.resolve("./mapLedgerToParty")` (and related modules). Mapping logic itself was already statically required; only the resolve broke the packaged path.
+2. **Control Tower panel metrics** (`GET /api/control-tower/panel-metrics`) — `accountsDashboardService` used `new Prisma.Decimal(...)` from bare `@prisma/client` instead of `prismaClientPackage`.
+
+**Regression:** `backend/test/packagedRuntimeBundle.test.js` builds `deployment/bundle-backend.js` output and asserts (a) no source-relative Tally `require.resolve` strings in `server.js`, (b) `Prisma.Decimal` works from packaged `app/prisma/generated/client-v2`. Also `test/unit/accountsDashboardDecimal.test.js`.
+
+**Tally on same PC:** When Tally and the Flowtix backend run on the same machine and `http://localhost:9000` responds, a separate Tally HTTP proxy is **not** required for Master import preview/apply (XML upload / local Tally XML path). Proxy notes apply only when Tally is remote or the browser cannot reach Tally directly.
+
 ### 28.6 Tooling
 
 | Artifact | Path |
@@ -1102,6 +1123,7 @@ release/Flowtix-vX.Y.Z/
 | Build wrapper | `deployment/build-backend.bat` |
 | Orchestrator | `deployment/create-release.bat` |
 | Dev dependency | `backend` → `esbuild` (devDependency) |
+| Packaged-runtime test | `backend/test/packagedRuntimeBundle.test.js` |
 
 ### 28.7 Validation checklist (Batch 3)
 
@@ -1112,6 +1134,9 @@ release/Flowtix-vX.Y.Z/
 - [ ] Release `prisma/schema.prisma` + `migrations/` present
 - [ ] `GET /health` works when running bundled `node server.js` with valid `shared/.env` / env
 - [ ] Backend unit tests still pass in the **source** tree (bundling does not replace test entrypoints)
+- [ ] `npm test --prefix backend` includes `packagedRuntimeBundle` PASS
+- [ ] Packaged `server.js` has no `require.resolve("./mapLedgerToParty")` (or sibling Tally resolves)
+- [ ] Control Tower / accounts paths construct Decimal via generated client (`prismaClientPackage`)
 
 ### 28.8 Still deferred
 

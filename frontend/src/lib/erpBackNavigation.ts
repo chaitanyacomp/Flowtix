@@ -117,11 +117,14 @@ function resolveReturnToTarget(
       const bucket = searchParams.get("productionBucket");
       const qs = new URLSearchParams();
       if (bucket?.trim()) qs.set("productionBucket", bucket.trim());
-      const wo =
-        workOrderId && workOrderId > 0
-          ? workOrderId
-          : Number(searchParams.get("workOrderId") || 0);
-      if (wo > 0) qs.set("workOrderId", String(wo));
+      const section = searchParams.get("pwSection");
+      if (section?.trim()) qs.set("pwSection", section.trim());
+      else if (bucket === "readyToStart") qs.set("pwSection", "ready");
+      else if (bucket === "inProgress") qs.set("pwSection", "active");
+      for (const key of ["pwq", "pwFlow", "pwSort", "pwSize", "pwPage", "pwFocus"]) {
+        const v = searchParams.get(key);
+        if (v?.trim()) qs.set(key, v.trim());
+      }
       const q = qs.toString();
       return { to: q ? `/production?${q}` : "/production", label: "Back to Production Workspace" };
     }
@@ -266,8 +269,14 @@ export function resolveERPBackTarget(
       const bucket = searchParams.get("productionBucket");
       const qs = new URLSearchParams();
       if (bucket?.trim()) qs.set("productionBucket", bucket.trim());
-      const wo = Number(searchParams.get("workOrderId") || 0);
-      if (wo > 0) qs.set("workOrderId", String(wo));
+      const section = searchParams.get("pwSection");
+      if (section?.trim()) qs.set("pwSection", section.trim());
+      else if (bucket === "readyToStart") qs.set("pwSection", "ready");
+      else if (bucket === "inProgress") qs.set("pwSection", "active");
+      for (const key of ["pwq", "pwFlow", "pwSort", "pwSize", "pwPage", "pwFocus"]) {
+        const v = searchParams.get(key);
+        if (v?.trim()) qs.set(key, v.trim());
+      }
       const q = qs.toString();
       return { to: q ? `/production?${q}` : "/production", label: "Back to Production Workspace" };
     }

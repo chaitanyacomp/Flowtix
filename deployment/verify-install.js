@@ -63,15 +63,31 @@ function parseArgs(argv) {
 
 function resolveHome(cliHome) {
   if (cliHome) return cliHome;
+  if (process.env.FT_ERP_HOME && String(process.env.FT_ERP_HOME).trim()) {
+    return path.resolve(String(process.env.FT_ERP_HOME).trim());
+  }
   const here = __dirname;
   if (path.basename(here) === "tools") {
-    const releaseDir = path.resolve(here, "..");
-    const parent = path.resolve(releaseDir, "..");
-    if (fs.existsSync(path.join(parent, "shared")) || fs.existsSync(path.join(parent, "releases"))) {
-      return parent;
+    const toolsParent = path.resolve(here, "..");
+    const grandParent = path.resolve(toolsParent, "..");
+    if (
+      fs.existsSync(path.join(toolsParent, "shared")) ||
+      fs.existsSync(path.join(toolsParent, "releases")) ||
+      fs.existsSync(path.join(toolsParent, "app"))
+    ) {
+      return toolsParent;
     }
-    if (path.basename(parent) === "release") return path.resolve(parent, "..");
-    return parent;
+    if (path.basename(grandParent) === "releases") {
+      return path.resolve(grandParent, "..");
+    }
+    if (
+      fs.existsSync(path.join(grandParent, "shared")) ||
+      fs.existsSync(path.join(grandParent, "releases"))
+    ) {
+      return grandParent;
+    }
+    if (path.basename(grandParent) === "release") return path.resolve(grandParent, "..");
+    return toolsParent;
   }
   if (path.basename(here) === "deployment") return path.resolve(here, "..");
   return path.resolve(here, "..");

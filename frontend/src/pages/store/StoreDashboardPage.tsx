@@ -7,7 +7,11 @@ import { resolveNoQtyDashboardActionLabel } from "../../lib/noQtyDashboardPresen
 import { prepareNoQtyNextRequirementSheetAndNavigate } from "../../lib/noQtyPrepareNextRsNavigate";
 import { useToast } from "../../contexts/ToastContext";
 import { useDemoMode } from "../../contexts/DemoModeContext";
-import { type DispatchBacklogRow, ROW_NUM_EPS } from "../../lib/dispatchBacklog";
+import {
+  filterActionableDispatchBacklogRows,
+  type DispatchBacklogRow,
+  ROW_NUM_EPS,
+} from "../../lib/dispatchBacklog";
 import { useDashboardPendingActionsDesk } from "../../hooks/useDashboardPendingActionsDesk";
 import { useErpCachedQuery } from "../../hooks/useErpCachedQuery";
 import { StoreDispatchDashboard, type StoreDispatchActionRow } from "./StoreDispatchDashboard";
@@ -434,14 +438,18 @@ export function StoreDashboardPage() {
     href: d.href,
   }));
 
+  // Backend already filters to dispatchableNow > 0; keep a defensive client filter so
+  // zero-headroom / blocked lines never inflate backlog or preview qty.
+  const actionableBacklog = filterActionableDispatchBacklogRows(backlog ?? []);
+
   return (
     <StoreDispatchDashboard
       refreshTick={liveTick}
       refreshing={storeRefreshing || noQtyFlowQuery.refreshing}
       dispatchReady={storeDispatchReady}
-      backlogPreview={backlog ?? []}
+      backlogPreview={actionableBacklog}
       fgStockTotal={0}
-      dispatchBacklogCount={backlog?.length ?? 0}
+      dispatchBacklogCount={actionableBacklog.length}
       pendingActions={pendingActionsDeskProps}
       pendingRsActions={storePendingRsActions}
       noQtyContinuationRows={visibleOpenNoQtyContinuationRows}

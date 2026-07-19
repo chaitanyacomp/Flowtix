@@ -148,6 +148,12 @@ Generating or downloading XML is not acceptance. Flowtix marks a document export
 
 Release-1 direct-file mode may generate a package, but its status is **Generated/Confirmation pending** until an authorized user imports the Tally response/confirmation. It must not claim “Exported to Tally.”
 
+One finalized Sales Bill exports as one Sales voucher even with multiple dispatch allocations. Seller-charged transportation exports once through the configured freight ledger and applicable GST buckets; transporter-direct charges are excluded. Missing freight mapping or an unbalanced voucher blocks XML generation.
+
+Sales Bill Tally export reads the finalized stored snapshot and never recalculates GST. `GST_BUCKET_SPLIT_V3` drafts calculate tax once per GST-rate bucket and allocate its currency amounts back to lines deterministically, keeping line, bucket, invoice, freight-ledger and voucher totals balanced. Earlier finalized calculation versions remain unchanged.
+
+`GST_COMPONENT_BUCKET_V4` supersedes V3 for newly rebuilt drafts: intrastate CGST and SGST are independently rounded per GST-rate bucket at equal half-rates, while interstate IGST is independently rounded at the full rate. Tally continues to export only stored finalized snapshot values.
+
 ## 6. Required schema design
 
 | Model/change | Purpose |

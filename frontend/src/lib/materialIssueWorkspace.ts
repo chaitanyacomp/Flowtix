@@ -22,12 +22,21 @@ export type PendingPmrSummary = {
   requirementSheetId?: number | null;
   productionItemName?: string | null;
   totalPending: number;
+  totalRequired?: number | null;
+  totalIssued?: number | null;
   lineCount?: number;
+  pendingLineCount?: number | null;
+  /** Backend-derived Store queue lifecycle (READY_TO_ISSUE | PARTIALLY_ISSUED | …). */
+  issueQueueState?: "READY_TO_ISSUE" | "PARTIALLY_ISSUED" | "COMPLETE" | "SHORT_CLOSED" | null;
   /** Additive backend readiness (M1.5). */
   storeIssueReady?: boolean | null;
   hasPendingIssueQty?: boolean | null;
   storeActionKey?: string | null;
   storeActionLabel?: string | null;
+  /** RM allowance Admin approval workflow (additive; merged client-side from /api/rm-allowance-approvals). */
+  allowanceStatus?: "NONE" | "PENDING_APPROVAL" | "APPROVED" | "REJECTED" | null;
+  allowancePct?: number | null;
+  allowanceRejectionReason?: string | null;
 };
 
 export type WoPmrGroup = {
@@ -38,6 +47,8 @@ export type WoPmrGroup = {
   latestPmr: PendingPmrSummary;
   allPmrs: PendingPmrSummary[];
   totalPending: number;
+  totalRequired: number;
+  totalIssued: number;
   pendingLineCount: number;
 };
 
@@ -91,7 +102,10 @@ export function groupPendingPmrsByWorkOrder(pmrs: PendingPmrSummary[]): WoPmrGro
     const actionable = sorted.filter(isStoreReadyPmr);
     if (actionable.length === 0) continue;
     const latestPmr = actionable[0];
-    const pendingLineCount = actionable.reduce((s, p) => s + Math.max(0, Number(p.lineCount ?? 1)), 0);
+    const pendingLineCount = actionable.reduce(
+      (s, p) => s + Math.max(0, Number(p.pendingLineCount ?? p.lineCount ?? 1)),
+      0,
+    );
     groups.push({
       workOrderId,
       workOrderNo: latestPmr.workOrderNo,
@@ -100,6 +114,8 @@ export function groupPendingPmrsByWorkOrder(pmrs: PendingPmrSummary[]): WoPmrGro
       latestPmr,
       allPmrs: sorted,
       totalPending: actionable.reduce((s, p) => s + n(p.totalPending), 0),
+      totalRequired: actionable.reduce((s, p) => s + n(p.totalRequired), 0),
+      totalIssued: actionable.reduce((s, p) => s + n(p.totalIssued), 0),
       pendingLineCount,
     });
   }

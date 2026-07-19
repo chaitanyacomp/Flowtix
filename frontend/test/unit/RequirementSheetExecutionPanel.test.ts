@@ -95,6 +95,16 @@ describe("RequirementSheetExecutionPanel layout", () => {
     expect(panelSource).toContain("defaultOpen={false}");
   });
 
+  it("stabilizes live RM preview against continuous Updating RM loops", () => {
+    expect(panelSource).toContain("buildRmPreviewLinesSignature");
+    expect(panelSource).toContain("mergePlacementDraftQtys");
+    expect(panelSource).toContain("rmPreviewSignature");
+    expect(panelSource).toContain("rmPreviewRequestIdRef");
+    // Quantity signature + soft BOM/stock refresh only — not whole `data` / line array identity.
+    expect(panelSource).toContain("[sheetId, rmPreviewSignature, bomRefreshTick]");
+    expect(panelSource).not.toContain("[sheetId, data, requestedLines, suggestedLines]");
+  });
+
   it("splits placement into suggested and custom create actions and stays on workspace after create", () => {
     expect(panelSource).toContain("CREATE_SUGGESTED");
     expect(panelSource).toContain("CREATE_CUSTOM");

@@ -401,10 +401,32 @@ export function OpeningStockPage() {
                       <Undo2 className="mr-2 h-4 w-4" />
                       Reverse
                     </Button>
-                    <Button type="button" size="sm" variant="default" onClick={() => openApprove(r)} disabled={r.status !== "DRAFT"}>
-                      <CheckCircle2 className="mr-2 h-4 w-4" />
-                      Approve
-                    </Button>
+                    {r.status === "DRAFT" ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="default"
+                        onClick={() => openApprove(r)}
+                        data-testid="opening-stock-approve-btn"
+                      >
+                        <CheckCircle2 className="mr-2 h-4 w-4" />
+                        Approve
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled
+                        aria-disabled="true"
+                        title="Already approved"
+                        className="cursor-not-allowed opacity-60"
+                        data-testid="opening-stock-approve-disabled"
+                      >
+                        <CheckCircle2 className="mr-2 h-4 w-4" />
+                        Approved
+                      </Button>
+                    )}
                   </div>
                 </td>
               </tr>

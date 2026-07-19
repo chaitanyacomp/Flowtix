@@ -25,11 +25,12 @@ export function SalesBillExportQueuePrompt({
     <ErpModal onClose={onClose} backdropClassName="bg-black/30" aria-label="Export complete">
       <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-xl">
         <div className="border-b border-slate-200 px-4 py-3">
-          <div className="text-sm font-semibold text-slate-900">Bill exported successfully</div>
+          <div className="text-sm font-semibold text-slate-900">Tally XML downloaded</div>
           <p className="mt-1 text-xs text-slate-600">
+            Marked exported in ERP. Import the XML in Tally to post the voucher
             {remainingCount > 0
-              ? `Remaining pending bills: ${remainingCount}`
-              : "All pending bills in this queue are complete."}
+              ? `. Remaining pending bills: ${remainingCount}`
+              : ". All pending bills in this queue are complete."}
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
@@ -55,7 +56,7 @@ export function SalesBillExportQueuePrompt({
                 navigateOpenNextWorkQueueItem(navigate, workQueue);
               }}
             >
-              Open Next Bill
+              Next Pending Bill
             </Button>
           ) : null}
         </div>

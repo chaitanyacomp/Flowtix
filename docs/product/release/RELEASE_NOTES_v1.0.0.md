@@ -39,6 +39,17 @@ Version 1.0.0 is a **documentation baseline**, not a software release. It freeze
 
 ---
 
+## 2026-07-19 defect correction — Production Report live reconciliation
+
+- Unified Wastage Details, RM rows, the top summary, sticky footer, close-button gate, and backend confirmation validation on `Accounted RM = Consumed + Returned + Classified Wastage` at authoritative three-decimal RM precision.
+- Removed cached variance as a live calculation authority and rejected confirmation whenever unexplained RM is non-zero. WO-26-0006 now reconciles `81.23 + 0 + 0.77 = 82.00 Kg` and enables **Confirm Report & Close WO**.
+
+## 2026-07-19 — Combined Sales Billing
+
+- Added partial multi-dispatch allocations under one SO/customer, draft reservations, compatible line aggregation, and finalized trace.
+- Added proportional transportation GST, transporter-direct mode, calculation snapshots, invoice display, and Tally freight-ledger validation.
+- Legacy finalized bills and totals remain unchanged.
+
 ## Highlights
 
 | Area | v1.0.0 deliverable |

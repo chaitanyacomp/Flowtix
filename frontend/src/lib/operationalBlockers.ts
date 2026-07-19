@@ -51,15 +51,16 @@ function procurementBlockerDetail(row: {
 
 
 function isProcurementCompleteForDashboard(row: ProcurementPendingRow): boolean {
+  // RM ready / store-issue handoff is owned by allocation/store-issue queues — not procurement blockers.
+  if (row.operationalKey === "RM_READY" || row.operationalKey === "PROCUREMENT_COMPLETE") return true;
   if (row.operationalKey === "STORE_ISSUE_PENDING") return false;
-  if (row.operationalKey === "RM_READY") return false;
   const remaining = row.totalRemainingQty;
   if (remaining != null && remaining <= 1e-9) {
     const po = (row.pendingPoStatus ?? "").toLowerCase();
     const grn = (row.pendingGrnStatus ?? "").toLowerCase();
     const noOpenPo = po.includes("complete") || po === "—" || po.includes("no po");
     const noOpenGrn = grn.includes("complete") || grn === "—" || grn.includes("no grn");
-    if (noOpenPo && noOpenGrn) return false;
+    if (noOpenPo && noOpenGrn) return true;
   }
   return false;
 }
@@ -125,12 +126,18 @@ export function buildOperationalSoActions(
     const stageLabel =
       row.operationalKey === "RM_RECEIVED"
         ? "RM received in Store"
-        : row.operationalKey === "READY_FOR_ISSUE"
-          ? "Ready for issue"
-          : row.operationalKey === "PARTIALLY_ALLOCATED"
-            ? "Partially allocated"
-            : "Waiting RM";
+        : row.operationalKey === "AWAITING_RELEASE"
+          ? "Awaiting release to production"
+          : row.operationalKey === "READY_FOR_ISSUE"
+            ? "Ready for issue"
+            : row.operationalKey === "PARTIALLY_ALLOCATED"
+              ? "Partially allocated"
+              : "Waiting RM";
     const issueHref = buildMaterialIssueDeepLink({ workOrderId: woId, returnTo: "dashboard", salesOrderId: soId > 0 ? soId : null });
+    const releaseHref =
+      woId > 0
+        ? `/production-release?workOrderId=${encodeURIComponent(String(woId))}${soId > 0 ? `&salesOrderId=${encodeURIComponent(String(soId))}` : ""}&returnTo=dashboard`
+        : "/production-release";
     const productionHref = productionWorkspaceHref(woId, undefined, {
       salesOrderId: soId > 0 ? soId : undefined,
       orderType: row.orderType,
@@ -138,13 +145,15 @@ export function buildOperationalSoActions(
     const actionLabel =
       row.operationalKey === "READY_FOR_ISSUE"
         ? "Issue RM to Production"
-        : row.operationalKey === "RM_RECEIVED" || row.nextActionKey === "CREATE_WO"
-          ? "Create Work Order"
-          : row.operationalKey === "READY_FOR_PRODUCTION"
-            ? "Open Production Workspace"
-            : row.operationalKey === "PARTIALLY_ALLOCATED"
-              ? "Review Allocation"
-              : "Open RM Control Center";
+        : row.operationalKey === "AWAITING_RELEASE" || row.nextActionKey === "RELEASE_TO_PRODUCTION"
+          ? "Release to Production"
+          : row.operationalKey === "RM_RECEIVED" || row.nextActionKey === "CREATE_WO"
+            ? "Create Work Order"
+            : row.operationalKey === "READY_FOR_PRODUCTION"
+              ? "Open Production Workspace"
+              : row.operationalKey === "PARTIALLY_ALLOCATED"
+                ? "Review Allocation"
+                : "Open RM Control Center";
     const action: OperationalSoAction = {
       key: rowKey,
       salesOrderId: soId,
@@ -157,16 +166,18 @@ export function buildOperationalSoActions(
       actionTo:
         row.operationalKey === "READY_FOR_ISSUE"
           ? issueHref
-          : row.operationalKey === "RM_RECEIVED" || row.nextActionKey === "CREATE_WO"
-            ? woPreparePrepareHref(soId)
-            : row.operationalKey === "READY_FOR_PRODUCTION"
-              ? productionHref
-              : buildRmControlCenterHref({
-                  workOrderId: woId,
-                  salesOrderId: soId > 0 ? soId : undefined,
-                  materialRequirementId: row.materialRequirementId ?? undefined,
-                  returnTo: "dashboard",
-                }),
+          : row.operationalKey === "AWAITING_RELEASE" || row.nextActionKey === "RELEASE_TO_PRODUCTION"
+            ? releaseHref
+            : row.operationalKey === "RM_RECEIVED" || row.nextActionKey === "CREATE_WO"
+              ? woPreparePrepareHref(soId)
+              : row.operationalKey === "READY_FOR_PRODUCTION"
+                ? productionHref
+                : buildRmControlCenterHref({
+                    workOrderId: woId,
+                    salesOrderId: soId > 0 ? soId : undefined,
+                    materialRequirementId: row.materialRequirementId ?? undefined,
+                    returnTo: "dashboard",
+                  }),
       variant: row.operationalKey === "RM_RECEIVED" ? "ready" : "blocker",
     };
     const priority =

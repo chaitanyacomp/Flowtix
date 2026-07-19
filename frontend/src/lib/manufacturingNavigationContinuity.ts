@@ -3,11 +3,7 @@
  * Consolidates returnTo / from / workspace-origin patterns across Store → Dispatch.
  */
 
-import {
-  materialIssueWorkspaceHref,
-  postWoMaterialIssueHref,
-  rmControlCenterHref,
-} from "./materialWorkflowLinks";
+import { rmControlCenterHref } from "./materialWorkflowLinks";
 import {
   appendNavFrom,
   FROM_WORK_ORDER_WORKSPACE,
@@ -48,6 +44,18 @@ export function productionHrefFromProductionWorkspace(row: ProductionQueueRowLin
   );
 }
 
+export type { MaterialIssueBucket } from "./materialIssueDeepLink";
+export {
+  buildMaterialIssueDeepLink as buildMaterialIssueDeepLinkCanonical,
+  parseMaterialIssueDeepLink,
+  materialIssueBucketForPendingAction,
+} from "./materialIssueDeepLink";
+
+import {
+  buildMaterialIssueDeepLink as buildMiDeepLink,
+  type MaterialIssueBucket,
+} from "./materialIssueDeepLink";
+
 export type MaterialIssueDeepLinkInput = {
   workOrderId?: number;
   pmrId?: number | null;
@@ -55,32 +63,23 @@ export type MaterialIssueDeepLinkInput = {
   requirementSheetId?: number | null;
   salesOrderId?: number | null;
   source?: string;
+  /** Canonical MI side-queue bucket (`readyToIssue`, `partiallyIssued`, …). */
+  bucket?: MaterialIssueBucket | null;
+  listOnly?: boolean;
 };
 
-/** Canonical Material Issue deep link — replaces scattered `/material-issue?...` builders. */
+/** Canonical Material Issue deep link — uses `bucket=` + optional WO/PMR. */
 export function buildMaterialIssueDeepLink(input: MaterialIssueDeepLinkInput): string {
-  const pmrId = input.pmrId != null ? Number(input.pmrId) : 0;
-  const woId = Number(input.workOrderId ?? 0);
-  if (pmrId > 0 && woId <= 0) {
-    return materialIssueWorkspaceHref({
-      pmrId,
-      returnTo: input.returnTo,
-    });
-  }
-  if (woId > 0) {
-    return postWoMaterialIssueHref({
-      workOrderId: woId,
-      pmrId: pmrId > 0 ? pmrId : null,
-      returnTo: input.returnTo,
-      requirementSheetId: input.requirementSheetId,
-      salesOrderId: input.salesOrderId,
-    });
-  }
-  const qs = new URLSearchParams();
-  if (input.returnTo) qs.set("returnTo", input.returnTo);
-  if (input.source) qs.set("source", input.source);
-  const q = qs.toString();
-  return q ? `/material-issue?${q}` : "/material-issue";
+  return buildMiDeepLink({
+    bucket: input.bucket ?? null,
+    workOrderId: input.workOrderId,
+    pmrId: input.pmrId,
+    returnTo: input.returnTo,
+    from: input.source === "pending-actions" ? "pending-actions" : input.source ?? null,
+    requirementSheetId: input.requirementSheetId,
+    salesOrderId: input.salesOrderId,
+    listOnly: input.listOnly,
+  });
 }
 
 /** RM Control Center deep link — single builder (replaces duplicate woProcurement variant). */

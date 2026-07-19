@@ -8,6 +8,7 @@ import {
   pickFirstExecutableProductionLine,
   pickNextExecutableProductionLineExcludingWorkOrder,
   resolvePostProductionReportConfirmAdvance,
+  resolvePostProductionPauseAdvance,
   sortProductionLinesFifo,
 } from "../../src/lib/productionWorkspaceQueue";
 
@@ -29,6 +30,22 @@ describe("productionWorkspaceQueue", () => {
     ]);
     expect(pick?.id).toBe(2);
     expect(filterExecutableProductionLines([{ id: 1, workOrderId: 1, remainingQty: 0, qcPendingQty: 5 }])).toEqual([]);
+  });
+
+  it("after pause advances to the next executable WO or returns to workspace", () => {
+    const lines = [
+      { id: 10, workOrderId: 10, remainingQty: 2000 },
+      { id: 20, workOrderId: 20, remainingQty: 500 },
+    ];
+    expect(
+      resolvePostProductionPauseAdvance({ pausedWorkOrderId: 10, lines }),
+    ).toEqual({ kind: "advance", line: expect.objectContaining({ workOrderId: 20 }) });
+    expect(
+      resolvePostProductionPauseAdvance({
+        pausedWorkOrderId: 10,
+        lines: [{ id: 10, workOrderId: 10, remainingQty: 2000 }],
+      }),
+    ).toEqual({ kind: "workspace" });
   });
 
   it("auto-advances to the next FIFO work order after full production report confirm", () => {
@@ -69,16 +86,7 @@ describe("productionWorkspaceQueue", () => {
     expect(result.kind).toBe("stay");
   });
 
-  it("clears to empty advance when the final executable work order is confirmed", () => {
-    const lines = [{ id: 10, workOrderId: 10, remainingQty: 0 }];
-    const result = resolvePostProductionReportConfirmAdvance({
-      confirmedWorkOrderId: 10,
-      lines,
-    });
-    expect(result).toEqual({ kind: "advance", line: null });
-  });
-
-  it("auto-advances shortfall Carry Forward to the next FIFO executable work order", () => {
+  it("returns to card workspace after Confirm Report & Close WO (never auto-opens another WO)", () => {
     const result = resolvePostProductionReportConfirmAdvance({
       confirmedWorkOrderId: 10,
       lines: [
@@ -88,41 +96,24 @@ describe("productionWorkspaceQueue", () => {
       ],
       forceAdvanceFromConfirmedWorkOrder: true,
     });
-    expect(result).toEqual({ kind: "advance", line: expect.objectContaining({ workOrderId: 20, id: 20 }) });
+    expect(result).toEqual({ kind: "workspace" });
   });
 
-  it("auto-advances shortfall Waive to the next FIFO executable work order", () => {
-    const result = resolvePostProductionReportConfirmAdvance({
-      confirmedWorkOrderId: 10,
-      lines: [
-        { id: 10, workOrderId: 10, remainingQty: 25 },
-        { id: 20, workOrderId: 20, remainingQty: 50 },
-      ],
-      forceAdvanceFromConfirmedWorkOrder: true,
-    });
-    expect(result.line?.workOrderId).toBe(20);
-  });
-
-  it("removes paused shortfall WO from executable auto-advance and picks next FIFO work", () => {
-    const result = resolvePostProductionReportConfirmAdvance({
-      confirmedWorkOrderId: 10,
-      lines: [
-        { id: 10, workOrderId: 10, remainingQty: 25 },
-        { id: 11, workOrderId: 10, remainingQty: 10 },
-        { id: 20, workOrderId: 20, remainingQty: 50 },
-      ],
-      forceAdvanceFromConfirmedWorkOrder: true,
-    });
-    expect(result).toEqual({ kind: "advance", line: expect.objectContaining({ workOrderId: 20, id: 20 }) });
-  });
-
-  it("shows empty state after final shortfall work order decision", () => {
+  it("returns to workspace when shortfall close has no other executable WO", () => {
     const result = resolvePostProductionReportConfirmAdvance({
       confirmedWorkOrderId: 10,
       lines: [{ id: 10, workOrderId: 10, remainingQty: 25 }],
       forceAdvanceFromConfirmedWorkOrder: true,
     });
-    expect(result).toEqual({ kind: "advance", line: null });
+    expect(result).toEqual({ kind: "workspace" });
+  });
+
+  it("returns to workspace when the final executable WO report is confirmed without close flag", () => {
+    const result = resolvePostProductionReportConfirmAdvance({
+      confirmedWorkOrderId: 10,
+      lines: [{ id: 10, workOrderId: 10, remainingQty: 0 }],
+    });
+    expect(result).toEqual({ kind: "workspace" });
   });
 
   it("excludes the completed work order from the executable queue", () => {

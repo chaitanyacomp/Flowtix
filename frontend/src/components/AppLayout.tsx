@@ -340,6 +340,7 @@ const navGroups: NavGroup[] = [
     collapsible: true,
     items: [
       { to: "/admin/settings", navKey: "admset", label: "Settings", roles: ["ADMIN"], icon: <Settings className="h-4 w-4 shrink-0" /> },
+      { to: "/admin/users", navKey: "users", label: "Users", roles: ["ADMIN"], icon: <Users className="h-4 w-4 shrink-0" /> },
       { to: "/admin/company-profile", navKey: "company-profile", label: "Company Profile", roles: ["ADMIN"], icon: <Building2 className="h-4 w-4 shrink-0" /> },
       { to: "/admin/rate-contracts", navKey: "rate-contracts", label: "Rate Contracts", roles: ["ADMIN"], icon: <Tags className="h-4 w-4 shrink-0" /> },
       { to: "/admin/database-cleanup", navKey: "db-cleanup", label: "Database Cleanup", roles: ["ADMIN"], icon: <Database className="h-4 w-4 shrink-0" /> },
@@ -420,7 +421,9 @@ function groupDefaultOpen(pathname: string, group: NavGroup): boolean {
   if (group.key === "settings")
     return (
       pathname.startsWith("/admin/settings") ||
+      pathname.startsWith("/admin/users") ||
       pathname.startsWith("/admin/company-profile") ||
+      pathname.startsWith("/admin/rate-contracts") ||
       pathname.startsWith("/admin/database-cleanup") ||
       pathname.startsWith("/activity")
     );

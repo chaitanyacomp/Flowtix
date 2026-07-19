@@ -1,5 +1,7 @@
 # Dispatch & Billing Workflow State Machine
 
+> **2026-07-19:** Draft bills reserve positive quantities from posted dispatches under one SO/customer. Save, reduction, removal, deletion and finalization update reservations transactionally. Finalization revalidates every source; invoice aggregation preserves dispatch traceability.
+
 | Field | Value |
 |-------|-------|
 | **Document ID** | FT-PD-047 |

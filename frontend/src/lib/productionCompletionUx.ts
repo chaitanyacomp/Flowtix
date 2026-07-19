@@ -118,22 +118,29 @@ export function isProductionExecutionCompleted(
 export function shouldShowNoQtyContinueProductionCta(
   summary: ProductionExecutionSummary | null | undefined,
 ): boolean {
+  // Production Report Pending must never surface Continue (entry is locked until Confirm Report).
+  if (summary?.executionStatus === "SHORTFALL_PENDING") return false;
   return hasPausedShortfallDecision(summary);
 }
 
 export function shouldShowShortfallResolutionPanel(
   summary: ProductionExecutionSummary | null | undefined,
 ): boolean {
-  return hasPendingShortfallDecision(summary) || hasPausedShortfallDecision(summary);
+  // SHORTFALL_PENDING = Production Report Pending. Close/pause keep/waive is only after
+  // Confirm Report & Close WO — never the legacy shortfall dialog.
+  if (summary?.executionStatus === "SHORTFALL_PENDING") return false;
+  return hasPausedShortfallDecision(summary);
 }
 
-/** Hide NO_QTY production qty entry while shortfall decision is unresolved or WO execution closed. */
+/** Hide NO_QTY production qty entry while report-pending, paused shortfall, or WO execution closed. */
 export function shouldBlockNoQtyProductionEntry(
   summary: ProductionExecutionSummary | null | undefined,
 ): boolean {
   if (!summary) return false;
   if (isProductionExecutionCompleted(summary)) return true;
-  return shouldShowShortfallResolutionPanel(summary);
+  // Production Report Pending locks entry even though the legacy shortfall dialog is hidden.
+  if (hasPendingShortfallDecision(summary)) return true;
+  return hasPausedShortfallDecision(summary);
 }
 
 /** NO_QTY production qty entry allowed (not blocked by shortfall decision states). */

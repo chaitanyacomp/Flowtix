@@ -104,6 +104,15 @@ const createSchema = z.object({
       z.object({
         itemId: z.number().int().positive(),
         issueQty: z.number().positive(),
+        theoreticalBomQty: z.number().nonnegative().optional().default(0),
+        includedRunnerQty: z.number().nonnegative().optional().default(0),
+        allowanceInputSource: z.enum(["QUANTITY"]).optional().default("QUANTITY"),
+        enteredAllowanceQty: z.number().nonnegative().optional().nullable(),
+        plannedAllowancePct: z.number().min(0).max(10).optional(),
+        plannedAllowanceQty: z.number().nonnegative().optional(),
+        recommendedIssueQty: z.number().nonnegative().optional(),
+        allowanceReason: z.string().max(500).optional().nullable(),
+        conversionBasis: z.string().max(500).optional().nullable(),
       }),
     )
     .min(1),

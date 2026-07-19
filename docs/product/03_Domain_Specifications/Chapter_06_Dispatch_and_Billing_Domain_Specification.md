@@ -338,6 +338,12 @@ Do **not** create a parallel Delivery Location master table — `CustomerDeliver
 - May consolidate multiple Dispatch Notes per ISO per policy
 - **Billing always follows dispatch** for standard product
 
+### 8.1A Multi-dispatch allocation and transportation GST
+
+One Sales Bill may allocate multiple posted Dispatch Notes from the same Sales Order/customer. Billing is not bounded by Work Order. Dispatches support partial billing; active drafts reserve quantities, finalization revalidates availability, and finalized allocations are immutable. Compatible sources may aggregate commercially while allocation children remain authoritative.
+
+Seller-charged transportation is allocated proportionately by goods taxable value and taxed at each line's GST rate. Rounding remainder goes to the largest taxable line. Transporter-direct charges are reference-only. Highest-rate treatment is not the default and requires approved mixed-supply classification.
+
 ### 8.2 Billing ownership
 
 **Admin** owns Sales Bill lifecycle in standard product. Store has read-only visibility of billing status for shipment context.
@@ -663,3 +669,8 @@ Dashboard, Pending Actions, Control Tower, and Reports consume `assessNoQtySoClo
 ## Batch 3F — Certification
 
 Final cleanup validated: QA/QC recovery columns, Control Tower recovery monitor (read-only), reconciliation identity, migration `20260710120000_no_qty_recovery_foundation` applied on target DB, analytics surfaces consume `assessNoQtySoClosure` / `getRecoverySummariesBatch`. `MANUALLY_CLOSED` retained for dual-read only; operational close uses `CLOSED_WITH_WAIVER` / `COMPLETED`. Physical rework remains QA-owned; QC recovery starts at terminal rejection; Green Level isolated; WO shortfall waiver ≠ SO closure waiver.
+> **GST bucket split correction (2026-07-19):** New and recalculated drafts use `GST_BUCKET_SPLIT_V3`. Seller-charged transportation remains proportionately allocated to invoice lines, but currency tax is calculated once per GST-rate bucket with Decimal arithmetic and then deterministically allocated back to goods/freight components. Intrastate buckets with an even-paise GST total split CGST and SGST exactly equally; odd-paise buckets assign the unavoidable extra paise to CGST. Existing finalized calculation snapshots retain their stored version and totals.
+
+> **Equal-rate component correction:** New and recalculated drafts use `GST_COMPONENT_BUCKET_V4`. After proportional transportation allocation, CGST and SGST are each independently calculated and currency-rounded at half the GST rate for every taxable/GST-rate bucket. Equal component rates therefore always produce equal component amounts; interstate buckets independently calculate IGST at the full rate. V2/V3 finalized snapshots remain unchanged.
+
+> **Tax-rate presentation:** Sales Bill screen, preview and print read the stored line `gstRate`, component amounts, goods taxable amount, transportation allocation and total taxable amount. The compact screen exposes GST % with expandable CGST/SGST/IGST detail; customer-facing output prints component rates/amounts and a GST-rate-wise summary. Display grouping never recalculates or changes stored historical totals, and transportation remains included exactly once in each line's taxable bucket.

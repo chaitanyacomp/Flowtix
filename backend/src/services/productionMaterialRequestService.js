@@ -31,6 +31,15 @@ const {
   computeMaxAllowedRmIssueQty,
   computeRmIssueToleranceQty,
 } = require("./rmIssueToleranceService");
+const {
+  validatePlannedProcessAllowance,
+  assessIssueAgainstPlannedAllowance,
+  recoverIncludedRunnerQty,
+} = require("./plannedProcessAllowanceService");
+const {
+  resolveApprovedRequestForIssue,
+  markRmAllowanceApprovalIssued,
+} = require("./rmAllowanceApprovalService");
 const { resolveWorkOrderOperationalStatus } = require("./workOrderOperationalStatus");
 
 const STORE_ISSUE_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED"];
@@ -337,6 +346,24 @@ function derivePmrStoreIssueReadiness(status, totalPending) {
   };
 }
 
+/**
+ * Store Material Issue side-queue lifecycle (authoritative; not inferred from UI text).
+ * READY_TO_ISSUE — nothing issued yet, actionable balance remains.
+ * PARTIALLY_ISSUED — some issued, open balance remains, short-close not applied.
+ * COMPLETE — obligation satisfied (fully issued).
+ * SHORT_CLOSED — remaining balance explicitly closed (Short Issue Accepted).
+ */
+function derivePmrIssueQueueState(status, totalIssued, totalPending) {
+  const st = String(status ?? "").toUpperCase();
+  if (st === "SHORT_ISSUE_ACCEPTED") return "SHORT_CLOSED";
+  if (st === "FULLY_ISSUED" || st === "CANCELLED") return "COMPLETE";
+  if (st === "PARTIALLY_ISSUED") return "PARTIALLY_ISSUED";
+  if (n(totalIssued) > STOCK_EPS && n(totalPending) > STOCK_EPS) return "PARTIALLY_ISSUED";
+  if (STORE_ISSUE_STATUSES.includes(st) && n(totalPending) > STOCK_EPS) return "READY_TO_ISSUE";
+  if (n(totalPending) > STOCK_EPS) return "READY_TO_ISSUE";
+  return "COMPLETE";
+}
+
 /** Line readiness for Material Issue workspace (presentation of already-computed stock fields). */
 function derivePmrIssueLineReadiness(line) {
   const pending = n(line.pmrPendingQty ?? line.pendingQty);
@@ -404,6 +431,8 @@ function mapPmrRow(row) {
   const totalExcessIssue = lines.reduce((s, l) => s + l.excessIssueQty, 0);
   const totalPending = lines.reduce((s, l) => s + l.pendingQty, 0);
   const storeReadiness = derivePmrStoreIssueReadiness(row.status, totalPending);
+  const issueQueueState = derivePmrIssueQueueState(row.status, totalIssued, totalPending);
+  const pendingLineCount = lines.filter((l) => n(l.pendingQty) > STOCK_EPS).length;
   const statusLabel =
     row.status === "SHORT_ISSUE_ACCEPTED"
       ? "Closed – Short Issue Accepted"
@@ -417,6 +446,7 @@ function mapPmrRow(row) {
     docNo: row.docNo,
     status: row.status,
     statusLabel,
+    issueQueueState,
     remarks: row.remarks,
     workOrderId: row.workOrderId,
     workOrderNo: row.workOrder?.docNo ?? null,
@@ -427,6 +457,7 @@ function mapPmrRow(row) {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     lineCount: lines.length,
+    pendingLineCount,
     totalRequired,
     totalOriginalRequired: totalRequired,
     totalEffectiveRequired,
@@ -1011,16 +1042,47 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
 
   const lineById = new Map(pmr.lines.map((l) => [l.id, l]));
   const itemIds = [...new Set(pmr.lines.map((l) => l.itemId))];
-  const issueAvailabilityRows = await getMaterialAvailabilityByItems({
-    db: prisma,
-    itemIds,
-    excludePmrId: pmrId,
-    locationScope: { locationId: input.fromLocationId },
-    includeIncoming: false,
-    includeIssued: false,
-  });
+  const [issueAvailabilityRows, woLines] = await Promise.all([
+    getMaterialAvailabilityByItems({
+      db: prisma,
+      itemIds,
+      excludePmrId: pmrId,
+      locationScope: { locationId: input.fromLocationId },
+      includeIncoming: false,
+      includeIssued: false,
+    }),
+    prisma.workOrderLine.findMany({
+      where: { workOrderId: pmr.workOrderId },
+      select: { fgItemId: true, plannedQty: true, qty: true },
+    }),
+  ]);
   const issueAvailabilityByItem = new Map(issueAvailabilityRows.map((row) => [row.itemId, row]));
-  const woIssueSnapshot = await buildWorkOrderMaterialIssueSnapshot(prisma, pmr.workOrderId, input.fromLocationId);
+  const fgItemIds = [...new Set(woLines.map((ln) => ln.fgItemId).filter(Boolean))];
+  const approvedBoms = fgItemIds.length
+    ? await prisma.bom.findMany({
+        where: { fgItemId: { in: fgItemIds }, status: "APPROVED" },
+        orderBy: [{ fgItemId: "asc" }, { revisionNo: "desc" }],
+        select: { fgItemId: true, fgWeight: true, runnerWeight: true },
+      })
+    : [];
+  const bomByFg = new Map();
+  for (const bom of approvedBoms) {
+    if (!bomByFg.has(bom.fgItemId)) bomByFg.set(bom.fgItemId, bom);
+  }
+  let weightedFgWeight = 0;
+  let weightedRunnerWeight = 0;
+  let weightBasis = 0;
+  for (const ln of woLines) {
+    const bom = bomByFg.get(ln.fgItemId);
+    if (!bom) continue;
+    const fgQty = Math.max(0, n(ln.plannedQty) > STOCK_EPS ? n(ln.plannedQty) : n(ln.qty));
+    if (fgQty <= STOCK_EPS) continue;
+    weightedFgWeight += n(bom.fgWeight) * fgQty;
+    weightedRunnerWeight += n(bom.runnerWeight) * fgQty;
+    weightBasis += fgQty;
+  }
+  const snapshotFgWeight = weightBasis > STOCK_EPS ? weightedFgWeight / weightBasis : 0;
+  const snapshotRunnerWeight = weightBasis > STOCK_EPS ? weightedRunnerWeight / weightBasis : 0;
   const issueLines = [];
   const overIssueAuditLines = [];
   for (const row of input.lines) {
@@ -1033,7 +1095,50 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
     const qty = n(row.issueQty);
     if (qty <= STOCK_EPS) continue;
     const pend = pendingQty(pl);
-    const overIssueQty = round3(Math.max(0, qty - pend));
+    // PMR requiredQty is the canonical BOM quantity. Runner material is already
+    // included by BOM explosion and must not be added again.
+    const theoreticalBomQty = n(pl.requiredQty);
+    const alreadyIssuedQty = n(pl.issuedQty);
+    const enteredAllowanceQty = row.enteredAllowanceQty ?? row.plannedAllowanceQty ?? 0;
+    let approvedAllowanceRequest = null;
+    if (String(actor.role || "").toUpperCase() !== "ADMIN") {
+      approvedAllowanceRequest = await resolveApprovedRequestForIssue(
+        {
+          pmrLineId: pl.id,
+          allowanceApprovalRequestId: row.allowanceApprovalRequestId,
+          enteredAllowanceQty,
+          issueQty: qty,
+          theoreticalBomQty,
+          alreadyIssuedQty,
+        },
+        prisma,
+      );
+    }
+    const planning = validatePlannedProcessAllowance(
+      {
+        allowanceInputSource: "QUANTITY",
+        theoreticalBomQty,
+        alreadyIssuedQty,
+        enteredAllowanceQty,
+        // Percentage is never client-authored; omit so only Extra Qty is authoritative.
+        plannedAllowanceQty: enteredAllowanceQty,
+        recommendedIssueQty: row.recommendedIssueQty,
+        allowanceReason: row.allowanceReason,
+      },
+      { ...actor, mode: "ISSUE", approvedAllowanceRequest },
+    );
+    const includedRunnerQty = recoverIncludedRunnerQty(
+      theoreticalBomQty,
+      snapshotFgWeight,
+      snapshotRunnerWeight,
+    );
+    const issuePosition = assessIssueAgainstPlannedAllowance({
+      issueQty: qty,
+      alreadyIssuedQty,
+      theoreticalBomQty,
+      extraAllowanceQty: planning.plannedAllowanceQty,
+    });
+    const overIssueQty = issuePosition.excessIssueQty;
     const availability = issueAvailabilityByItem.get(pl.itemId);
     const freeStoreStock = n(availability?.freeStockQty);
     if (qty > freeStoreStock + STOCK_EPS) {
@@ -1044,12 +1149,27 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
       err.code = "PMR_FREE_STOCK_EXCEEDED";
       throw err;
     }
-    issueLines.push({ itemId: pl.itemId, issueQty: qty, pmrLineId: pl.id });
+    issueLines.push({
+      itemId: pl.itemId,
+      issueQty: qty,
+      pmrLineId: pl.id,
+      theoreticalBomQty,
+      includedRunnerQty,
+      allowanceInputSource: planning.allowanceInputSource,
+      enteredAllowancePct: planning.enteredAllowancePct,
+      enteredAllowanceQty: planning.enteredAllowanceQty,
+      plannedAllowancePct: planning.plannedAllowancePct,
+      plannedAllowanceQty: planning.plannedAllowanceQty,
+      recommendedIssueQty: planning.recommendedIssueQty,
+      allowanceReason: planning.allowanceReason,
+      allowanceApprovalRequestId: approvedAllowanceRequest?.id ?? null,
+    });
     if (overIssueQty > STOCK_EPS) {
       overIssueAuditLines.push({
         pmrLineId: pl.id,
         itemId: pl.itemId,
         pendingQty: pend,
+        recommendedIssueQty: planning.recommendedIssueQty,
         issueQty: qty,
         overIssueQty,
         requiredQty: n(pl.requiredQty),
@@ -1079,7 +1199,22 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
         workOrderId: pmr.workOrderId,
         productionMaterialRequestId: pmrId,
         remarks: `${baseRemarks}${overIssueRemark}`,
-        lines: issueLines.map((l) => ({ itemId: l.itemId, issueQty: l.issueQty })),
+        lines: issueLines.map((l) => ({
+          itemId: l.itemId,
+          issueQty: l.issueQty,
+          pmrLineId: l.pmrLineId,
+          theoreticalBomQty: l.theoreticalBomQty,
+          includedRunnerQty: l.includedRunnerQty,
+          allowanceInputSource: l.allowanceInputSource,
+          enteredAllowancePct: l.enteredAllowancePct,
+          enteredAllowanceQty: l.enteredAllowanceQty,
+          plannedAllowancePct: l.plannedAllowancePct,
+          plannedAllowanceQty: l.plannedAllowanceQty,
+          recommendedIssueQty: l.recommendedIssueQty,
+          allowanceReason: l.allowanceReason,
+          allowanceApprovalRequestId: l.allowanceApprovalRequestId,
+          alreadyIssuedQty: n(lineById.get(l.pmrLineId)?.issuedQty),
+        })),
       },
       actor,
       tx,
@@ -1092,6 +1227,13 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
         where: { id: il.pmrLineId },
         data: { issuedQty: String(nextIssued) },
       });
+      if (il.allowanceApprovalRequestId) {
+        await markRmAllowanceApprovalIssued(
+          il.allowanceApprovalRequestId,
+          { materialIssueNoteId: created.id, userId: actor.userId },
+          tx,
+        );
+      }
     }
     await recalcPmrStatus(tx, pmrId);
 
@@ -1284,6 +1426,7 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
   const lines = await Promise.all(pmr.lines.map(enrichLine));
   const pendingLines = lines.filter((l) => n(l.issueCapQty) > STOCK_EPS);
   const storeReadiness = derivePmrStoreIssueReadiness(pmr.status, pmr.totalPending);
+  const issueQueueState = derivePmrIssueQueueState(pmr.status, pmr.totalIssued, pmr.totalPending);
   const canIssueAnyPendingLine = pendingLines.some((l) => l.lineReadinessKey === "READY" || l.lineReadinessKey === "PARTIAL");
   const waitingProcurement = pendingLines.some((l) => l.waitingProcurement === true);
   const waitingProcurementLines = pendingLines.filter((l) => l.lineReadinessKey === "WAITING_PROCUREMENT");
@@ -1318,6 +1461,7 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
     storeActionKey: storeReadiness.storeActionKey,
     storeActionLabel: storeReadiness.storeActionLabel,
     storeIssueReady: storeReadiness.storeIssueReady,
+    issueQueueState,
     canWaiveRemaining:
       canIssue && n(pmr.totalIssued) > STOCK_EPS && n(pmr.totalPending) > STOCK_EPS,
     canReleaseToProduction: canRelease,
@@ -1329,7 +1473,7 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
   };
 
   return {
-    pmr: { ...pmr, productionItemName, ...storeReadiness },
+    pmr: { ...pmr, productionItemName, ...storeReadiness, issueQueueState },
     lines,
     pendingLines,
     issueDecision,
@@ -1574,6 +1718,7 @@ module.exports = {
   PMR_NON_CANCELLED_STATUSES,
   PMR_SHORT_ISSUE_WAIVE_REASONS,
   derivePmrStoreIssueReadiness,
+  derivePmrIssueQueueState,
   derivePmrIssueLineReadiness,
   buildBomSuggestionsForWorkOrder,
   listProductionMaterialRequests,

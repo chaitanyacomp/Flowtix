@@ -80,9 +80,11 @@ export type ProductionWorkOrderReport = {
     returnedQty: number | null;
     returnableQty: number | null;
     unusedQty: number | null;
+    availableForContinuationQty: number | null;
     standardQty: number | null;
     reportedConsumedQty: number | null;
     varianceQty: number | null;
+    runnerWasteQty: number;
   }>;
   confirmation: {
     confirmed: boolean;
@@ -104,6 +106,7 @@ export type ProductionWorkOrderReport = {
       rmReturnQty: number;
       scrapWasteQty: number;
       varianceQty: number;
+      runnerWasteQty?: number;
       remarks: string | null;
     }>;
     returnPendings: Array<{
@@ -134,6 +137,7 @@ export type ProductionWorkOrderReport = {
   generatedAt: string;
   wastageTypes?: Array<{ id: number; name: string; sortOrder: number; isActive: boolean }>;
   totalWastageQty?: number;
+  rmAvailableForContinuation?: number;
 };
 
 export function fetchProductionWorkOrderReport(workOrderId: number): Promise<ProductionWorkOrderReport> {

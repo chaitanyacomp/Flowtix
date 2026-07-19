@@ -23,6 +23,15 @@ export type DispatchBacklogRow = {
 
 export const ROW_NUM_EPS = 1e-6;
 
+/**
+ * Store Dashboard / Dispatch Backlog report: same rule as backend
+ * `isDispatchBacklogActionableLine` — prepare headroom only (dispatchableNow > 0).
+ * Excludes blocked "Cannot prepare now" rows and zero-qty stale entries.
+ */
+export function filterActionableDispatchBacklogRows(rows: DispatchBacklogRow[]): DispatchBacklogRow[] {
+  return (rows ?? []).filter((r) => Number(r.dispatchableNow ?? 0) > ROW_NUM_EPS);
+}
+
 export type DashboardBadgeTone = "critical" | "active" | "success" | "neutral";
 
 export function dashboardToneToBadgeVariant(

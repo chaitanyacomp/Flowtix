@@ -157,7 +157,11 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
     queueType === "RM_READY_FOR_ISSUE" || (queueType === "PMR_WAITING_ISSUE" && freeStockQty > QUEUE_EPS);
 
   if (stockReadyForIssue) {
-    const params = new URLSearchParams({ returnTo: "pending-actions", onlyBlocked: "1" });
+    const params = new URLSearchParams({
+      bucket: "readyToIssue",
+      returnTo: "pending-actions",
+      from: "pending-actions",
+    });
     if (stage.workOrderId > 0) params.set("workOrderId", String(stage.workOrderId));
     if (stage.salesOrderId > 0) params.set("salesOrderId", String(stage.salesOrderId));
     if (stage.materialRequirementId > 0) params.set("materialRequirementId", String(stage.materialRequirementId));

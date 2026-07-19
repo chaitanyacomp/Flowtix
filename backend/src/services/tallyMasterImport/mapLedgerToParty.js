@@ -122,8 +122,9 @@ function buildPartyMapDiagnostics(ledger, mapped) {
       ledgerPhone: strVal(getByLocalTag(ledger, "LEDGERPHONE")) || null,
     },
     selectedPhone: mapped?.phone ?? null,
-    mapperModule: require.resolve("./mapLedgerToParty"),
-    helpersModule: require.resolve("./tallyXmlListHelpers"),
+    // Static ids for diagnostics — require.resolve() is not valid after Batch 3 bundling
+    mapperModule: "tallyMasterImport/mapLedgerToParty",
+    helpersModule: "tallyMasterImport/tallyXmlListHelpers",
     pipelineId: TALLY_IMPORT_PIPELINE_ID,
   };
 }

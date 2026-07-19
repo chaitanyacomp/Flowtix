@@ -56,3 +56,11 @@ Browser: `http://127.0.0.1:<PORT>/` and LAN `http://<hostname>:<PORT>/`.
 - Never overwrite an existing `shared\.env` without confirmation.
 - Production migrate is **only** `prisma migrate deploy` (via tools).
 - Uninstaller preserves customer data by default and **never** deletes MySQL.
+
+## 6. Tally Master import (same PC)
+
+When Tally and the Flowtix backend run on the **same** Windows PC and `http://localhost:9000` responds, a separate Tally HTTP proxy is **not** required for Master XML preview/apply. Use Admin → Tally import with the uploaded/exported masters XML as documented. If Preview returns `Cannot find module './mapLedgerToParty'`, the install is on a pre-v1.14.2 packaged build — reinstall from a rebuilt setup EXE (FT-DEP-001 §28.5.1).
+
+**Backup tool:** From `C:\FT-ERP\tools`, run `backup-db.bat` — install home resolves to `C:\FT-ERP` automatically (v1.14.3+). Optional override: `set FT_ERP_HOME=C:\FT-ERP`. Never paste `DATABASE_URL` passwords into tickets.
+
+**Users:** After first boot, Admin → Settings → **Users** manages STORE/PURCHASE/PRODUCTION/QA accounts (create, activate/deactivate, password reset). Seed personas (`*@test.com` / `123456`) are ensured on startup when missing.

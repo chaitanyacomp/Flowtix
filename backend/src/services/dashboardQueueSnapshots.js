@@ -54,7 +54,10 @@ const { loadStoreProductionReleaseEligibilityByWorkOrder } = require("./producti
 const { getSalesOrderFgWorkOrderBalances } = require("./workOrderSoValidation");
 const { loadNoQtyCycleBillingPendingBySoCycle } = require("./salesBillEligibility");
 const { getEligibleDispatches } = require("./salesBillService");
-const { isDispatchOpenListLineCandidate } = require("./dispatchOpenListEligibility");
+const {
+  isDispatchOpenListLineCandidate,
+  isDispatchBacklogActionableLine,
+} = require("./dispatchOpenListEligibility");
 const { loadStoreDispatchWorkflowTriggerSet } = require("./dispatchWorkflowTriggers");
 
 /** Single map for tests and docs — each queue row type must set quantityMetricContext from here */
@@ -68,7 +71,8 @@ const QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT = {
 
 const DISPATCH_BACKLOG_EPS = 1e-6;
 const QUEUE_EPS = 1e-6;
-const DASHBOARD_ACTIVE_WORK_ORDER_STATUSES = Object.freeze(["PENDING", "IN_PROGRESS", "HOLD"]);
+/** Include PAUSED so Production Workspace can show resumable paused WOs (not Active). */
+const DASHBOARD_ACTIVE_WORK_ORDER_STATUSES = Object.freeze(["PENDING", "IN_PROGRESS", "HOLD", "PAUSED"]);
 const DASHBOARD_RUNNING_WORK_ORDER_STATUSES = Object.freeze(["PENDING", "IN_PROGRESS"]);
 const DASHBOARD_TERMINAL_WORK_ORDER_STATUSES = Object.freeze([
   "COMPLETED",
@@ -501,8 +505,20 @@ async function getDispatchBacklogRowsUncached() {
       });
 
       for (const ls of lineStats || []) {
+        // Open-list may include blocked "Cannot prepare now" rows; backlog KPI must not.
         if (!isDispatchOpenListLineCandidate(ls, "NO_QTY")) continue;
         const dbl = Number(ls.dispatchable ?? ls.dispatchableQty ?? 0);
+        if (
+          !isDispatchBacklogActionableLine(
+            {
+              dispatchableNow: dbl,
+              pendingDispatchQty: Number(ls.pendingDispatchQty ?? ls.remaining ?? 0),
+            },
+            "NO_QTY",
+          )
+        ) {
+          continue;
+        }
 
         const rowCycleId = ls.noQtyCycleId != null ? Number(ls.noQtyCycleId) : null;
 
@@ -570,7 +586,21 @@ async function getDispatchBacklogRowsUncached() {
       const fifoCommitment = dispatchFifoQtyForSoLine(line, so.orderType);
       const pendingDispatchQty = getSoLineDispatchPendingQty(fifoCommitment, dispatched);
       const dispatchableNow = Number(dispatchableByLineId.get(line.id) ?? 0);
+      // Remaining demand alone is "Cannot prepare now" when headroom is 0 — not backlog.
       if (pendingDispatchQty <= REPORT_QUEUE_EPS) continue;
+      if (
+        !isDispatchBacklogActionableLine(
+          {
+            dispatchableNow,
+            pendingQty: pendingDispatchQty,
+            orderedQty: fifoCommitment,
+            dispatchedQty: dispatched,
+          },
+          so.orderType,
+        )
+      ) {
+        continue;
+      }
 
       const orderedQty = fifoCommitment;
       const pendingQty = getSoLineOrderQtyMinusAttributedDispatch(orderedQty, dispatched);
@@ -610,6 +640,59 @@ function dashboardNextActionRank(nextAction) {
   return 99;
 }
 
+const TERMINAL_WO_STATUSES_FOR_PRODUCTION = new Set([
+  "CANCELLED",
+  "REJECTED",
+  "CLOSED",
+  "COMPLETED",
+  "CLOSED_WITH_SHORTFALL",
+  "MANUALLY_CLOSED",
+  "CLOSED_WITH_WAIVER",
+]);
+
+/**
+ * Canonical: may this production-queue line accept a new production entry?
+ * Matches frontend `assessProductionEntryEligibility` (UI Active Production filter).
+ *
+ * Entry-level Pending QC must NOT block further production when the WO still has
+ * remaining capacity and execution is not finalized. QC status is independent of WO execution.
+ * Does not close the WO — Store RM-return approval remains the closure gate.
+ */
+function canAcceptNewProductionEntryOnQueueRow({
+  woStatus,
+  execStatus,
+  nextAction,
+  hasPendingQc: _hasPendingQc,
+  balanceQty,
+  producedQty,
+}) {
+  const wo = String(woStatus ?? "").toUpperCase();
+  const exec = String(execStatus ?? "").toUpperCase();
+  const next = String(nextAction ?? "").toUpperCase();
+  if (TERMINAL_WO_STATUSES_FOR_PRODUCTION.has(wo) || wo === "PAUSED") return false;
+  if (exec === "COMPLETED" || exec === "BLOCKED" || exec === "SHORTFALL_PENDING") return false;
+  if (
+    next === "QC_PENDING" ||
+    next === "PRODUCTION_SHORTFALL_DECISION" ||
+    next === "DISPATCH_PENDING" ||
+    next === "SALES_BILL_PENDING" ||
+    next === "NEXT_RS_REQUIRED" ||
+    next === "ON_HOLD" ||
+    next === "PRODUCTION_EXECUTION_BLOCKED" ||
+    next === "PRODUCTION_PAUSED"
+    || next === "PRODUCTION_DRAFT_REVIEW"
+  ) {
+    return false;
+  }
+  if (next === "PRODUCTION_PENDING") {
+    const produced = Number(producedQty) || 0;
+    const balance = Number(balanceQty) || 0;
+    if (produced <= QUEUE_EPS) return balance > QUEUE_EPS || exec === "NOT_STARTED" || exec === "RUNNING";
+    return balance > QUEUE_EPS || exec === "RUNNING";
+  }
+  return exec === "RUNNING";
+}
+
 function buildDashboardProductionHref({
   nextAction,
   orderType,
@@ -618,6 +701,7 @@ function buildDashboardProductionHref({
   workOrderId,
   productionId,
   workOrderLineId,
+  producedQty,
 }) {
   const woId = workOrderId != null && Number(workOrderId) > 0 ? Number(workOrderId) : null;
   const wolId =
@@ -658,17 +742,25 @@ function buildDashboardProductionHref({
   if (nextAction === "ON_HOLD") {
     return `/work-orders?from=dashboard&workOrderId=${encodeURIComponent(String(workOrderId ?? ""))}`;
   }
-  if (nextAction === "PRODUCTION_EXECUTION_BLOCKED") {
-    if (orderType === "NO_QTY") return `/production?${noQtyBase}${wo}${wol}`;
-    return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}`;
+  if (nextAction === "PRODUCTION_EXECUTION_BLOCKED" || nextAction === "PRODUCTION_PAUSED") {
+    if (orderType === "NO_QTY") return `/production?${noQtyBase}${wo}${wol}&pwSection=paused`;
+    return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}&pwSection=paused`;
+  }
+  if (nextAction === "PRODUCTION_DRAFT_REVIEW") {
+    const section = producedQty > QUEUE_EPS ? "active" : "ready";
+    if (orderType === "NO_QTY") return `/production?${noQtyBase}${wo}${wol}${pid}&pwSection=${section}`;
+    return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}${pid}&pwSection=${section}`;
   }
   if (nextAction === "PRODUCTION_SHORTFALL_DECISION") {
-    if (orderType === "NO_QTY") return `/production?${noQtyBase}${wo}${wol}&from=pending-actions`;
-    return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}&from=pending-actions`;
+    if (orderType === "NO_QTY") {
+      return `/production?${noQtyBase}${wo}${wol}&pwSection=reportPending&focusReport=1`;
+    }
+    return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}&pwSection=reportPending&focusReport=1`;
   }
   if (nextAction === "PRODUCTION_PENDING") {
-    if (orderType === "NO_QTY") return `/production?${noQtyBase}${wo}${wol}`;
-    return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}`;
+    const section = Number(producedQty) > QUEUE_EPS ? "active" : "ready";
+    if (orderType === "NO_QTY") return `/production?${noQtyBase}${wo}${wol}&pwSection=${section}`;
+    return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}&pwSection=${section}`;
   }
   return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}`;
 }
@@ -679,8 +771,11 @@ function buildDashboardActionLabel(nextAction) {
   if (nextAction === "SALES_BILL_PENDING") return "Create Sales Bill";
   if (nextAction === "NEXT_RS_REQUIRED") return "Create Next RS";
   if (nextAction === "ON_HOLD") return "Review Hold";
-  if (nextAction === "PRODUCTION_EXECUTION_BLOCKED") return "Resume Production";
-  if (nextAction === "PRODUCTION_SHORTFALL_DECISION") return "Resolve Production Shortfall";
+  if (nextAction === "PRODUCTION_EXECUTION_BLOCKED" || nextAction === "PRODUCTION_PAUSED") {
+    return "Resume Production";
+  }
+  if (nextAction === "PRODUCTION_SHORTFALL_DECISION") return "Complete Production Report";
+  if (nextAction === "PRODUCTION_DRAFT_REVIEW") return "Review & Finalize";
   if (nextAction === "PRODUCTION_PENDING") return "Go to Production";
   return "Open";
 }
@@ -721,6 +816,9 @@ async function getProductionQueueRowsUncached() {
       sourceType: true,
       materialReleasedToProductionAt: true,
       status: true,
+      holdReason: true,
+      heldAt: true,
+      holdRemarks: true,
       createdAt: true,
       cycle: true,
       productionExecution: {
@@ -778,7 +876,7 @@ async function getProductionQueueRowsUncached() {
   const prodEntries =
     lineIds.length > 0
       ? await prisma.productionEntry.findMany({
-          where: { workOrderLineId: { in: lineIds }, workflowStatus: "APPROVED" },
+          where: { workOrderLineId: { in: lineIds }, workflowStatus: { in: ["DRAFT", "APPROVED"] } },
           include: { qcEntries: { where: QC_ENTRY_ACTIVE_WHERE } },
           orderBy: { id: "asc" },
         })
@@ -786,16 +884,23 @@ async function getProductionQueueRowsUncached() {
 
   /** @type {Map<number, number>} */
   const pendingQcByLineId = new Map();
+  const pendingQcEntryCountByLineId = new Map();
+  const openDraftByLineId = new Map();
   /** @type {Map<number, number>} */
   const firstPendingProdIdByLineId = new Map();
   for (const pe of prodEntries) {
     const lid = pe.workOrderLineId;
+    if (pe.workflowStatus === "DRAFT") {
+      if (!openDraftByLineId.has(lid)) openDraftByLineId.set(lid, pe);
+      continue;
+    }
     const producedQty = Number(pe.producedQty);
     const ac = sumActiveQcAcceptedQty(pe.qcEntries);
     const rj = sumActiveQcRejectedQty(pe.qcEntries);
     const pend = getProductionBatchQcPendingQty(producedQty, ac, rj);
     if (pend > QUEUE_EPS) {
       pendingQcByLineId.set(lid, (pendingQcByLineId.get(lid) || 0) + pend);
+      pendingQcEntryCountByLineId.set(lid, (pendingQcEntryCountByLineId.get(lid) || 0) + 1);
       if (!firstPendingProdIdByLineId.has(lid)) firstPendingProdIdByLineId.set(lid, pe.id);
     }
   }
@@ -997,10 +1102,10 @@ async function getProductionQueueRowsUncached() {
         const cfMap = cfKey ? noQtyCarryForwardBySoCycle.get(cfKey) : undefined;
         lastShortageQty = Number(cfMap?.get(line.fgItemId)?.rawShortfall ?? 0);
 
-        if (linePendingQc > QUEUE_EPS) {
-          nextAction = "QC_PENDING";
-          hasPendingQc = true;
-        } else if (cycleId != null) {
+        // Entry QC is informational — do not replace WO production nextAction while capacity remains.
+        hasPendingQc = linePendingQc > QUEUE_EPS;
+
+        if (cycleId != null) {
           const capKey = `${wo.salesOrderId}:${cycleId}`;
           const caps = capMapBySoCycle.get(capKey);
           const qcKey = `${wo.salesOrderId}:${cycleId}:${line.fgItemId}`;
@@ -1036,15 +1141,21 @@ async function getProductionQueueRowsUncached() {
             dispatchableQty = remDispatchCapped;
             emittedNoQtyDispatchHeadroomKeys.add(qcKey);
           }
-          if (approvedProduced <= QUEUE_EPS) {
+          if (balanceQty > QUEUE_EPS || approvedProduced <= QUEUE_EPS) {
             nextAction = "PRODUCTION_PENDING";
           } else if (lastShortageQty > QUEUE_EPS) {
             nextAction = "NEXT_RS_REQUIRED";
+          } else if (hasPendingQc) {
+            nextAction = "QC_PENDING";
           } else {
             nextAction = "PRODUCTION_PENDING";
           }
+        } else if (balanceQty > QUEUE_EPS || approvedProduced <= QUEUE_EPS) {
+          nextAction = "PRODUCTION_PENDING";
+        } else if (hasPendingQc) {
+          nextAction = "QC_PENDING";
         } else {
-          nextAction = approvedProduced <= QUEUE_EPS ? "PRODUCTION_PENDING" : "NEXT_RS_REQUIRED";
+          nextAction = "NEXT_RS_REQUIRED";
         }
 
         initialNextAction = nextAction;
@@ -1066,24 +1177,33 @@ async function getProductionQueueRowsUncached() {
         }
 
       } else {
-        if (linePendingQc > QUEUE_EPS) {
+        hasPendingQc = linePendingQc > QUEUE_EPS;
+        if (balanceQty > QUEUE_EPS || approvedProduced <= QUEUE_EPS) {
+          nextAction = "PRODUCTION_PENDING";
+        } else if (hasPendingQc) {
           nextAction = "QC_PENDING";
-          hasPendingQc = true;
         } else {
           nextAction = "PRODUCTION_PENDING";
         }
         initialNextAction = nextAction;
       }
 
-      if (isDashboardHoldWorkOrderStatus(wo.status)) {
+      if (isDashboardPausedWorkOrderStatus(wo.status)) {
+        nextAction = "PRODUCTION_PAUSED";
+      } else if (isDashboardHoldWorkOrderStatus(wo.status)) {
         nextAction = "ON_HOLD";
-        hasPendingQc = false;
       } else if ((orderType === "NO_QTY" || orderType === "GREEN_LEVEL") && execStatus === "BLOCKED") {
         nextAction = "PRODUCTION_EXECUTION_BLOCKED";
-        hasPendingQc = false;
       } else if ((orderType === "NO_QTY" || orderType === "GREEN_LEVEL") && execStatus === "SHORTFALL_PENDING") {
         nextAction = "PRODUCTION_SHORTFALL_DECISION";
-        hasPendingQc = false;
+      } else if (openDraftByLineId.has(line.id)) {
+        nextAction = "PRODUCTION_DRAFT_REVIEW";
+      } else if (
+        (orderType === "NO_QTY" || orderType === "GREEN_LEVEL") &&
+        execStatus === "COMPLETED" &&
+        hasPendingQc
+      ) {
+        nextAction = "QC_PENDING";
       }
 
       /** Operator-facing cycle = WO line cycle (document-linked). Do not substitute SO.currentCycleId (planning pointer). */
@@ -1099,8 +1219,9 @@ async function getProductionQueueRowsUncached() {
             salesOrderId: wo.salesOrderId,
             cycleId: rowDisplayCycleId,
             workOrderId: wo.id,
-            productionId: productionIdForQc,
+            productionId: openDraftByLineId.get(line.id)?.id ?? productionIdForQc,
             workOrderLineId: line.id,
+            producedQty: approvedProduced,
           });
 
       const displayQty =
@@ -1121,7 +1242,7 @@ async function getProductionQueueRowsUncached() {
             ? "Pending QC Disposition Qty"
             : "Last shortage Qty";
       } else if (nextAction === "PRODUCTION_SHORTFALL_DECISION") {
-        qtyLabel = "Shortfall decision";
+        qtyLabel = "Production report pending";
       } else {
         qtyLabel = undefined;
       }
@@ -1144,6 +1265,17 @@ async function getProductionQueueRowsUncached() {
         });
       }
 
+      const canAcceptProductionEntry = canAcceptNewProductionEntryOnQueueRow({
+        woStatus: wo.status,
+        execStatus,
+        nextAction,
+        hasPendingQc,
+        pendingQcEntryCount: pendingQcEntryCountByLineId.get(line.id) ?? 0,
+        pendingQcQty: linePendingQc,
+        balanceQty,
+        producedQty: approvedProduced,
+      });
+
       rows.push({
         workOrderId: wo.id,
         workOrderNo: wo.docNo ?? `WO-${wo.id}`,
@@ -1154,6 +1286,7 @@ async function getProductionQueueRowsUncached() {
         sourceType: wo.sourceType ?? null,
         itemId: line.fgItemId,
         itemName: line.fgItem?.itemName ?? `Item #${line.fgItemId}`,
+        itemCode: line.fgItem?.itemCode ?? null,
         itemUnit: line.fgItem?.unit ?? null,
         requiredQty,
         producedQty: approvedProduced,
@@ -1166,6 +1299,12 @@ async function getProductionQueueRowsUncached() {
           ? blockReasonLabel(wo.productionExecution.blockReason)
           : null,
         productionBlockRemarks: wo.productionExecution?.blockRemarks ?? null,
+        pausedAt:
+          wo.status === "PAUSED"
+            ? (wo.heldAt ? new Date(wo.heldAt).toISOString() : null)
+            : wo.productionExecution?.blockedAt
+              ? new Date(wo.productionExecution.blockedAt).toISOString()
+              : null,
         workOrderDate: wo.createdAt.toISOString(),
         quantityMetricContext: QUEUE_SNAPSHOT_ROW_METRIC_CONTEXT.productionQueue,
         orderType,
@@ -1174,12 +1313,23 @@ async function getProductionQueueRowsUncached() {
         nextAction,
         lastShortageQty,
         hasPendingQc,
+        pendingQcEntryCount: pendingQcEntryCountByLineId.get(line.id) ?? 0,
+        pendingQcQty: linePendingQc,
+        canAcceptProductionEntry,
+        hasOpenDraft: openDraftByLineId.has(line.id),
+        openDraftProductionId: openDraftByLineId.get(line.id)?.id ?? null,
+        productionWorkState:
+          nextAction === "PRODUCTION_PAUSED" || nextAction === "PRODUCTION_EXECUTION_BLOCKED"
+            ? "PAUSED_PRODUCTION"
+            : nextAction === "PRODUCTION_PENDING" || nextAction === "PRODUCTION_DRAFT_REVIEW"
+              ? approvedProduced > QUEUE_EPS ? "CONTINUE_PRODUCTION" : "READY_TO_START"
+              : null,
         dispatchableQty,
         productionId: productionIdForQc,
         displayQty,
         qtyLabel,
         actionHref: href,
-        actionLabel: deriveProductionQueueActionLabel({ nextAction, execStatus }),
+        actionLabel: nextAction === "PRODUCTION_DRAFT_REVIEW" ? "Review & Finalize" : deriveProductionQueueActionLabel({ nextAction, execStatus }),
       });
     }
   }

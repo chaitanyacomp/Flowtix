@@ -102,9 +102,15 @@ describe("productionCompletionUx", () => {
     const paused = summary({ executionStatus: "BLOCKED", producedQty: 2800, remainderQty: 200 });
     const running = summary({ executionStatus: "RUNNING", producedQty: 2800, remainderQty: 200 });
     const completed = summary({ executionStatus: "COMPLETED", producedQty: 2800, remainderQty: 200 });
+    const reportPending = summary({
+      executionStatus: "SHORTFALL_PENDING",
+      producedQty: 2800,
+      remainderQty: 200,
+    });
     expect(shouldShowNoQtyContinueProductionCta(paused)).toBe(true);
     expect(shouldShowNoQtyContinueProductionCta(running)).toBe(false);
     expect(shouldShowNoQtyContinueProductionCta(completed)).toBe(false);
+    expect(shouldShowNoQtyContinueProductionCta(reportPending)).toBe(false);
     expect(shouldBlockNoQtyProductionEntry(completed)).toBe(true);
     expect(allowsNoQtyProductionEntry(completed)).toBe(false);
   });
@@ -146,6 +152,8 @@ describe("productionCompletionUx", () => {
     });
     expect(hasPendingShortfallDecision(pending)).toBe(true);
     expect(shouldBlockNoQtyProductionEntry(pending)).toBe(true);
+    // Report-pending uses Production Report — not the legacy Close/Pause shortfall dialog.
+    expect(shouldShowShortfallResolutionPanel(pending)).toBe(false);
     expect(hasPendingShortfallDecision(summary({ executionStatus: "RUNNING", producedQty: 1000, remainderQty: 2000 }))).toBe(
       false,
     );

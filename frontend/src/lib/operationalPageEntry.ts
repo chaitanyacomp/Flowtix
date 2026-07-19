@@ -34,7 +34,10 @@ export type ProductionEntryContext = {
   focusSoIdValid: boolean;
   woIdFromUrlValid: boolean;
   workOrderLineIdFromUrlValid: boolean;
-  /** Dashboard Continue with explicit SO/WO/line target — not bare menu entry. */
+  /**
+   * Explicit SO/WO/line / dashboard Continue target — not bare menu entry and not
+   * Pending Actions overview (`from=pending-actions` + optional productionBucket only).
+   */
   fromDashboardWithTarget: boolean;
 };
 

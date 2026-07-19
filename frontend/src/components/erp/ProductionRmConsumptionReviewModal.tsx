@@ -78,9 +78,20 @@ type Props = {
   open: boolean;
   productionEntryId: number | null;
   onClose: () => void;
-  onApproved: (result: { consumptionWarnings?: string[] }) => void;
+  onApproved: (result: {
+    consumptionWarnings?: string[];
+    remainingDispositionResult?: {
+      outcome?: string;
+      summary?: Record<string, unknown> | null;
+    } | null;
+  }) => void;
   /** Preview finished (success, empty, or terminal error) — clear banner Approve loading. */
   onPreviewSettled?: () => void;
+  approvalExtras?: {
+    remainingDisposition?: "CONTINUE" | "PAUSE" | "END_WITH_SHORTAGE";
+    pauseReason?: string;
+    dispositionRemarks?: string | null;
+  };
 };
 
 function fmtQty(n: number, unit?: string) {
@@ -114,6 +125,7 @@ export function ProductionRmConsumptionReviewModal({
   onClose,
   onApproved,
   onPreviewSettled,
+  approvalExtras,
 }: Props) {
   const toast = useToast();
   const [preview, setPreview] = React.useState<RmConsumptionPreview | null>(null);
@@ -251,13 +263,16 @@ export function ProductionRmConsumptionReviewModal({
     }
     setSubmitting(true);
     try {
-      const res = await apiFetch<{ consumptionWarnings?: string[] }>(
-        `/api/production/production-entries/${productionEntryId}/approve`,
-        {
-          method: "POST",
-          body: JSON.stringify({ consumptionLines }),
-        },
-      );
+      const res = await apiFetch<{
+        consumptionWarnings?: string[];
+        remainingDispositionResult?: {
+          outcome?: string;
+          summary?: Record<string, unknown> | null;
+        } | null;
+      }>(`/api/production/production-entries/${productionEntryId}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ consumptionLines, ...approvalExtras }),
+      });
       onApproved(res);
       onClose();
     } catch (e) {

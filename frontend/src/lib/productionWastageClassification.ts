@@ -10,11 +10,13 @@ export type WastageDetailDraft = {
 const EPS = 1e-6;
 
 export function fmtWastageQty(n: number | null | undefined, unit?: string | null): string {
+  // Default Kg so missing unit never collapses decimals to whole numbers (0.77 → 1).
+  const resolvedUnit = String(unit ?? "").trim() || "Kg";
   const v = Number(n);
   if (!Number.isFinite(v) || Math.abs(v) <= 1e-9) {
-    return unit?.trim() ? formatQtyNumber(0, unit, { emptyValue: "0" }) : "0";
+    return formatQtyNumber(0, resolvedUnit, { emptyValue: "0" });
   }
-  return formatQtyNumber(v, unit, { emptyValue: "0" });
+  return formatQtyNumber(v, resolvedUnit, { emptyValue: "0" });
 }
 
 function round3(n: number): number {
@@ -189,6 +191,39 @@ export function isWastageClassificationComplete(
 export function validateWastageClassification(totalWastageQty: number, rows: WastageDetailDraft[], unit = "Kg") {
   const balance = computeWastageClassificationBalance(totalWastageQty, rows);
   return resolveLiveWastageValidationMessage(balance, rows, unit);
+}
+
+/**
+ * Leave/navigation must warn when the operator has local edits OR unfinished wastage
+ * classification. Draft autosave is client-only and must never imply WO close.
+ */
+export function shouldBlockLeaveProductionReport(opts: {
+  confirmed: boolean;
+  localDirty: boolean;
+  totalWastageQty: number;
+  wastageRows: WastageDetailDraft[];
+}): boolean {
+  if (opts.confirmed) return false;
+  if (opts.localDirty) return true;
+  const balance = computeWastageClassificationBalance(opts.totalWastageQty, opts.wastageRows);
+  return opts.totalWastageQty > EPS && !isWastageClassificationComplete(balance, opts.wastageRows);
+}
+
+export function productionReportLeaveWarningMessage(opts: {
+  localDirty: boolean;
+  totalWastageQty: number;
+  wastageRows: WastageDetailDraft[];
+}): string {
+  const balance = computeWastageClassificationBalance(opts.totalWastageQty, opts.wastageRows);
+  const incomplete =
+    opts.totalWastageQty > EPS && !isWastageClassificationComplete(balance, opts.wastageRows);
+  if (incomplete) {
+    return "Production report has incomplete wastage classification. Leave and discard the draft? WO will not be closed.";
+  }
+  if (opts.localDirty) {
+    return "Production report has unsaved draft changes. Leave and discard them? WO will not be closed.";
+  }
+  return "Leave Production Workspace?";
 }
 
 export function toWastageDetailPayload(rows: WastageDetailDraft[]) {

@@ -136,9 +136,12 @@ export function shouldShowPauseWorkOrderAction(input: {
   plannedQty: number;
   showPausedShortfall: boolean;
   isDone?: boolean;
+  /** End/Equal/Extra close decision already parked — Pause must not reappear as Continue. */
+  reportPending?: boolean;
 }): boolean {
   if (input.isDone) return false;
   if (input.showPausedShortfall) return false;
+  if (input.reportPending) return false;
   return isProductionQtyShort(input.producedQty, input.plannedQty);
 }
 

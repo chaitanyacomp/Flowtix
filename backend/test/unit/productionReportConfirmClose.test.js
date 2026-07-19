@@ -211,6 +211,31 @@ describe("production report confirm & close — atomicity / idempotency", () => 
     }
   });
 
+  it("rejects confirmation when current RM quantities leave an unexplained balance, even with remarks", async () => {
+    const origReturn = require(returnPath).buildReturnableLinesForWorkOrder;
+    require(returnPath).buildReturnableLinesForWorkOrder = async () => ({
+      lines: [{ itemId: 7, itemName: "PP", unit: "Kg", grossIssuedQty: 82, consumedQty: 81.23, returnedQty: 0, returnableQty: 0.77, unusedQty: 0.77 }],
+    });
+    delete require.cache[reportPath];
+    const { confirmProductionWorkOrderReport: confirmReport } = require(reportPath);
+
+    try {
+      await assert.rejects(
+        () => confirmReport(
+          buildConfirmDbMock(),
+          15,
+          { lines: [{ itemId: 7, rmConsumedQty: 81.23, rmReturnQty: 0, scrapWasteQty: 0.5, remarks: "legacy variance explanation" }] },
+          { userId: 9, role: "PRODUCTION" },
+          { includeReport: false },
+        ),
+        (err) => err.code === "PRODUCTION_REPORT_RM_RECONCILIATION_INCOMPLETE" && err.statusCode === 409,
+      );
+    } finally {
+      require(returnPath).buildReturnableLinesForWorkOrder = origReturn;
+      delete require.cache[reportPath];
+    }
+  });
+
   it("confirmProductionWorkOrderReport rejects duplicate confirm with a stable idempotency code", async () => {
     delete require.cache[reportPath];
     const { confirmProductionWorkOrderReport: confirmReport } = require(reportPath);

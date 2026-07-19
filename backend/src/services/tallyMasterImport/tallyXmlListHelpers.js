@@ -7,15 +7,46 @@
  */
 
 /**
+ * Strip Tally control characters / XML entity junk from display text.
+ * Tally often embeds `\u0004` (shown as `&#4;`) before sentinel labels like "Not Applicable".
+ *
+ * @param {unknown} str
+ * @returns {string}
+ */
+function normalizeTallyControlText(str) {
+  if (str == null) return "";
+  return String(str)
+    .replace(/\u0004/g, "")
+    .replace(/&#0*4;/gi, "")
+    .replace(/&#x0*4;/gi, "")
+    .replace(/&#x?[0-9a-f]+;/gi, (entity) => {
+      const hex = /^&#x([0-9a-f]+);$/i.exec(entity);
+      const n = hex ? parseInt(hex[1], 16) : Number(entity.slice(2, -1));
+      if (!Number.isFinite(n)) return entity;
+      // Drop C0 controls except TAB / LF / CR
+      if (n >= 0 && n < 32 && n !== 9 && n !== 10 && n !== 13) return "";
+      if (n === 127) return "";
+      return entity;
+    })
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .trim();
+}
+
+/**
  * @param {unknown} v
  * @returns {string}
  */
 function strVal(v) {
   if (v == null) return "";
-  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v).trim();
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+    return normalizeTallyControlText(String(v));
+  }
   if (typeof v === "object") {
-    if (Object.prototype.hasOwnProperty.call(v, "#text")) return String(v["#text"]).trim();
-    if (Object.prototype.hasOwnProperty.call(v, "text")) return String(v.text).trim();
+    if (Object.prototype.hasOwnProperty.call(v, "#text")) return normalizeTallyControlText(String(v["#text"]));
+    if (Object.prototype.hasOwnProperty.call(v, "text")) return normalizeTallyControlText(String(v.text));
   }
   return "";
 }
@@ -237,7 +268,7 @@ function findFirstNumberByTags(root, tagNames, opts = {}) {
 function masterDisplayName(node) {
   if (!node || typeof node !== "object") return "";
   const o = /** @type {Record<string, unknown>} */ (node);
-  const fromAttr = o["@_NAME"] != null ? String(o["@_NAME"]).trim() : "";
+  const fromAttr = o["@_NAME"] != null ? normalizeTallyControlText(String(o["@_NAME"])) : "";
   return firstDirectText(o, ["NAME", "ORIGINALNAME"]) || fromAttr;
 }
 
@@ -277,6 +308,7 @@ function walkCollectTaggedMasters(node, collectTags, onMaster, opts, pathSegUppe
 
 module.exports = {
   strVal,
+  normalizeTallyControlText,
   xmlLocalTagNameUpper,
   asArray,
   getByLocalTag,

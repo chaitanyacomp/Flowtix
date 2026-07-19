@@ -50,4 +50,33 @@ describe("productionWorkspaceStatusCards", () => {
       }),
     ).toBeNull();
   });
+
+  it("Pending QA counts distinct WOs, not production-entry rows", () => {
+    const counts = buildProductionWorkspaceStatusCounts(
+      [
+        {
+          workOrderId: 9,
+          workOrderNo: "WO-9",
+          itemName: "A",
+          requiredQty: 10,
+          producedQty: 10,
+          balanceQty: 0,
+          nextAction: "QC_PENDING",
+          hasPendingQc: true,
+        },
+        {
+          workOrderId: 9,
+          workOrderNo: "WO-9",
+          itemName: "B",
+          requiredQty: 5,
+          producedQty: 5,
+          balanceQty: 0,
+          nextAction: "QC_PENDING",
+          hasPendingQc: true,
+        },
+      ],
+      [],
+    );
+    expect(counts.pendingQa).toBe(1);
+  });
 });

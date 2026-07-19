@@ -22,7 +22,6 @@ const {
 const { postProductionEntryLedgerOnApproval } = require("./productionRmConsumptionService");
 const {
   ensureProductionExecutionRecord,
-  syncShortfallPendingAfterProductionApprove,
 } = require("./productionExecutionService");
 
 const PE_DRAFT = "DRAFT";
@@ -129,7 +128,6 @@ async function approveProductionEntryWithLedgerPosting(tx, input) {
 
   if (!isRegular) {
     await ensureProductionExecutionRecord(tx, wol.workOrderId);
-    await syncShortfallPendingAfterProductionApprove(tx, wol.workOrderId, ledger.producedQtyNum);
   }
 
   return {

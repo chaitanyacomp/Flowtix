@@ -11,6 +11,28 @@
 | LAN clients blocked | Firewall / IP | Add rule; confirm hostname vs IPv4 |
 | “CHANGE_ME” / env errors | Incomplete `.env` | `configure-env.bat` |
 | `Existing install detected — skipping setup` | Complete install already present | Use `update-flowtix` for upgrades (Batch 6), not re-bootstrap |
+| Tally Preview 500: `Cannot find module './mapLedgerToParty'` | Old packaged `server.js` (pre-v1.14.2) | Rebuild/reinstall fixed release (FT-DEP-001 §28.5.1). Do not hand-patch `C:\FT-ERP\app` |
+| Control Tower 500: `Prisma.Decimal is not a constructor` | Bare `@prisma/client` Decimal in old bundle | Rebuild/reinstall fixed release (§28.5.1) |
+| Tally Master import / localhost:9000 | Same-PC Tally | No separate Tally HTTP proxy required when Tally and Flowtix backend run on the same PC and `http://localhost:9000` responds |
+| `backup-db` shows `home=C:\` / DATABASE_URL not set | Old tools home detection | Rebuild/reinstall v1.14.3+; from `C:\FT-ERP\tools` home must resolve to `C:\FT-ERP`. Optional: `set FT_ERP_HOME=C:\FT-ERP` |
+| Wrong password shows “Session expired” | Old UI mapped all 401s to session loss | Rebuild/reinstall v1.14.3+; login failures show “Invalid email or password” |
+| No way to reset store@… password | Pre-Users UI build | Admin → Settings → **Users** (v1.14.3+); or re-seed role accounts via backend startup helper |
+| Dashboard “Issue RM” opens empty Material Issue | Stale eligibility / awaiting release | Rebuild/reinstall v1.14.3+; Issue RM only for pending PMR; awaiting release uses Production Release |
+| Material Issue shows excess above BOM + Add Qty | Issue Now exceeds applicable BOM + Add Qty for this fill | Reduce Issue Now or revise Add Qty; planned allowance is not wastage |
+| Allowance above 5% cannot be issued by Store | Async Admin approval required | Enter reason → **Send for Admin Approval** → continue other WOs → after Admin approves in Pending Actions, open **Approved · Ready to Issue** and Issue Material. Above 10% use Additional RM Issue |
+| Side queue still shows Approval Pending after Admin approved | Store list not refreshed | Open Pending Actions → **RM Allowance Approved** (or refresh Material Issue). Deep link uses `bucket=approved` |
+| Partially issued WO still appears under Ready to Issue | Queue should use Partially Issued tab | Use Pending Actions **Continue RM Issue** (`bucket=partiallyIssued`) or the Partially Issued tab. Ready holds only WOs with nothing issued yet |
+| Pending Actions opens Material Issue but wrong/empty Ready queue | Open List dropped the bucket | Links must keep `bucket=…`; Open List shows that queue’s cards without requiring SO/WO/PMR re-selection |
+| Qty (BOM) looked like remaining balance | Older display used remaining entitlement as Qty (BOM) | Qty (BOM) is original requirement; use **Remaining** for the unissued balance |
+| Theoretical RM appears to include runner twice | Runner was added outside canonical BOM quantity | Theoretical RM already includes runner. Do not add runner again in Planned Allowance |
+| Work Order Planning loops “Updating RM…” / qty fields reset | Live RM preview was bumping ERP refresh | Source fix: exclude `/execution/rm-preview` from refresh scopes; preserve typed drafts. Rebuild frontend/package when shipping |
+| Active Production still shows WO after report confirmed + Carried Forward | UI used residual pending qty / QC label as “active” | Expected: WO stays open for Store RM-return; leave Active Production; use Pending Store Tasks + Pending QA. Rebuild frontend when shipping |
+| Pending QA = 1 but Recent entries show 2 Pending QC rows | Pending QA is WO-scoped; Recent list is entry-scoped | Valid when both entries belong to the same WO |
+| Pending Actions Ready opens empty Continue tab | `productionBucket=readyToStart` landed on default Continue tab | URL must include `pwSection=ready`. Rebuild frontend when shipping |
+| Continue Production opens dead “Waiting for QA” page while remaining qty exists | Entry Pending QC blocked the process screen | Remaining balance → Continue entry; entry QC is informational in Recent. Rebuild when shipping |
+| Pending Actions “Open Production Workspace” shows “Production entry completed” while Ready WOs exist | Multi-WO PA link pinned SO/cycle/flow and reused a finished sibling | Multi-WO open uses overview + `productionBucket` + `pwSection` (`from`/`returnTo=pending-actions`). Rebuild frontend when shipping |
+| After Pause, WO missing from Production Workspace / only Recent shows Pending QC | Entry QC was treated as WO-level QC; paused WOs had no Paused section | Use **Paused Production** tab + Resume; entry Pending QC ≠ WO finalized. Rebuild when shipping |
+| Card grid horizontal / nested scrollbars cut Start Production | Nested `overflow-auto` + fixed card min widths | Workbench uses page scroll + responsive CSS Grid (`min-w-0`). Rebuild when shipping |
 
 ## Installer runtime missing (archive self-wipe / bootstrap failure)
 
@@ -69,3 +91,14 @@ Zip the diagnostics folder for support. Passwords are masked — still avoid att
 ## Escalation
 
 See Support Guide and `06 Support\templates\Support_Escalation.md`.
+# Dashboard WO counts disagree
+
+Compare Pending Actions work items, distinct production-eligible WOs, and Active Production lines using `docs/PRODUCTION_MULTI_WO_CANONICAL_RULE.md`. A higher sibling WO id is not evidence that an earlier WO was carried forward. User-facing labels must come from `WorkOrder.docNo`.
+
+If Resume opens Final Report, verify execution is RUNNING, remainder is positive, and no report is confirmed. Pending QC on an earlier entry is informational. If unused RM appears as wastage before confirmation, verify the report payload uses explicit `scrapWasteQty`; available RM must remain issued minus consumed/returned/declared wastage.
+# Production RM reconciliation
+
+- If recommended RM appears high, verify the percentage and remember the theoretical quantity already includes runner; runner must not be added again.
+- If Production Report shows variance, enter an honest explanation or correct consumption/return/wastage. Do not classify unused RM as false wastage.
+- Pending QC is not a blocker for the RM Production Report.
+- A paused WO must be resumed before it can end; pause creates neither shortage nor carry-forward.

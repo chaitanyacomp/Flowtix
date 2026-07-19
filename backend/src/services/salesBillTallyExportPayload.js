@@ -1,4 +1,4 @@
-const { TALLY_LEDGER_PATTERNS } = require("../config/tally");
+const { TALLY_LEDGER_PATTERNS, TALLY_TRANSPORTATION_LEDGER, TALLY_ROUND_OFF_LEDGER } = require("../config/tally");
 
 function safeStr(v) {
   if (v == null) return "";
@@ -152,7 +152,8 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
       // Quantity must come from SalesBillLine.qty (dispatch-derived in our flow).
       quantity: fmtTallyQty(qtyRaw),
       rate: fmtTallyRate(rateRaw),
-      baseAmount: safeStrOrNull(ln.basicAmount),
+      baseAmount: safeStrOrNull(ln.goodsTaxableAmount) ?? safeStrOrNull(ln.basicAmount),
+      transportationAllocation: safeStrOrNull(ln.transportationAllocation),
       cgstAmount: safeStrOrNull(ln.cgstAmount),
       sgstAmount: safeStrOrNull(ln.sgstAmount),
       igstAmount: safeStrOrNull(ln.igstAmount),
@@ -173,13 +174,6 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
   const distinctGstRates = Array.from(
     new Set(mappedLines.map((l) => String(l.gstRate ?? "").trim()).filter(Boolean)),
   );
-  if (distinctGstRates.length > 1) {
-    const err = new Error(
-      "Cannot export sales bill because it contains multiple GST rates. Please export bills with a single GST rate in phase 1.",
-    );
-    err.statusCode = 400;
-    throw err;
-  }
   const billGstRate = distinctGstRates.length === 1 ? Number(distinctGstRates[0]) : 0;
   const halfRate = billGstRate / 2;
 
@@ -232,6 +226,7 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
       subtotal: safeStrOrNull(bill.totalBasic),
       gstTotal: safeStrOrNull(bill.totalTax),
       totalAmount: safeStrOrNull(bill.netAmount),
+      roundOffAmount: safeStrOrNull(bill.roundOffAmount),
     },
 
     tally: {
@@ -243,7 +238,30 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
       },
     },
 
-    lines: mappedLines,
+    transportation: {
+      amount: safeStrOrNull(bill.transportationAmount),
+      taxableAmount: safeStrOrNull(bill.transportationTaxableValue),
+      chargedBy: safeStrOrNull(bill.transportationChargedBy),
+      ledger: TALLY_TRANSPORTATION_LEDGER,
+      roundOffLedger: TALLY_ROUND_OFF_LEDGER,
+    },
+    taxBuckets: distinctGstRates.map((rateText) => {
+      const rate = Number(rateText);
+      const bucketLines = mappedLines.filter((line) => Number(line.gstRate) === rate);
+      return {
+        gstRate: rate,
+        cgst: bucketLines.reduce((sum, line) => sum + Number(line.cgstAmount || 0), 0).toFixed(2),
+        sgst: bucketLines.reduce((sum, line) => sum + Number(line.sgstAmount || 0), 0).toFixed(2),
+        igst: bucketLines.reduce((sum, line) => sum + Number(line.igstAmount || 0), 0).toFixed(2),
+        salesLedger: taxIntraState === false ? ledgerAt(TALLY_LEDGER_PATTERNS.interstateSalesPrefix, rate) : ledgerAt(TALLY_LEDGER_PATTERNS.localSalesPrefix, rate),
+        cgstLedger: taxIntraState === true ? ledgerAt(TALLY_LEDGER_PATTERNS.outputCgstPrefix, rate / 2) : null,
+        sgstLedger: taxIntraState === true ? ledgerAt(TALLY_LEDGER_PATTERNS.outputSgstPrefix, rate / 2) : null,
+        igstLedger: taxIntraState === false ? ledgerAt(TALLY_LEDGER_PATTERNS.outputIgstPrefix, rate) : null,
+      };
+    }),
+    lines: mappedLines.map((line) => ({ ...line,
+      salesLedger: taxIntraState === false ? ledgerAt(TALLY_LEDGER_PATTERNS.interstateSalesPrefix, Number(line.gstRate)) : ledgerAt(TALLY_LEDGER_PATTERNS.localSalesPrefix, Number(line.gstRate)),
+    })),
   };
 }
 

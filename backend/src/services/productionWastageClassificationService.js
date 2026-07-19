@@ -16,6 +16,7 @@ function normalizeWastageDetailsInput(details) {
     if (!(qty > EPS)) continue;
     rows.push({
       wastageTypeId,
+      itemId: Number.isFinite(Number(row?.itemId)) ? Number(row.itemId) : null,
       qty,
       remarks: String(row?.remarks ?? "").trim() || null,
       sortOrder: Number(row?.sortOrder ?? rows.length),
@@ -60,6 +61,10 @@ function mapWastageDetailRows(rows) {
   return (rows || []).map((row) => ({
     id: row.id,
     wastageTypeId: row.wastageTypeId,
+    itemId: row.itemId ?? null,
+    itemName: row.item?.itemName ?? null,
+    unit: row.item?.unit ?? null,
+    source: row.source ?? "MANUAL_PRODUCTION",
     wastageTypeName: row.wastageType?.name ?? null,
     wastageTypeCode: row.wastageType?.code ?? null,
     category: row.wastageType?.category ?? null,

@@ -89,6 +89,26 @@ Apply on the client server with Prisma migrate deploy against shared/.env DATABA
 - **Place-release self-wipe (FT-DEP-001 v1.14):** When Batch 9 runs with \`--source\` equal to \`{home}\\releases\\Flowtix-vX\` (Inno post-install layout), setup no longer refreshes the archive onto itself. Live \`app/\` and \`web/\` are promoted correctly. Verify after install: \`{home}/app/server.js\` and \`{home}/web/index.html\` exist; \`certify-install\` case \`place_release_installer_layout\`.
 - **Post-install invocation (FT-DEP-001 v1.14.1):** Inno \`[Run]\` calls \`post-install.bat\` directly (not \`cmd /C "bat" "args"\`, which dropped arguments). \`existing_install\` allows \`shared/.env\`-only first bootstrap; Administrator is a hard fail only when service/firewall install is requested.
 
+## Fixed (packaged runtime)
+
+- **Tally Master Preview (FT-DEP-001 v1.14.2):** Removed runtime \`require.resolve\` of source-relative Tally modules (broke esbuild \`app/server.js\`). Preview/apply mapping unchanged. Regression: \`packagedRuntimeBundle.test.js\`.
+- **Control Tower Decimal (FT-DEP-001 v1.14.2):** \`Prisma.Decimal\` constructed via \`prismaClientPackage\` / generated \`client-v2\`, not bare \`@prisma/client\`.
+- **Tally same-PC:** No Tally HTTP proxy required when Tally and Flowtix share a PC and \`localhost:9000\` responds.
+
+## Fixed (deployment UAT — FT-DEP-001 v1.14.3)
+
+- **Production integrity:** Draft autosave never closes a WO; leave warns on incomplete wastage; Confirm Report & Close WO remains the only close path.
+- **Dashboard Issue RM:** Shown only for submitted pending PMR; awaiting-release routes to Production Release (not Material Issue).
+- **Tally HSN/GST:** Stock items inherit from Stock Group / parent chain; hierarchy text strips Tally \`&#4;\` control junk.
+- **backup-db:** \`tools\\backup-db\` resolves install home \`C:\\FT-ERP\` (not \`C:\\\`); \`FT_ERP_HOME\` override preserved.
+- **Login messaging:** Invalid credentials no longer shown as "Session expired".
+- **Login Show/Hide password:** Accessible eye control on the password field (default hidden; toggle does not submit).
+- **Work Order Planning RM loop:** Live RM preview no longer bumps ERP refresh / resets typed WO quantities; debounced + stale-response safe.
+- **Admin Users:** Settings → Users (create/roles/activate/reset) with last-admin and self-lockout guards; role seed accounts ensured on startup.
+- **BOM → Requirement Sheet:** Approve refreshes execution BOM status without recreating RS/WO context.
+- **Sales Bill Tally:** Clearer missing-ledger errors; bulk Export Selected / All Pending; Dispatch activity \`salesOrderId\` filter uses DISPATCH module.
+- **Viewport (1366×768):** BOM / Production Workspace page scroll; Dispatch Save Draft keeps selection without empty flashes.
+
 ## Known Issues
 
 - Inno Setup may report the product as installed even if \`post-install\` / \`setup-flowtix\` exits non-zero. Always confirm live runtime + \`logs/installer-post.log\` \`SETUP_EXIT=0\` (FT-DEP-001 §35.4.1).

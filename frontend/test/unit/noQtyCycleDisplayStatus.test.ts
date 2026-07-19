@@ -44,7 +44,7 @@ describe("resolveNoQtyCycleDisplayStatus", () => {
     expect(display.isHistorical).toBe(true);
   });
 
-  it("maps active production to In Progress", () => {
+  it("maps active production with produced qty to Continue", () => {
     const r = row({
       workOrderId: 168,
       cycleNo: 5,
@@ -53,7 +53,8 @@ describe("resolveNoQtyCycleDisplayStatus", () => {
       nextAction: "PRODUCTION_PENDING",
     });
     const display = resolveNoQtyCycleDisplayStatus({ ...r, allQueueRows: [r] });
-    expect(display.label).toBe("In Progress");
+    // Workbench label "Continue" is preserved for partially produced executable WOs.
+    expect(display.label).toBe("Continue");
     expect(display.isHistorical).toBe(false);
   });
 

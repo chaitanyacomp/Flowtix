@@ -1,4 +1,6 @@
-const { Prisma } = require("@prisma/client");
+// Use generated client (prismaClientPackage), not bare @prisma/client — custom output
+// client-v2 is what the Batch 3 bundle loads at runtime; @prisma/client Decimal breaks in packaged app/.
+const { Prisma } = require("../prismaClientPackage");
 const { getEligibleDispatches } = require("./salesBillService");
 
 function num(v) {

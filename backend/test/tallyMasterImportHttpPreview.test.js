@@ -70,7 +70,8 @@ test("HTTP Preview /api/admin/tally-import/preview maps TATA from Master.xml", a
 
     assert.equal(res.status, 200, res.body?.error?.message || JSON.stringify(res.body));
     assert.ok(res.body.runtime?.pipelineId === TALLY_IMPORT_PIPELINE_ID, "stale/wrong pipeline on live route");
-    assert.match(String(res.body.runtime?.mapperModule || ""), /mapLedgerToParty/);
+    // Bundler-safe static module id (not filesystem require.resolve — breaks packaged server.js)
+    assert.equal(res.body.runtime?.mapperModule, "tallyMasterImport/mapLedgerToParty");
 
     const tata = (res.body.customers || []).find(
       (c) => String(c.tallyName || c.mapped?.name || "").toUpperCase() === "TATA",

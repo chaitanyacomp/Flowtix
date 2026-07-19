@@ -20,6 +20,13 @@ import {
   CommercialFilterGrid,
 } from "../components/erp/CommercialFilterLayout";
 import { useErpRoleUi } from "../hooks/useErpRoleUi";
+import { useAuth } from "../hooks/useAuth";
+import { useBulkSelection } from "../hooks/useBulkSelection";
+import {
+  downloadSalesBillsTallyExport,
+  isSalesBillTallyBulkExportEligible,
+} from "../lib/salesBillTallyExport";
+import { useToast } from "../contexts/ToastContext";
 
 type Customer = { id: number; name: string };
 
@@ -78,7 +85,11 @@ export function SalesBillsListPage() {
   const focusSoIdValid = Number.isFinite(focusSoId) && focusSoId > 0;
 
   const demo = useDemoMode();
+  const auth = useAuth();
+  const role = auth.user?.role ?? "";
   const { canCreateSalesBill } = useErpRoleUi();
+  const fromAnalysis = isReportsReturnContext(location.search);
+  const canTallyExport = role === "ADMIN" && !fromAnalysis;
   const showNoQtyFinalStepPreview = demo.enabled && demo.flow === "no_qty" && demo.step === 7;
   const billDemoHl =
     demoHighlightKey(demo.enabled, demo.flow, demo.step, "regular", 6) ??
@@ -95,8 +106,10 @@ export function SalesBillsListPage() {
   const [paymentFilter, setPaymentFilter] = React.useState<"" | "pending" | "overdue" | "partial" | "paid">("");
   const [exportBillFilter, setExportBillFilter] = React.useState<"" | "exported" | "not_exported">("");
   const [loading, setLoading] = React.useState(false);
+  const [bulkExporting, setBulkExporting] = React.useState(false);
   const [pendingTallyOnly, setPendingTallyOnly] = React.useState(false);
   const [hasCompletedLoad, setHasCompletedLoad] = React.useState(false);
+  const { showSuccess, showError } = useToast();
 
   React.useEffect(() => {
     const spSync = new URLSearchParams(location.search);
@@ -208,6 +221,38 @@ export function SalesBillsListPage() {
     return rows.filter((r) => r.status === "FINALIZED" && r.isExported !== true);
   }, [rows, pendingTallyOnly]);
 
+  const exportEligibleIds = React.useMemo(
+    () => tableRows.filter(isSalesBillTallyBulkExportEligible).map((r) => r.id),
+    [tableRows],
+  );
+  const bulk = useBulkSelection(exportEligibleIds);
+
+  async function runBulkTallyExport(ids: number[]) {
+    if (!canTallyExport || bulkExporting || !ids.length) return;
+    setBulkExporting(true);
+    try {
+      const out = await downloadSalesBillsTallyExport(ids);
+      showSuccess(
+        `Downloaded Tally XML for ${out.count} bill(s) (${out.filename}). Import the file in Tally to post vouchers — ERP only marks XML downloaded.`,
+      );
+      bulk.clear();
+      await load();
+    } catch (e) {
+      showError(e instanceof Error ? e.message : "Could not download Tally XML");
+      await load();
+    } finally {
+      setBulkExporting(false);
+    }
+  }
+
+  async function exportSelectedToTally() {
+    await runBulkTallyExport(bulk.getSelectedIdsArray());
+  }
+
+  async function exportAllPendingToTally() {
+    await runBulkTallyExport(exportEligibleIds);
+  }
+
   const newBillHref = React.useMemo(() => {
     const base =
       fromNoQtySo && focusSoIdValid
@@ -223,8 +268,6 @@ export function SalesBillsListPage() {
         : "/dispatch";
     return withReportsReturnContextIfPresent(base, location.search);
   }, [fromNoQtySo, focusSoIdValid, focusSoId, location.search]);
-
-  const fromAnalysis = isReportsReturnContext(location.search);
 
   return (
     <PageContainer className="erp-txn-workspace space-y-1.5">
@@ -308,12 +351,25 @@ export function SalesBillsListPage() {
 
       {stripKind === "PENDING" ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-          <p className="font-medium">Some finalized bills are not exported yet</p>
-          <p className="mt-0.5 text-amber-900/90">Filter to pending export to work through them.</p>
+          <p className="font-medium">Some finalized bills still need Tally XML</p>
+          <p className="mt-0.5 text-amber-900/90">
+            Download XML here, then import in Tally. ERP “exported” means XML was downloaded — not that Tally confirmed the import.
+          </p>
           <div className="mt-2 flex flex-wrap gap-2">
             <Button type="button" size="sm" onClick={() => setPendingTallyOnly(true)}>
               Open pending bills
             </Button>
+            {canTallyExport && exportEligibleIds.length > 0 ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={bulkExporting}
+                onClick={() => void exportAllPendingToTally()}
+              >
+                {bulkExporting ? "Downloading…" : "Export All Pending Bills"}
+              </Button>
+            ) : null}
             {pendingTallyOnly ? (
               <Button type="button" size="sm" variant="outline" onClick={() => setPendingTallyOnly(false)}>
                 Show all bills
@@ -324,7 +380,8 @@ export function SalesBillsListPage() {
       ) : null}
       {stripKind === "ALL_EXPORTED" ? (
         <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-950">
-          <p className="font-medium">All sales bills exported</p>
+          <p className="font-medium">All finalized bills have Tally XML downloaded</p>
+          <p className="mt-0.5 text-emerald-900/90">Confirm each voucher in Tally if you have not already imported the files.</p>
         </div>
       ) : null}
       {stripKind === "EMPTY" && !showNoQtyFinalStepPreview ? (
@@ -445,13 +502,67 @@ export function SalesBillsListPage() {
 
       <Card className="min-w-0 overflow-hidden">
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">Bills</CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-base">Bills</CardTitle>
+            {canTallyExport ? (
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                {bulk.selectedCount > 0 ? (
+                  <>
+                    <span className="text-slate-600">
+                      Selected: <span className="font-semibold text-slate-900">{bulk.selectedCount}</span>
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={bulkExporting}
+                      onClick={() => void exportSelectedToTally()}
+                      data-testid="sales-bills-export-selected-tally"
+                    >
+                      {bulkExporting ? "Downloading…" : "Export Selected to Tally"}
+                    </Button>
+                  </>
+                ) : null}
+                {exportEligibleIds.length > 0 ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={bulkExporting}
+                    onClick={() => void exportAllPendingToTally()}
+                    data-testid="sales-bills-export-all-pending-tally"
+                  >
+                    {bulkExporting ? "Downloading…" : "Export All Pending Bills"}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+          {canTallyExport && exportEligibleIds.length > 0 ? (
+            <p className="mt-1 text-xs text-slate-500">
+              Select finalized pending bills, or export all pending in this list. Downloads combined Tally XML and marks
+              bills exported in ERP (not a Tally import confirmation).
+            </p>
+          ) : null}
         </CardHeader>
         <CardContent className="min-w-0 p-0 sm:p-6 sm:pt-0">
           <div className="min-w-0 overflow-x-auto px-3 pb-4 sm:px-0 sm:pb-0">
             <table className="w-full min-w-[1080px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-slate-200 text-left text-xs font-medium uppercase text-slate-500">
+                  {canTallyExport ? (
+                    <th className="w-10 px-4 py-2">
+                      <input
+                        ref={bulk.selectAllRef}
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-slate-300"
+                        checked={bulk.allSelected}
+                        disabled={!exportEligibleIds.length || bulkExporting}
+                        onChange={(e) => bulk.toggleSelectAll(e.target.checked)}
+                        title="Select all bills pending Tally XML download"
+                        aria-label="Select all bills pending Tally XML download"
+                      />
+                    </th>
+                  ) : null}
                   <th className="px-4 py-2">Bill no.</th>
                   <th className="px-4 py-2">Bill date</th>
                   <th className="min-w-[10rem] px-4 py-2">Customer</th>
@@ -467,7 +578,7 @@ export function SalesBillsListPage() {
               <tbody>
                 {tableRows.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-4 py-4">
+                    <td colSpan={canTallyExport ? 11 : 10} className="px-4 py-4">
                       <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-1.5 rounded-md border border-dashed border-slate-200 bg-slate-50/60 px-4 py-5 text-center">
                         <div className="text-[13px] font-semibold text-slate-800">
                           {showNoQtyFinalStepPreview && rows.length === 0
@@ -493,8 +604,34 @@ export function SalesBillsListPage() {
                     const showOverdue =
                       payLabel !== "—" &&
                       isBillAmountOverdue(r.dueDate ?? null, pendAmt, r.status, r.cancelledAt ?? null);
+                    const exportEligible = isSalesBillTallyBulkExportEligible(r);
                     return (
                       <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50/80">
+                        {canTallyExport ? (
+                          <td className="w-10 px-4 py-2">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 rounded border-slate-300"
+                              checked={bulk.selectedIds.has(r.id)}
+                              disabled={!exportEligible || bulkExporting}
+                              onChange={(e) => bulk.toggleOne(r.id, e.target.checked)}
+                              aria-label={
+                                exportEligible
+                                  ? `Select ${displaySalesBillNo(r.id, r.billNo, r.docNo)} for Tally XML download`
+                                  : "Not eligible for Tally XML download"
+                              }
+                              title={
+                                exportEligible
+                                  ? "Select for bulk Tally XML download"
+                                  : r.status !== "FINALIZED"
+                                    ? "Draft bills cannot be exported"
+                                    : r.isExported
+                                      ? "XML already downloaded"
+                                      : "Not eligible"
+                              }
+                            />
+                          </td>
+                        ) : null}
                         <td className="px-4 py-2 font-medium text-slate-900">
                           <Link
                             className="text-sky-700 underline-offset-4 hover:underline"
@@ -538,15 +675,28 @@ export function SalesBillsListPage() {
                           </div>
                         </td>
                         <td className="px-4 py-2">
-                          <span
-                            className={
-                              r.isExported
-                                ? "rounded-full bg-purple-50 px-2 py-0.5 text-xs font-medium text-purple-800"
-                                : "rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700"
-                            }
-                          >
-                            {r.isExported ? "Exported" : "Not exported"}
-                          </span>
+                          {r.isExported ? (
+                            <span
+                              className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800"
+                              title="Tally XML downloaded in ERP — confirm import in Tally separately"
+                            >
+                              XML downloaded
+                            </span>
+                          ) : r.status === "FINALIZED" && !r.cancelledAt ? (
+                            <span
+                              className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-900"
+                              title="Finalized bill pending Tally XML download"
+                            >
+                              Pending XML
+                            </span>
+                          ) : (
+                            <span
+                              className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600"
+                              title={r.status === "DRAFT" ? "Finalize before export" : "Not eligible for export"}
+                            >
+                              Not exported
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-2 text-right">
                           <Link

@@ -1,7 +1,8 @@
 import { Link } from "react-router-dom";
 import { ExternalLink } from "lucide-react";
-import { displayDispatchNo, displaySalesBillNo, displaySalesOrderNo } from "../../lib/docNoDisplay";
+import { displaySalesBillNo, displaySalesOrderNo } from "../../lib/docNoDisplay";
 import { cn } from "../../lib/utils";
+import { salesBillDispatchDetails, salesBillDispatchLabel, type SalesBillDispatchSource } from "../../lib/salesBillDispatchDisplay";
 
 export function SalesBillLinkedDocuments({
   billId,
@@ -10,6 +11,7 @@ export function SalesBillLinkedDocuments({
   salesOrderDocNo,
   dispatchId,
   dispatchDocNo,
+  dispatchAllocations,
   customerId,
   customerName,
   isExported,
@@ -21,11 +23,13 @@ export function SalesBillLinkedDocuments({
   salesOrderDocNo?: string | null;
   dispatchId: number;
   dispatchDocNo?: string | null;
+  dispatchAllocations?: SalesBillDispatchSource[];
   customerId: number;
   customerName: string;
   isExported?: boolean;
   className?: string;
 }) {
+  const sources = dispatchAllocations?.length ? dispatchAllocations : [{ dispatchId, allocatedQty: 0, dispatch: { docNo: dispatchDocNo } }];
   const links = [
     {
       key: "so",
@@ -36,7 +40,7 @@ export function SalesBillLinkedDocuments({
     {
       key: "dispatch",
       label: "Dispatch",
-      value: displayDispatchNo(dispatchId, dispatchDocNo),
+      value: salesBillDispatchLabel(sources),
       href: `/dispatch?salesOrderId=${salesOrderId}`,
     },
     {
@@ -64,6 +68,7 @@ export function SalesBillLinkedDocuments({
             <div className="min-w-0">
               <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">{link.label}</div>
               <div className="truncate font-mono text-[12px] font-semibold tabular-nums text-slate-900">{link.value}</div>
+              {link.key === "dispatch" && sources.length > 1 ? <div className="mt-0.5 text-[10px] text-slate-500">{salesBillDispatchDetails(sources).join(" Â· ")}</div> : null}
             </div>
             <Link
               to={link.href}
@@ -78,7 +83,7 @@ export function SalesBillLinkedDocuments({
           <div>
             <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Export status</div>
             <div className={cn("text-[12px] font-semibold", isExported ? "text-emerald-800" : "text-amber-800")}>
-              {isExported ? "Exported to Tally" : "Not exported"}
+              {isExported ? "XML downloaded" : "Not exported"}
             </div>
           </div>
         </li>

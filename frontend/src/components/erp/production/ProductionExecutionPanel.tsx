@@ -324,11 +324,13 @@ export function ProductionExecutionPanel({
   if (isCompactClosure) {
     const planned = Number(summary?.plannedQty ?? 0);
     const produced = Number(summary?.producedQty ?? 0);
+    const reportPending = showPendingShortfallDecision;
     const showPause = shouldShowPauseWorkOrderAction({
       producedQty: produced,
       plannedQty: planned,
       showPausedShortfall: showPausedShortfallDecision,
       isDone,
+      reportPending,
     });
 
     if (loading && !executionResolved) {
@@ -339,6 +341,18 @@ export function ProductionExecutionPanel({
       <>
         <div className="space-y-2" data-testid="production-closure-compact">
           {error ? <div className="text-[13px] font-medium text-red-700">{error}</div> : null}
+          {reportPending && !isDone ? (
+            <div
+              className="rounded-md border border-violet-200 bg-violet-50 px-2.5 py-2 text-[13px] text-violet-950"
+              data-testid="production-report-pending-banner"
+            >
+              <div className="font-semibold">Production Report Pending</div>
+              <p className="mt-0.5 text-[12px] font-medium text-violet-900">
+                Batch sent to QC. Complete RM reconciliation in the Production Report, then Confirm Report &amp;
+                Close WO. Production entry stays locked until the report is confirmed.
+              </p>
+            </div>
+          ) : null}
           {isDone ? (
             <p
               className="text-[13px] font-semibold text-emerald-800"

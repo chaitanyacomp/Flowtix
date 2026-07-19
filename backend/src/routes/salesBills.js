@@ -6,7 +6,10 @@ const auditLog = require("../services/auditLog");
 const {
   listSalesBills,
   getEligibleDispatches,
+  getEligibleDispatchesForSalesOrder,
   createDraftFromDispatch,
+  createDraftFromSalesOrder,
+  updateDraftAllocations,
   updateDraft,
   finalizeBill,
   cancelBill,
@@ -26,6 +29,7 @@ const {
 } = require("../constants/erpRoles");
 const { mapSalesBillToTallyExportPayload } = require("../services/salesBillTallyExportPayload");
 const { buildSalesBillTallyXml } = require("../services/salesBillTallyXml");
+const { exportSalesBillsToTallyBulk } = require("../services/salesBillTallyExportActions");
 const { logActivity } = require("../services/activityLogService");
 const {
   ACTIVITY_MODULES,
@@ -245,6 +249,75 @@ salesBillsRouter.get("/eligible-dispatches", requireAuth, requireRole(SALES_BILL
     return next(e);
   }
 });
+
+salesBillsRouter.get("/sales-orders/:soId/eligible-dispatches", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const rows = await getEligibleDispatchesForSalesOrder(prisma, Number(req.params.soId), Number(req.query.billId) || null);
+    return res.json(rows);
+  } catch (e) { return next(e); }
+});
+
+const allocationInput = z.object({ dispatchId: z.number().int().positive(), billNowQty: z.number().positive() });
+const transportationInput = z.object({
+  amount: z.number().nonnegative().default(0),
+  chargedBy: z.enum(["OUR_COMPANY", "TRANSPORTER_DIRECTLY"]).default("OUR_COMPANY"),
+  transporterName: z.string().max(256).optional().nullable(), referenceNo: z.string().max(128).optional().nullable(),
+  remarks: z.string().max(4000).optional().nullable(),
+}).default({ amount: 0, chargedBy: "OUR_COMPANY" });
+
+salesBillsRouter.post("/from-sales-order", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const body = z.object({ salesOrderId: z.number().int().positive(), billDate: dateInput.optional(),
+      allocations: z.array(allocationInput).min(1), transportation: transportationInput.optional() }).parse(req.body ?? {});
+    const selected = await getEligibleDispatchesForSalesOrder(prisma, body.salesOrderId);
+    if (body.allocations.some((row) => !selected.some((d) => d.dispatchId === row.dispatchId))) {
+      return res.status(409).json(friendly400("Every selected dispatch must belong to the selected Sales Order."));
+    }
+    const result = await createDraftFromSalesOrder(prisma, body, req.user?.userId ?? null);
+    return res.status(201).json(result.bill);
+  } catch (e) { return next(e); }
+});
+
+salesBillsRouter.put("/:id/allocations", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const body = z.object({ allocations: z.array(allocationInput).min(1), transportation: transportationInput.optional() }).parse(req.body ?? {});
+    const bill = await updateDraftAllocations(prisma, Number(req.params.id), body, req.user?.userId ?? null);
+    return res.json(bill);
+  } catch (e) { return next(e); }
+});
+
+/**
+ * Bulk Tally XML export for finalized, not-yet-exported sales bills.
+ * POST /api/sales-bills/export/tally-bulk
+ * Body: { ids: number[] }
+ * Returns a single combined XML attachment; marks each bill exported atomically.
+ */
+salesBillsRouter.post(
+  "/export/tally-bulk",
+  requireAuth,
+  requireRole(SALES_BILL_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const body = z
+        .object({
+          ids: z.array(z.number().int().positive()).min(1, "Select at least one sales bill"),
+        })
+        .parse(req.body ?? {});
+
+      const out = await exportSalesBillsToTallyBulk(prisma, body.ids, {
+        userId: req.user?.userId,
+        role: req.user?.role,
+        user: req.user,
+      });
+
+      res.setHeader("Content-Type", "application/xml; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename=\"${out.filename}\"`);
+      return res.status(200).send(out.xml);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
 
 salesBillsRouter.patch("/:id/lines/:lineId/rate", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {

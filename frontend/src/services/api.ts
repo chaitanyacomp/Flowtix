@@ -179,9 +179,17 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
 
     const msg = topMessage ?? (fromJson || cleanupMsg || fromHtml || `Request failed: ${res.status}`);
 
-    if (isAuthFailure(res.status, msg)) {
+    // Login/credential failures are 401 but are not an expired session.
+    if (isAuthFailure(res.status, msg) && !isAuthApiPath(path)) {
       handleAuthFailureOnce();
       throw new ApiRequestError(SESSION_EXPIRED_MESSAGE, 401);
+    }
+    if (isAuthFailure(res.status, msg) && isAuthApiPath(path)) {
+      throw new ApiRequestError(msg, res.status, errCode, {
+        step: cleanupStep,
+        backendError: cleanupError,
+        body: record ?? undefined,
+      });
     }
     throw new ApiRequestError(msg, res.status, errCode, {
       step: cleanupStep,

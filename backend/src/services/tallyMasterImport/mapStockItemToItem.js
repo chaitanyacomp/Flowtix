@@ -1,5 +1,6 @@
 const {
   strVal,
+  normalizeTallyControlText,
   getByLocalTag,
   getListBlocks,
   firstDirectText,
@@ -193,14 +194,15 @@ function classifyItemTypeFromStockGroupHaystack(hayNormalized, opts = {}) {
 
 /**
  * Collect Tally stock-group context from STOCKITEM (PARENT, CATEGORY, STOCKGROUP blocks).
+ * Display text is normalized so Tally control junk (`\u0004` / `&#4;`) never reaches the UI.
  * @param {Record<string, unknown>} s
- * @returns {{ tallyStockGroup: string | null; classificationHaystack: string }}
+ * @returns {{ tallyStockGroup: string | null; classificationHaystack: string; parentGroup: string | null }}
  */
 function extractStockGroupContext(s) {
   /** @type {string[]} */
   const parts = [];
   const add = (v) => {
-    const t = strVal(v).trim();
+    const t = normalizeTallyControlText(strVal(v));
     if (!t) return;
     if (!parts.some((p) => p.toLowerCase() === t.toLowerCase())) parts.push(t);
   };
@@ -223,9 +225,12 @@ function extractStockGroupContext(s) {
     add(getByLocalTag(b, "ORIGINALNAME"));
   }
 
+  const parentGroup =
+    normalizeTallyControlText(firstDirectText(s, ["PARENT", "PARENTNAME"])) || null;
+
   const tallyStockGroup = parts.length ? parts.join(" · ") : null;
   const classificationHaystack = normalizeMatchText(parts.join(" "));
-  return { tallyStockGroup, classificationHaystack };
+  return { tallyStockGroup, classificationHaystack, parentGroup };
 }
 
 /**
@@ -245,7 +250,7 @@ function mapStockItemToItem(stockRaw, keywordOpts = {}) {
     firstDirectText(s, ["HSNCODE", "HSNSAC", "HSN", "SACCODE"]) || extractHsnDeep(s) || null;
   const gstRate = extractGstPercentFromGstBlocks(s) ?? extractGstPercentDeep(s);
 
-  const { tallyStockGroup, classificationHaystack } = extractStockGroupContext(s);
+  const { tallyStockGroup, classificationHaystack, parentGroup } = extractStockGroupContext(s);
   const autoDetectedItemType = classificationHaystack
     ? classifyItemTypeFromStockGroupHaystack(classificationHaystack, keywordOpts)
     : null;
@@ -256,6 +261,9 @@ function mapStockItemToItem(stockRaw, keywordOpts = {}) {
     baseUnit: baseUnit || "",
     hsnCode: hsnCodeRaw,
     gstRate: gstRate != null && Number.isFinite(gstRate) ? gstRate : null,
+    hsnSource: hsnCodeRaw ? "STOCKITEM" : null,
+    gstSource: gstRate != null && Number.isFinite(gstRate) ? "STOCKITEM" : null,
+    parentGroup,
     tallyStockGroup,
     autoDetectedItemType,
   };
@@ -280,6 +288,7 @@ function mapTallyUnitMaster(unitRaw) {
 
 /**
  * Map Tally STOCKGROUP master (parsed; apply-to-ERP may be deferred).
+ * HSN/GST often live on STOCKGROUP and are inherited by child STOCKITEMs.
  * @param {unknown} raw
  */
 function mapTallyStockGroupMaster(raw) {
@@ -289,12 +298,110 @@ function mapTallyStockGroupMaster(raw) {
   if (!name) return null;
   const parent = firstDirectText(o, ["PARENT", "PARENTNAME"]) || null;
   const isAddable = String(firstDirectText(o, ["ISADDABLE"]) || "").toLowerCase() !== "no";
+  const hsnCode =
+    firstDirectText(o, ["HSNCODE", "HSNSAC", "HSN", "SACCODE"]) || extractHsnDeep(o) || null;
+  const gstRate = extractGstPercentFromGstBlocks(o) ?? extractGstPercentDeep(o);
   return {
     tallyName: name,
     stockGroupName: name,
-    parentGroup: parent,
+    parentGroup: parent ? normalizeTallyControlText(parent) || null : null,
     isAddable,
+    hsnCode,
+    gstRate: gstRate != null && Number.isFinite(gstRate) ? gstRate : null,
   };
+}
+
+/**
+ * @param {unknown} name
+ * @returns {string}
+ */
+function stockGroupLookupKey(name) {
+  return normalizeTallyControlText(name).toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Build name → { parent, hsn, gst } lookup from parsed STOCKGROUP masters.
+ * @param {Iterable<unknown>} stockGroupRaws
+ * @returns {Map<string, { name: string; parent: string | null; hsnCode: string | null; gstRate: number | null }>}
+ */
+function buildStockGroupTaxLookup(stockGroupRaws) {
+  /** @type {Map<string, { name: string; parent: string | null; hsnCode: string | null; gstRate: number | null }>} */
+  const map = new Map();
+  for (const raw of stockGroupRaws || []) {
+    const mg = mapTallyStockGroupMaster(raw);
+    if (!mg) continue;
+    const key = stockGroupLookupKey(mg.stockGroupName);
+    if (!key) continue;
+    map.set(key, {
+      name: mg.stockGroupName,
+      parent: mg.parentGroup,
+      hsnCode: mg.hsnCode || null,
+      gstRate: mg.gstRate,
+    });
+  }
+  return map;
+}
+
+/**
+ * Resolve HSN/GST for a stock item: direct item values win; else walk PARENT stock group
+ * then recursive parents (nearest group first). ERROR only if still unresolved after walk.
+ *
+ * @param {{ hsnCode?: string | null; gstRate?: number | null; parentGroup?: string | null }} itemMapped
+ * @param {Map<string, { name: string; parent: string | null; hsnCode: string | null; gstRate: number | null }>} groupLookup
+ * @returns {{
+ *   hsnCode: string | null;
+ *   gstRate: number | null;
+ *   hsnSource: string | null;
+ *   gstSource: string | null;
+ *   hsnInheritedFrom: string | null;
+ *   gstInheritedFrom: string | null;
+ * }}
+ */
+function resolveStockItemTaxFromStockGroups(itemMapped, groupLookup) {
+  let hsnCode = itemMapped?.hsnCode ? String(itemMapped.hsnCode).trim() || null : null;
+  let gstRate =
+    itemMapped?.gstRate != null && Number.isFinite(Number(itemMapped.gstRate))
+      ? Number(itemMapped.gstRate)
+      : null;
+  /** @type {string | null} */
+  let hsnSource = hsnCode ? "STOCKITEM" : null;
+  /** @type {string | null} */
+  let gstSource = gstRate != null ? "STOCKITEM" : null;
+  /** @type {string | null} */
+  let hsnInheritedFrom = null;
+  /** @type {string | null} */
+  let gstInheritedFrom = null;
+
+  if (hsnCode && gstRate != null) {
+    return { hsnCode, gstRate, hsnSource, gstSource, hsnInheritedFrom, gstInheritedFrom };
+  }
+
+  const visited = new Set();
+  let current = itemMapped?.parentGroup ? normalizeTallyControlText(itemMapped.parentGroup) : "";
+  while (current) {
+    const key = stockGroupLookupKey(current);
+    if (!key || visited.has(key)) break;
+    visited.add(key);
+    const g = groupLookup?.get(key);
+    if (!g) break;
+
+    if (!hsnCode && g.hsnCode) {
+      hsnCode = String(g.hsnCode).trim() || null;
+      if (hsnCode) {
+        hsnSource = `STOCKGROUP:${g.name}`;
+        hsnInheritedFrom = g.name;
+      }
+    }
+    if (gstRate == null && g.gstRate != null && Number.isFinite(Number(g.gstRate))) {
+      gstRate = Number(g.gstRate);
+      gstSource = `STOCKGROUP:${g.name}`;
+      gstInheritedFrom = g.name;
+    }
+    if (hsnCode && gstRate != null) break;
+    current = g.parent ? normalizeTallyControlText(g.parent) : "";
+  }
+
+  return { hsnCode, gstRate, hsnSource, gstSource, hsnInheritedFrom, gstInheritedFrom };
 }
 
 /**
@@ -346,6 +453,9 @@ module.exports = {
   extractGstPercentFromGstBlocks,
   classifyItemTypeFromStockGroupHaystack,
   extractStockGroupContext,
+  buildStockGroupTaxLookup,
+  resolveStockItemTaxFromStockGroups,
+  stockGroupLookupKey,
   DEFAULT_ITEM_TYPE_FG_KEYWORDS,
   DEFAULT_ITEM_TYPE_RM_KEYWORDS,
   asArray,

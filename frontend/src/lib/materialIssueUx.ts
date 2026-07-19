@@ -44,30 +44,34 @@ export function assessMaterialIssueQty(
 ): MaterialIssueQtyAssessment {
   const qty = round3(Number(issueQty ?? 0));
   const pending = round3(Math.max(0, Number(pendingQty ?? 0)));
-  const toleranceQty = 0;
-  const stockCap =
+  const toleranceQty = computeRmIssueToleranceQty(pending);
+  const calculatedMax = computeMaxAllowedRmIssueQty(pending, options?.woStillRequiredQty);
+  const explicitMax =
     options?.maxAllowedIssueQty != null ? round3(Number(options.maxAllowedIssueQty)) : null;
-  const maxAllowedQty = stockCap != null && stockCap > pending + EPS ? stockCap : Infinity;
+  const maxAllowedQty =
+    explicitMax != null && Number.isFinite(explicitMax)
+      ? Math.max(calculatedMax, explicitMax)
+      : calculatedMax;
 
   if (!Number.isFinite(qty) || qty <= EPS) {
     return {
       allowed: false,
       withinTolerance: false,
       overIssueQty: 0,
-      maxAllowedQty: Number.isFinite(maxAllowedQty) ? maxAllowedQty : pending,
+      maxAllowedQty,
       toleranceQty,
       pendingQty: pending,
     };
   }
 
   const overIssueQty = round3(Math.max(0, qty - pending));
-  const withinTolerance = overIssueQty > EPS;
-  if (stockCap != null && qty > stockCap + EPS) {
+  const withinTolerance = overIssueQty > EPS && qty <= maxAllowedQty + EPS;
+  if (qty > maxAllowedQty + EPS) {
     return {
       allowed: false,
       withinTolerance,
       overIssueQty,
-      maxAllowedQty: stockCap,
+      maxAllowedQty,
       toleranceQty,
       pendingQty: pending,
     };
@@ -77,7 +81,7 @@ export function assessMaterialIssueQty(
     allowed: true,
     withinTolerance,
     overIssueQty,
-    maxAllowedQty: Number.isFinite(maxAllowedQty) ? maxAllowedQty : qty,
+    maxAllowedQty,
     toleranceQty,
     pendingQty: pending,
   };
@@ -86,11 +90,11 @@ export function assessMaterialIssueQty(
 export function formatOverIssueToleranceWarning(overIssueQty: number, unit?: string): string {
   const u = unit?.trim() ? ` ${unit}` : "";
   const qty = round3(Math.max(0, overIssueQty));
-  return `Excess issue: +${qty.toLocaleString(undefined, { maximumFractionDigits: 3 })}${u} over required.`;
+  return `Over issue by ${qty.toLocaleString(undefined, { maximumFractionDigits: 3 })}${u} — allowed within tolerance.`;
 }
 
 export function formatIssueToleranceExceededMessage(): string {
-  return "Issue exceeds available store stock.";
+  return "Issue exceeds allowed tolerance.";
 }
 
 /** Still required on PMR line: max(0, original request − already issued). */

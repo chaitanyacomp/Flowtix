@@ -7,6 +7,14 @@ import {
   withWorkQueueState,
   type WorkQueueContext,
 } from "./workQueueContext";
+import {
+  buildPendingActionsProductionOverviewHref,
+  toProductionWorkspaceOverviewFromHref,
+} from "./productionWorkspaceRouteContract";
+import {
+  appendMaterialIssueBucketToHref,
+  materialIssueBucketForPendingAction,
+} from "./materialIssueDeepLink";
 
 const READY_TO_DISPATCH_PREFIX = "Ready to Dispatch";
 const DISPATCH_DRAFT_PREFIX = "Finalize Dispatch Draft";
@@ -97,6 +105,36 @@ export function pendingActionWorkspaceListHref(href: string): string {
       params.set("from", from);
       return `/production-release?${params.toString()}`;
     }
+    /**
+     * Production multi-item / list open must match left-menu overview semantics:
+     * keep productionBucket + pending-actions return — never pin SO/cycle/flow/WO
+     * (that reuses a completed sibling and shows "Production entry completed for this cycle").
+     */
+    if (path.endsWith("/production")) {
+      const bucket = url.searchParams.get("productionBucket");
+      const section = url.searchParams.get("pwSection");
+      const focus = url.searchParams.get("pwFocus");
+      const qs = new URLSearchParams();
+      if (bucket) qs.set("productionBucket", bucket);
+      if (section) qs.set("pwSection", section);
+      if (focus) qs.set("pwFocus", focus);
+      qs.set("from", "pending-actions");
+      return toProductionWorkspaceOverviewFromHref(`/production?${qs.toString()}`);
+    }
+    /**
+     * Material Issue Open List: keep canonical `bucket` (or legacy `queue`) so the
+     * correct side-queue activates — strip WO/PMR so no arbitrary card is preselected.
+     */
+    if (path.includes("/material-issue")) {
+      const qs = new URLSearchParams();
+      const bucket =
+        url.searchParams.get("bucket") ||
+        url.searchParams.get("queue");
+      if (bucket) qs.set("bucket", bucket);
+      qs.set("returnTo", url.searchParams.get("returnTo") || "pending-actions");
+      qs.set("from", url.searchParams.get("from") || "pending-actions");
+      return `/material-issue?${qs.toString()}`;
+    }
     const params = new URLSearchParams();
     const preserveKeys = [
       "returnTo",
@@ -110,9 +148,6 @@ export function pendingActionWorkspaceListHref(href: string): string {
       "period",
       "openAdditionalPlan",
     ];
-    if (path.endsWith("/production")) {
-      preserveKeys.push("productionBucket", "flow", "salesOrderId", "cycleId");
-    }
     // NO_QTY WO placement / RS execution: never drop explicit RS identity (FT-PD-040 §7.10).
     if (path.includes("/requirement-sheets")) {
       preserveKeys.push("sheetId", "requirementSheetId", "cycleId", "salesOrderId");
@@ -122,8 +157,7 @@ export function pendingActionWorkspaceListHref(href: string): string {
       if (v != null && v !== "") params.set(key, v);
     }
     if (!params.has("returnTo") && !params.has("from") && !params.has("source")) {
-      if (path.includes("/material-issue")) params.set("returnTo", "pending-actions");
-      else if (path.includes("/dispatch")) params.set("source", "pending-actions");
+      if (path.includes("/dispatch")) params.set("source", "pending-actions");
       else params.set("from", "pending-actions");
     }
     const qs = params.toString();
@@ -139,10 +173,45 @@ function appendProductionWorkspaceBucket(href: string, groupKey: string): string
   try {
     const url = new URL(href, "http://erp.local");
     if (!url.pathname.endsWith("/production")) return href;
+    // Multi-WO / list path already overview-normalized; ensure correct tab + bucket.
+    return buildPendingActionsProductionOverviewHref(bucket);
+  } catch {
+    return href;
+  }
+}
+
+/** Ensure Material Issue list/item hrefs carry the canonical bucket for the PA group. */
+function appendMaterialIssueWorkspaceBucket(href: string, groupKey: string): string {
+  if (!materialIssueBucketForPendingAction(groupKey)) return href;
+  return appendMaterialIssueBucketToHref(href, groupKey);
+}
+
+/**
+ * Ready to Start (single): Workbench Ready tab + focused card (pwFocus), not a scoped process.
+ * Continue Production (single): keep WO deep-link so the executable remaining-balance screen opens.
+ */
+function ensureSingleProductionPendingHref(href: string, groupKey: string): string {
+  if (groupKey !== "Ready to Start Production" && groupKey !== "Continue Production") return href;
+  const bucket = groupKey === "Ready to Start Production" ? "readyToStart" : "inProgress";
+  try {
+    const url = new URL(href, "http://erp.local");
+    if (!url.pathname.endsWith("/production")) return href;
+    const woId = Number(url.searchParams.get("workOrderId") ?? url.searchParams.get("woId") ?? 0);
+
+    if (groupKey === "Ready to Start Production") {
+      return buildPendingActionsProductionOverviewHref(bucket, {
+        pwFocus: Number.isFinite(woId) && woId > 0 ? woId : null,
+      });
+    }
+
+    // Continue: scoped executable process + Continuity tokens.
     url.searchParams.set("productionBucket", bucket);
+    url.searchParams.set("pwSection", "active");
     if (!url.searchParams.has("from")) {
       url.searchParams.set("from", url.searchParams.get("returnTo") ?? "pending-actions");
-      url.searchParams.delete("returnTo");
+    }
+    if (!url.searchParams.has("returnTo")) {
+      url.searchParams.set("returnTo", "pending-actions");
     }
     return `${url.pathname}?${url.searchParams.toString()}`;
   } catch {
@@ -223,15 +292,24 @@ export function groupPendingActionsIntoWorkBuckets(
     }
 
     const rawHref = items[0]?.href ?? "/pending-actions";
-    const listHref = appendProductionWorkspaceBucket(
-      pendingActionWorkspaceListHref(
-        resolveGreenLevelPendingActionHref(rawHref, items[0]?.action),
+    const listHref = appendMaterialIssueWorkspaceBucket(
+      appendProductionWorkspaceBucket(
+        pendingActionWorkspaceListHref(
+          resolveGreenLevelPendingActionHref(rawHref, items[0]?.action),
+        ),
+        key,
       ),
       key,
     );
     const openHref =
       count === 1 || isCreateSalesBillPendingBucket(key)
-        ? resolveGreenLevelPendingActionHref(items[0]?.href ?? listHref, items[0]?.action)
+        ? appendMaterialIssueWorkspaceBucket(
+            ensureSingleProductionPendingHref(
+              resolveGreenLevelPendingActionHref(items[0]?.href ?? listHref, items[0]?.action),
+              key,
+            ),
+            key,
+          )
         : listHref;
 
     buckets.push({

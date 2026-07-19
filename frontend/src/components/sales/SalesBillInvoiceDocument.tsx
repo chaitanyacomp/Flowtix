@@ -1,5 +1,6 @@
 import { Badge } from "../ui/badge";
 import { cn } from "../../lib/utils";
+import { buildSalesBillTaxSummary, lineTaxRates } from "../../lib/salesBillTaxDisplay";
 
 export type SalesBillInvoiceLine = {
   id: number;
@@ -9,10 +10,13 @@ export type SalesBillInvoiceLine = {
   qty: string;
   rate: string;
   basicAmount: string;
+  goodsTaxableAmount?: string;
+  gstRate: string;
   cgstAmount: string;
   sgstAmount: string;
   igstAmount: string;
   lineTotal: string;
+  transportationAllocation?: string;
 };
 
 export type SalesBillInvoiceDocumentBill = {
@@ -24,7 +28,16 @@ export type SalesBillInvoiceDocumentBill = {
   totalCgst: string;
   totalSgst: string;
   totalIgst: string;
+  totalTax?: string;
   netAmount: string;
+  goodsTaxableValue?: string;
+  transportationAmount?: string;
+  transportationTaxableValue?: string;
+  transportationChargedBy?: "OUR_COMPANY" | "TRANSPORTER_DIRECTLY" | string;
+  transporterName?: string | null;
+  transportationReferenceNo?: string | null;
+  roundOffAmount?: string;
+  dispatchAllocations?: Array<{ dispatch?: { docNo?: string | null }; dispatchId: number; allocatedQty: string }>;
   taxIntraState?: boolean;
   gstMode?: "LOCAL" | "INTERSTATE" | string | null;
   posStateCode?: string | null;
@@ -116,6 +129,8 @@ export function SalesBillInvoiceDocument({ bill, className }: Props) {
   const posName = trim(bill.posStateName) || trim(bill.posStateNameSnapshot);
   const posCode = trim(bill.posStateCode) || trim(bill.posStateCodeSnapshot);
   const gstChip = gstModeLabel(bill);
+  const intraState = gstChip.variant !== "interstate";
+  const taxSummary = buildSalesBillTaxSummary(bill.lines, intraState);
 
   return (
     <div
@@ -138,7 +153,12 @@ export function SalesBillInvoiceDocument({ bill, className }: Props) {
               SO: <span className="font-medium text-slate-800">#{bill.dispatch.soId}</span>
             </div>
           ) : null}
-          {bill.dispatch?.docNo ? (
+          {bill.dispatchAllocations?.length ? (
+            <div className="mt-0.5 max-w-xs text-xs">
+              Dispatch: <span className="font-medium text-slate-800">{bill.dispatchAllocations.length === 1 ? (bill.dispatchAllocations[0].dispatch?.docNo || `D-${bill.dispatchAllocations[0].dispatchId}`) : `${bill.dispatchAllocations.length} Dispatches`}</span>
+              {bill.dispatchAllocations.length > 1 ? <div className="mt-0.5 text-[11px] text-slate-600">{bill.dispatchAllocations.map((a) => `${a.dispatch?.docNo || `D-${a.dispatchId}`} (${Number(a.allocatedQty)} allocated)`).join(" Â· ")}</div> : null}
+            </div>
+          ) : bill.dispatch?.docNo ? (
             <div className="mt-0.5">
               Dispatch: <span className="font-medium text-slate-800">{bill.dispatch.docNo}</span>
             </div>
@@ -213,6 +233,7 @@ export function SalesBillInvoiceDocument({ bill, className }: Props) {
               <th className="px-2 py-1.5 text-right font-medium">Qty</th>
               <th className="px-2 py-1.5 text-right font-medium">Rate</th>
               <th className="px-2 py-1.5 text-right font-medium">Taxable</th>
+              <th className="px-2 py-1.5 text-right font-medium">GST %</th>
               <th className="px-2 py-1.5 text-right font-medium">Tax</th>
               <th className="px-2 py-1.5 text-right font-medium">Total</th>
             </tr>
@@ -220,15 +241,17 @@ export function SalesBillInvoiceDocument({ bill, className }: Props) {
           <tbody>
             {bill.lines.map((ln) => {
               const tax = Number(ln.cgstAmount) + Number(ln.sgstAmount) + Number(ln.igstAmount);
+              const rates = lineTaxRates(ln, intraState);
               return (
                 <tr key={ln.id} className="border-b border-slate-100">
-                  <td className="px-2 py-1.5 font-medium text-slate-900">{ln.itemNameSnapshot}</td>
+                  <td className="px-2 py-1.5 font-medium text-slate-900">{ln.itemNameSnapshot}<div className="mt-0.5 text-[10px] font-normal text-slate-500">Goods {formatMoney(ln.goodsTaxableAmount ?? (Number(ln.basicAmount) - Number(ln.transportationAllocation || 0)))} + transport {formatMoney(ln.transportationAllocation || 0)}</div><div className="text-[10px] font-normal text-slate-600">CGST {rates.cgst ?? "â€”"}: {rates.cgst ? formatMoney(ln.cgstAmount) : "â€”"} Â· SGST {rates.sgst ?? "â€”"}: {rates.sgst ? formatMoney(ln.sgstAmount) : "â€”"} Â· IGST {rates.igst ?? "â€”"}: {rates.igst ? formatMoney(ln.igstAmount) : "â€”"}</div></td>
                   <td className="px-2 py-1.5 text-slate-600">{ln.hsnCodeSnapshot || "—"}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">
                     {Number(ln.qty)} {ln.unitSnapshot}
                   </td>
                   <td className="px-2 py-1.5 text-right tabular-nums">{formatMoney(ln.rate)}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">{formatMoney(ln.basicAmount)}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums font-medium">{rates.gst}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums">{formatMoney(tax)}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums font-medium">{formatMoney(ln.lineTotal)}</td>
                 </tr>
@@ -241,9 +264,11 @@ export function SalesBillInvoiceDocument({ bill, className }: Props) {
       <div className="mt-3 flex justify-end">
         <div className="w-full max-w-xs space-y-1 text-[12px]">
           <div className="flex justify-between gap-4">
-            <span className="text-slate-600">Taxable</span>
-            <span className="tabular-nums">{formatMoney(bill.totalBasic)}</span>
+            <span className="text-slate-600">Goods taxable value</span>
+            <span className="tabular-nums">{formatMoney(bill.goodsTaxableValue ?? bill.totalBasic)}</span>
           </div>
+          {Number(bill.transportationAmount || 0) > 0 ? <div className="flex justify-between gap-4"><span className="text-slate-600">Transportation Charges{bill.transportationChargedBy === "TRANSPORTER_DIRECTLY" ? " (transporter direct)" : ""}</span><span className="tabular-nums">{formatMoney(bill.transportationAmount || 0)}</span></div> : null}
+          <div className="flex justify-between gap-4"><span className="text-slate-600">Total Taxable Value</span><span className="tabular-nums">{formatMoney(bill.totalBasic)}</span></div>
           <div className="flex justify-between gap-4">
             <span className="text-slate-600">CGST</span>
             <span className="tabular-nums">{formatMoney(bill.totalCgst)}</span>
@@ -256,12 +281,22 @@ export function SalesBillInvoiceDocument({ bill, className }: Props) {
             <span className="text-slate-600">IGST</span>
             <span className="tabular-nums">{formatMoney(bill.totalIgst)}</span>
           </div>
+          <div className="flex justify-between gap-4"><span className="text-slate-600">Total tax</span><span className="tabular-nums">{formatMoney(bill.totalTax ?? (Number(bill.totalCgst) + Number(bill.totalSgst) + Number(bill.totalIgst)))}</span></div>
+          <div className="flex justify-between gap-4 text-slate-600"><span>Round-off</span><span className="tabular-nums">{formatMoney(bill.roundOffAmount || 0)}</span></div>
           <div className="flex justify-between gap-4 border-t border-slate-200 pt-1 font-semibold">
             <span className="text-slate-900">Grand total</span>
             <span className="tabular-nums text-slate-900">{formatMoney(bill.netAmount)}</span>
           </div>
         </div>
       </div>
+
+      <div className="mt-3 rounded border border-slate-200">
+        <div className="border-b border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-600">GST rate-wise summary</div>
+        <table className="w-full border-collapse text-[11px]"><thead><tr className="border-b border-slate-200 text-slate-600"><th className="px-2 py-1 text-right">GST Rate</th><th className="px-2 py-1 text-right">Taxable Value</th><th className="px-2 py-1 text-right">CGST % / Amt</th><th className="px-2 py-1 text-right">SGST % / Amt</th><th className="px-2 py-1 text-right">IGST % / Amt</th></tr></thead><tbody>{taxSummary.map((row) => <tr key={row.gstRate} className="border-b border-slate-100 last:border-0"><td className="px-2 py-1 text-right font-medium">{row.gstRateLabel}</td><td className="px-2 py-1 text-right tabular-nums">{formatMoney(row.taxableValue)}</td><td className="px-2 py-1 text-right tabular-nums">{row.cgstRateLabel ? `${row.cgstRateLabel} / ${formatMoney(row.cgstAmount)}` : "â€”"}</td><td className="px-2 py-1 text-right tabular-nums">{row.sgstRateLabel ? `${row.sgstRateLabel} / ${formatMoney(row.sgstAmount)}` : "â€”"}</td><td className="px-2 py-1 text-right tabular-nums">{row.igstRateLabel ? `${row.igstRateLabel} / ${formatMoney(row.igstAmount)}` : "â€”"}</td></tr>)}</tbody></table>
+      </div>
+      {bill.lines.some((line) => Number(line.transportationAllocation || 0) > 0) ? <p className="mt-1 text-[10px] text-slate-500">Taxable value includes proportionately allocated transportation.</p> : null}
+
+      {Number(bill.transportationAmount || 0) > 0 ? <p className="mt-2 text-[11px] text-slate-600">{bill.transportationChargedBy === "OUR_COMPANY" ? "Transportation GST is allocated proportionately across invoice items." : `Transporter bills customer separately${bill.transporterName ? ` · ${bill.transporterName}` : ""}${bill.transportationReferenceNo ? ` · Ref ${bill.transportationReferenceNo}` : ""}.`}</p> : null}
 
       {bill.remarks?.trim() ? (
         <p className="mt-3 rounded border border-slate-100 bg-slate-50 px-2 py-1.5 text-[12px] text-slate-700">

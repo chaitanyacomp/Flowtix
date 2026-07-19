@@ -9,15 +9,16 @@ import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { cn } from "../lib/utils";
 import { useToast } from "../contexts/ToastContext";
+import { useAuth } from "../contexts/AuthContext";
 import { PageContainer, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
 import { ErpWorkflowTrail, ErpPageLoader } from "../components/erp/foundation";
 import { useStablePageLoad } from "../hooks/useStablePageLoad";
 import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
+import { useErpRefreshTick } from "../hooks/useErpRefreshTick";
 import {
   assessMaterialIssueQty,
   formatIssueToleranceExceededMessage,
-  formatOverIssueToleranceWarning,
   formatSuggestedIssueQty,
   hasPartialStoreAutofill,
   isMaterialIssueLineStockBlocked,
@@ -25,6 +26,7 @@ import {
 import { buildRmControlCenterHref } from "../lib/woProcurementContinuity";
 import { buildMaterialIssuePostActionSearchParams } from "../lib/manufacturingNavigationContinuity";
 import { MaterialIssuePmrQueuePanel } from "../components/erp/MaterialIssuePmrQueuePanel";
+import { MaterialIssueAllowanceRow } from "../components/erp/MaterialIssueAllowanceRow";
 import {
   buildActionableWorkOrderDropdownOptions,
   mapIssuedWaitingForProductionPanelRows,
@@ -43,17 +45,46 @@ import {
   filterPendingPmrsForSessionScope,
   formatMaterialIssueInlineStatus,
   formatMaterialIssueSuccessMessage,
+  formatPartialIssueSuccessMessage,
   materialIssueSessionCompleteMessage,
   materialIssueSessionCompleteTitle,
   parseMaterialIssueSessionScope,
+  pickNextReadyToIssuePmrInScope,
   resolvePostIssueAdvance,
   type MaterialIssueSessionComplete,
 } from "../lib/materialIssueContinuousSession";
+import { type MaterialIssueQueueFilterKey } from "../lib/materialIssueQueueState";
+import {
+  buildMaterialIssueDeepLink,
+  materialIssueFilterKeyToBucket,
+  parseMaterialIssueDeepLink,
+  resolveMaterialIssueDeepLinkTarget,
+  type MaterialIssueBucket,
+} from "../lib/materialIssueDeepLink";
 import {
   displayMaterialIssueNo,
   displayPmrNo,
   displayWorkOrderNo,
 } from "../lib/docNoDisplay";
+import {
+  calculatePlannedAllowance,
+  formatAllowanceInput,
+  type PlannedAllowanceInputSource,
+} from "../lib/plannedProcessAllowance";
+import {
+  blockDecimalSpinnerKeys,
+  blockDecimalWheel,
+  normalizeDecimalOnBlur,
+  sanitizeDecimalInput,
+} from "../lib/keyboardDecimalInput";
+import {
+  hydrateIssueLinesWithAllowanceApprovals,
+  mergeAllowanceQueueInfoIntoPmrs,
+  resolveLineAllowanceBand,
+  resolveMaterialIssuePrimaryAction,
+  type PmrAllowanceQueueStatus,
+  type RmAllowanceApprovalRequest,
+} from "../lib/rmAllowanceApprovalUx";
 
 type LocationRow = {
   id: number;
@@ -97,6 +128,14 @@ type IssueLineDraft = {
   /** WO-wise cap after prior issue, consumption, and return history. */
   issueCapQty?: number;
   fullWoRmNeed?: number;
+  allowanceInputSource?: PlannedAllowanceInputSource;
+  plannedAllowancePct?: string;
+  plannedAllowanceQty?: string;
+  allowanceReason?: string;
+  /** RM allowance Admin approval workflow — hydrated from the latest matching request, if any. */
+  allowanceApprovalId?: number | null;
+  allowanceApprovalStatus?: PmrAllowanceQueueStatus;
+  allowanceApprovalRejectionReason?: string | null;
   consumedQty?: number;
   returnedQty?: number;
   atProductionQty?: number;
@@ -136,7 +175,11 @@ type PendingPmr = {
   requirementSheetId?: number | null;
   productionItemName?: string | null;
   totalPending: number;
+  totalRequired?: number | null;
+  totalIssued?: number | null;
   lineCount?: number;
+  pendingLineCount?: number | null;
+  issueQueueState?: "READY_TO_ISSUE" | "PARTIALLY_ISSUED" | "COMPLETE" | "SHORT_CLOSED" | null;
   storeIssueReady?: boolean | null;
   storeActionKey?: string | null;
   storeActionLabel?: string | null;
@@ -147,6 +190,7 @@ type IssueMode = "wo-pmr" | "manual";
 type PmrIssueLine = {
   id: number;
   itemId: number;
+  fullWoRmNeed?: number;
   itemName: string;
   requiredQty: number;
   originalRequiredQty?: number;
@@ -279,11 +323,7 @@ function newLineKey() {
 function pmrLineToDraft(pl: PmrIssueLine): IssueLineDraft {
   const issueCap = pl.issueCapQty ?? pl.stillRequiredQty ?? pl.pendingQty;
   const storeQty = pl.freeStoreStock ?? pl.availableStoreQty ?? pl.available ?? null;
-  const suggested =
-    pl.suggestedIssueQty != null
-      ? pl.suggestedIssueQty
-      : suggestedMaterialIssueQtyFromLib(issueCap, storeQty);
-  return {
+  const draft: IssueLineDraft = {
     key: `pmr-${pl.id}`,
     pmrLineId: pl.id,
     itemId: pl.itemId,
@@ -308,8 +348,13 @@ function pmrLineToDraft(pl: PmrIssueLine): IssueLineDraft {
     reservationForCurrentPmrQty: pl.reservationForCurrentPmrQty ?? null,
     reservationBreakdown: pl.reservationBreakdown ?? [],
     freeStoreStock: storeQty,
-    issueQty: suggested > 0 ? String(suggested) : "0",
+    issueQty: "0",
     issueQtyTouched: false,
+    fullWoRmNeed: pl.fullWoRmNeed ?? pl.originalRequiredQty ?? pl.requiredQty,
+    allowanceInputSource: "QUANTITY",
+    plannedAllowancePct: "0",
+    plannedAllowanceQty: "0",
+    allowanceReason: "",
     available: storeQty,
     loadingAvailable: false,
     lineReadinessKey: pl.lineReadinessKey,
@@ -317,30 +362,52 @@ function pmrLineToDraft(pl: PmrIssueLine): IssueLineDraft {
     lineReadinessExplanation: pl.lineReadinessExplanation,
     waitingProcurement: pl.waitingProcurement,
   };
-}
-
-function suggestedMaterialIssueQtyFromLib(
-  pendingQty: number | null | undefined,
-  availableInStore: number | null | undefined,
-): number {
-  return Number(formatSuggestedIssueQty(pendingQty, availableInStore)) || 0;
+  draft.issueQty = defaultIssueQtyForLine(draft, storeQty);
+  return draft;
 }
 
 function assessIssueLineDraft(ln: IssueLineDraft) {
   const pending = ln.pmrPendingQty ?? ln.pendingQty ?? 0;
-  return assessMaterialIssueQty(ln.issueQty, pending, {
+  const allowance = allowanceForLine(ln);
+  const defaultNow = allowance.valid ? allowance.defaultIssueNowQty : pending;
+  const allowanceAdjustedPending = Math.max(pending, defaultNow);
+  return assessMaterialIssueQty(ln.issueQty, allowanceAdjustedPending, {
     woStillRequiredQty: ln.issueCapQty ?? ln.stillRequiredQty,
-    maxAllowedIssueQty: ln.maxAllowedIssueQty,
+    maxAllowedIssueQty: Math.max(Number(ln.maxAllowedIssueQty ?? 0), defaultNow),
   });
+}
+
+function allowanceForLine(ln: IssueLineDraft) {
+  return calculatePlannedAllowance({
+    theoreticalQty: Number(
+      ln.fullWoRmNeed ?? ln.originalRequestQty ?? ln.effectiveRequiredQty ?? 0,
+    ),
+    quantityRaw: ln.plannedAllowanceQty ?? "0",
+    alreadyIssuedQty: Number(ln.alreadyIssuedQty ?? 0),
+  });
+}
+
+function defaultIssueQtyForLine(ln: IssueLineDraft, available: number | null | undefined): string {
+  const allowance = allowanceForLine(ln);
+  if (!allowance.valid) {
+    return formatSuggestedIssueQty(ln.stillRequiredQty ?? ln.pmrPendingQty ?? 0, available);
+  }
+  const capped =
+    available != null && Number.isFinite(available)
+      ? Math.min(allowance.defaultIssueNowQty, available)
+      : allowance.defaultIssueNowQty;
+  return formatAllowanceInput(Math.max(0, capped));
 }
 
 export function MaterialIssuePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { showSuccess, showError } = useToast();
+  const { user } = useAuth();
   const [ctx, setCtx] = React.useState<ContextResponse | null>(null);
   const [recent, setRecent] = React.useState<RecentIssue[]>([]);
   const [issuedWaitingForProduction, setIssuedWaitingForProduction] = React.useState<IssuedWaitingForProductionRow[]>([]);
   const [pendingPmrs, setPendingPmrs] = React.useState<PendingPmr[]>([]);
+  const [allowanceApprovals, setAllowanceApprovals] = React.useState<RmAllowanceApprovalRequest[]>([]);
   const [activePmrId, setActivePmrId] = React.useState<number | null>(null);
   const [activePmr, setActivePmr] = React.useState<PmrIssueContext["pmr"] | null>(null);
   const [issueDecision, setIssueDecision] = React.useState<PmrIssueDecision | null>(null);
@@ -369,6 +436,28 @@ export function MaterialIssuePage() {
   });
 
   const [lines, setLines] = React.useState<IssueLineDraft[]>([]);
+
+  function updateExtraAllowanceQty(lineKey: string, rawValue: string) {
+    setLines((prev) =>
+      prev.map((line) => {
+        if (line.key !== lineKey) return line;
+        const nextLine: IssueLineDraft = {
+          ...line,
+          allowanceInputSource: "QUANTITY",
+          plannedAllowanceQty: rawValue,
+        };
+        const calc = allowanceForLine(nextLine);
+        nextLine.plannedAllowancePct = calc.valid
+          ? formatAllowanceInput(calc.calculatedPct, 4)
+          : line.plannedAllowancePct ?? "0";
+        // Auto-update Issue Now unless the operator has overridden for partial issue.
+        if (!line.issueQtyTouched) {
+          nextLine.issueQty = defaultIssueQtyForLine(nextLine, line.available);
+        }
+        return nextLine;
+      }),
+    );
+  }
   useUnsavedChangesGuard({
     isDirty:
       lines.some((ln) => ln.issueQtyTouched || (String(ln.issueQty).trim() !== "" && Number(ln.issueQty) > 0)) ||
@@ -394,6 +483,20 @@ export function MaterialIssuePage() {
     await refreshPendingPmrsList();
   }
 
+  async function loadAllowanceApprovals(): Promise<RmAllowanceApprovalRequest[]> {
+    try {
+      const rows = await apiFetch<RmAllowanceApprovalRequest[]>(
+        "/api/rm-allowance-approvals?status=PENDING_APPROVAL,APPROVED,REJECTED",
+      );
+      const list = Array.isArray(rows) ? rows : [];
+      setAllowanceApprovals(list);
+      return list;
+    } catch {
+      setAllowanceApprovals([]);
+      return [];
+    }
+  }
+
   async function loadPmrIntoForm(pmrId: number, fromId?: number) {
     setPmrLoading(true);
     setPmrLoadError(null);
@@ -406,7 +509,8 @@ export function MaterialIssuePage() {
       if (data.pmr.workOrderId) setWorkOrderId(data.pmr.workOrderId);
       setRemarks(`Issue against ${displayPmrNo(pmrId, data.pmr.docNo)}`);
       const sourceLines = filterMaterialIssueEntryLines(data.pendingLines?.length ? data.pendingLines : data.lines ?? []);
-      setLines(sourceLines.length ? sourceLines.map(pmrLineToDraft) : []);
+      const draftLines = sourceLines.length ? sourceLines.map(pmrLineToDraft) : [];
+      setLines(hydrateIssueLinesWithAllowanceApprovals(draftLines, allowanceApprovals));
     } catch (e) {
       setPmrLoadError(e instanceof Error ? e.message : "Could not load PMR");
       setActivePmrId(null);
@@ -430,6 +534,7 @@ export function MaterialIssuePage() {
           () => [] as IssuedWaitingForProductionRow[],
         ),
         loadPendingPmrs(),
+        loadAllowanceApprovals(),
       ]);
       setCtx(context);
       setRecent(Array.isArray(list) ? list : []);
@@ -453,9 +558,23 @@ export function MaterialIssuePage() {
     void loadAll();
   }, []);
 
-  const urlPmrId = Number(searchParams.get("pmrId")) || 0;
-  const urlWorkOrderId = Number(searchParams.get("workOrderId")) || 0;
-  const returnTo = searchParams.get("returnTo");
+  // Admin approve/reject bumps pending-actions; refresh side-queue without blocking Store work.
+  const allowanceQueueRefreshTick = useErpRefreshTick(["pending-actions", "production"], {
+    pollIntervalMs: 45_000,
+    refreshOnVisible: true,
+  });
+  React.useEffect(() => {
+    if (allowanceQueueRefreshTick === 0) return;
+    void refreshPendingPmrsList();
+    void loadAllowanceApprovals();
+  }, [allowanceQueueRefreshTick]);
+
+  const deepLink = React.useMemo(() => parseMaterialIssueDeepLink(searchParams), [searchParams]);
+  const urlPmrId = deepLink.pmrId ?? 0;
+  const urlWorkOrderId = deepLink.workOrderId ?? 0;
+  const returnTo = deepLink.returnTo ?? searchParams.get("returnTo");
+  const queueFilterFromUrl: MaterialIssueQueueFilterKey = deepLink.filterKey;
+  const requestedBucket: MaterialIssueBucket | null = deepLink.bucket;
   const sessionScope = React.useMemo(
     () =>
       parseMaterialIssueSessionScope({
@@ -465,8 +584,8 @@ export function MaterialIssuePage() {
     [searchParams],
   );
   const scopedPendingPmrs = React.useMemo(
-    () => filterPendingPmrsForSessionScope(pendingPmrs, sessionScope),
-    [pendingPmrs, sessionScope],
+    () => mergeAllowanceQueueInfoIntoPmrs(filterPendingPmrsForSessionScope(pendingPmrs, sessionScope), allowanceApprovals),
+    [pendingPmrs, sessionScope, allowanceApprovals],
   );
   const actionablePendingPmrs = React.useMemo(
     () => filterPmrsWithPendingIssue(scopedPendingPmrs),
@@ -491,13 +610,31 @@ export function MaterialIssuePage() {
       const next = new URLSearchParams(searchParams);
       next.set("pmrId", String(pmrId));
       if (returnTo) next.set("returnTo", returnTo);
+      if (deepLink.fromPendingActions) next.set("from", "pending-actions");
+      const bucket = requestedBucket ?? (deepLink.bucketExplicit ? deepLink.bucket : null);
+      if (bucket) {
+        next.set("bucket", bucket);
+        next.delete("queue");
+      }
       const resolvedWo =
         woId ?? pendingPmrs.find((p) => p.id === pmrId)?.workOrderId ?? (typeof workOrderId === "number" ? workOrderId : 0);
       if (resolvedWo && resolvedWo > 0) next.set("workOrderId", String(resolvedWo));
       setSearchParams(next, { replace: true });
+      if (resolvedWo && resolvedWo > 0) setWorkOrderId(resolvedWo);
       void loadPmrIntoForm(pmrId, typeof fromLocationId === "number" ? fromLocationId : undefined);
     },
-    [fromLocationId, pendingPmrs, returnTo, searchParams, setSearchParams, workOrderId],
+    [
+      deepLink.bucket,
+      deepLink.bucketExplicit,
+      deepLink.fromPendingActions,
+      fromLocationId,
+      pendingPmrs,
+      requestedBucket,
+      returnTo,
+      searchParams,
+      setSearchParams,
+      workOrderId,
+    ],
   );
 
   const clearExecution = React.useCallback(() => {
@@ -512,8 +649,13 @@ export function MaterialIssuePage() {
     next.delete("pmrId");
     next.delete("workOrderId");
     if (returnTo) next.set("returnTo", returnTo);
+    if (deepLink.fromPendingActions) next.set("from", "pending-actions");
+    if (requestedBucket) {
+      next.set("bucket", requestedBucket);
+      next.delete("queue");
+    }
     setSearchParams(next, { replace: true });
-  }, [returnTo, searchParams, setSearchParams]);
+  }, [deepLink.fromPendingActions, requestedBucket, returnTo, searchParams, setSearchParams]);
 
   // Tracks WOs we've already auto-ensured a PMR for, so the URL handoff effect cannot
   // loop when loadPendingPmrs() updates state before activePmrId is set.
@@ -567,26 +709,121 @@ export function MaterialIssuePage() {
     void ensurePmrAndSelect(woId);
   }
 
+  // Invalid bucket token — stay on default Ready, do not invent a wrong queue.
   React.useEffect(() => {
-    if (!Number.isFinite(urlPmrId) || urlPmrId <= 0 || !ctx) return;
-    void loadPmrIntoForm(urlPmrId, typeof fromLocationId === "number" ? fromLocationId : undefined);
-  }, [urlPmrId, ctx]);
+    if (!deepLink.invalidBucketRequested) return;
+    showError("Unknown Material Issue queue in the link. Showing Ready to Issue.");
+  }, [deepLink.invalidBucketRequested]);
 
+  /**
+   * Deep-link resolver (Pending Actions → Material Issue):
+   * 1) Activate requested bucket (never overwrite with Ready when bucket is present).
+   * 2) If WO/PMR provided, verify membership and load; else leave list-only (no arbitrary WO).
+   */
+  const deepLinkResolvedKeyRef = React.useRef<string>("");
   React.useEffect(() => {
-    if (urlPmrId > 0 || activePmrId || !ctx || issueMode === "manual") return;
-    if (!Number.isFinite(urlWorkOrderId) || urlWorkOrderId <= 0) return;
-    const pmr = pickActionablePmrForWorkOrder(urlWorkOrderId, scopedPendingPmrs);
-    if (pmr) {
-      selectPmr(pmr.id, urlWorkOrderId);
+    if (!ctx || issueMode === "manual") return;
+    if (loading || pmrLoading) return;
+
+    const key = `${deepLink.bucket ?? ""}:${urlPmrId}:${urlWorkOrderId}:${scopedPendingPmrs.length}:${allowanceApprovals.length}`;
+    if (deepLinkResolvedKeyRef.current === key) return;
+
+    // List-only Open List: activate bucket, clear any stale selection not in URL.
+    if (!urlPmrId && !urlWorkOrderId) {
+      deepLinkResolvedKeyRef.current = key;
+      if (activePmrId && deepLink.bucketExplicit) {
+        // Keep form empty for grouped list — Store picks a card.
+        setActivePmrId(null);
+        setActivePmr(null);
+        setIssueDecision(null);
+        setLines([]);
+        setWorkOrderId("");
+      }
       return;
     }
-    // Arrived from RM Control Center "Issue RM to Production" for a WO with no PMR yet —
-    // ensure one once, then load it.
-    if (workOrderId === "") setWorkOrderId(urlWorkOrderId);
-    if (!ensuredWoRef.current.has(urlWorkOrderId)) {
-      void ensurePmrAndSelect(urlWorkOrderId);
+
+    if (!deepLink.bucketExplicit || !requestedBucket) {
+      // Legacy/non-bucket deep link: select by PMR/WO without bucket membership check.
+      if (urlPmrId > 0) {
+        deepLinkResolvedKeyRef.current = key;
+        if (urlWorkOrderId > 0) setWorkOrderId(urlWorkOrderId);
+        void loadPmrIntoForm(urlPmrId, typeof fromLocationId === "number" ? fromLocationId : undefined);
+        return;
+      }
+      if (urlWorkOrderId > 0) {
+        const pmr = pickActionablePmrForWorkOrder(urlWorkOrderId, scopedPendingPmrs);
+        if (pmr) {
+          deepLinkResolvedKeyRef.current = key;
+          selectPmr(pmr.id, urlWorkOrderId);
+          return;
+        }
+        if (workOrderId === "") setWorkOrderId(urlWorkOrderId);
+        if (!ensuredWoRef.current.has(urlWorkOrderId)) {
+          deepLinkResolvedKeyRef.current = key;
+          void ensurePmrAndSelect(urlWorkOrderId);
+        }
+      }
+      return;
     }
-  }, [activePmrId, ctx, issueMode, scopedPendingPmrs, urlPmrId, urlWorkOrderId, workOrderId, selectPmr, ensurePmrAndSelect]);
+
+    const resolved = resolveMaterialIssueDeepLinkTarget({
+      requestedBucket,
+      workOrderId: urlWorkOrderId || null,
+      pmrId: urlPmrId || null,
+      pmrs: scopedPendingPmrs,
+    });
+
+    if (resolved.ok) {
+      deepLinkResolvedKeyRef.current = key;
+      selectPmr(resolved.pmr.id, Number(resolved.pmr.workOrderId) || urlWorkOrderId || undefined);
+      return;
+    }
+
+    deepLinkResolvedKeyRef.current = key;
+    if (resolved.reason === "WRONG_BUCKET" && resolved.actualBucket && resolved.pmr) {
+      showError(resolved.message);
+      const nextHref = buildMaterialIssueDeepLink({
+        bucket: resolved.actualBucket,
+        workOrderId: Number(resolved.pmr.workOrderId) || null,
+        pmrId: resolved.pmr.id,
+        returnTo: returnTo ?? "pending-actions",
+        from: "pending-actions",
+      });
+      const qs = nextHref.split("?")[1] ?? "";
+      setSearchParams(new URLSearchParams(qs), { replace: true });
+      selectPmr(resolved.pmr.id, Number(resolved.pmr.workOrderId) || undefined);
+      return;
+    }
+
+    showError(resolved.message);
+    // Stay on requested bucket with empty form — never load an unrelated WO.
+    setActivePmrId(null);
+    setActivePmr(null);
+    setIssueDecision(null);
+    setLines([]);
+    setWorkOrderId("");
+  }, [
+    activePmrId,
+    allowanceApprovals.length,
+    ctx,
+    deepLink.bucket,
+    deepLink.bucketExplicit,
+    deepLink.invalidBucketRequested,
+    ensurePmrAndSelect,
+    fromLocationId,
+    issueMode,
+    loading,
+    pmrLoading,
+    requestedBucket,
+    returnTo,
+    scopedPendingPmrs,
+    selectPmr,
+    setSearchParams,
+    showError,
+    urlPmrId,
+    urlWorkOrderId,
+    workOrderId,
+  ]);
 
   const prevFromLocationRef = React.useRef<number | "">("");
   React.useEffect(() => {
@@ -595,6 +832,16 @@ export function MaterialIssuePage() {
     prevFromLocationRef.current = fromLocationId;
     void loadPmrIntoForm(activePmrId, fromLocationId);
   }, [activePmrId, fromLocationId]);
+
+  // Re-sync line-level allowance approval status whenever the approvals list refreshes
+  // (e.g. Refresh button, or after Send for Admin Approval) without disturbing untouched edits.
+  React.useEffect(() => {
+    if (!activePmrId) return;
+    setLines((prev) => {
+      const next = hydrateIssueLinesWithAllowanceApprovals(prev, allowanceApprovals);
+      return next.some((ln, i) => ln !== prev[i]) ? next : prev;
+    });
+  }, [allowanceApprovals, activePmrId]);
 
   async function refreshAvailable(lineKey: string, itemId: number, fromId: number) {
     setLines((prev) =>
@@ -627,8 +874,8 @@ export function MaterialIssuePage() {
             reservationBreakdown: res.reservationBreakdown ?? [],
             loadingAvailable: false,
           };
-          if (!ln.issueQtyTouched && ln.stillRequiredQty != null) {
-            next.issueQty = formatSuggestedIssueQty(ln.stillRequiredQty, available);
+          if (!ln.issueQtyTouched) {
+            next.issueQty = defaultIssueQtyForLine(next, available);
           }
           return next;
         }),
@@ -680,6 +927,9 @@ export function MaterialIssuePage() {
     workOrderNo: string | null;
     salesOrderId?: number | null;
     pmrId: number;
+    issuedQty: number;
+    remainingQty: number;
+    unit?: string | null;
   }) {
     setSessionBanner(null);
     setRemarks("");
@@ -693,25 +943,29 @@ export function MaterialIssuePage() {
       apiFetch<IssuedWaitingForProductionRow[]>("/api/material-issues/issued-waiting-for-production")
         .then((rows) => setIssuedWaitingForProduction(Array.isArray(rows) ? rows : []))
         .catch(() => undefined),
+      loadAllowanceApprovals(),
     ]);
 
     const woLabel =
       issued.workOrderId > 0
         ? displayWorkOrderNo(issued.workOrderId, issued.workOrderNo)
         : "work order";
-    showSuccess(formatMaterialIssueSuccessMessage(woLabel));
+    if (issued.remainingQty > 1e-6) {
+      showSuccess(formatPartialIssueSuccessMessage({
+        issuedQty: issued.issuedQty,
+        remainingQty: issued.remainingQty,
+        unit: issued.unit,
+      }));
+    } else {
+      showSuccess(formatMaterialIssueSuccessMessage(woLabel));
+    }
 
+    // Never stay on a partially issued WO — clear form and advance to next Ready WO.
     const advance = resolvePostIssueAdvance({
       issuedWorkOrderId: issued.workOrderId,
       freshPending,
       scope: sessionScope,
     });
-
-    if (advance.kind === "stay") {
-      setSessionComplete(null);
-      selectPmr(advance.pmr.id, issued.workOrderId);
-      return;
-    }
 
     setActivePmrId(null);
     setActivePmr(null);
@@ -768,6 +1022,34 @@ export function MaterialIssuePage() {
     for (const ln of lines) {
       if (typeof ln.itemId !== "number" || !ln.issueQty) continue;
       const qty = Number(ln.issueQty);
+      const allowance = allowanceForLine(ln);
+      if (!allowance.valid) {
+        showError(allowance.error ?? "Enter a valid Planned Process Allowance.");
+        return;
+      }
+      if (allowance.blocked) {
+        showError("Allowance above 10%; use Additional RM Issue.");
+        return;
+      }
+      if (allowance.requiresReason && !String(ln.allowanceReason ?? "").trim()) {
+        showError("Reason required for Planned Allowance above 5%.");
+        return;
+      }
+      const lineBand = resolveLineAllowanceBand({
+        blocked: allowance.blocked,
+        requiresAdminApproval: allowance.requiresAdminApproval,
+        hasReason: Boolean(String(ln.allowanceReason ?? "").trim()),
+        approvalStatus: ln.allowanceApprovalStatus ?? "NONE",
+        isAdmin: String(user?.role ?? "").toUpperCase() === "ADMIN",
+      });
+      if (lineBand !== "NORMAL" && lineBand !== "APPROVED") {
+        showError(
+          lineBand === "PENDING_APPROVAL"
+            ? "This line is awaiting Admin approval."
+            : "Admin approval is required before issuing this line above 5% allowance.",
+        );
+        return;
+      }
       const assessment = assessIssueLineDraft(ln);
       if (!assessment.allowed) {
         showError(
@@ -788,12 +1070,30 @@ export function MaterialIssuePage() {
       if (activePmrId) {
         const pmrLines = lines
           .filter((ln) => ln.pmrLineId && Number(ln.issueQty) > 0)
-          .map((ln) => ({ pmrLineId: ln.pmrLineId as number, issueQty: Number(ln.issueQty) }));
+          .map((ln) => ({
+            pmrLineId: ln.pmrLineId as number,
+            issueQty: Number(ln.issueQty),
+            theoreticalBomQty: Number(ln.fullWoRmNeed ?? ln.originalRequestQty ?? 0),
+            includedRunnerQty: 0,
+            allowanceInputSource: "QUANTITY" as const,
+            enteredAllowanceQty: Number(ln.plannedAllowanceQty || 0),
+            plannedAllowanceQty: allowanceForLine(ln).calculatedQty,
+            recommendedIssueQty: allowanceForLine(ln).recommendedIssueQty,
+            allowanceReason: ln.allowanceReason?.trim() || null,
+            allowanceApprovalRequestId:
+              ln.allowanceApprovalStatus === "APPROVED" ? ln.allowanceApprovalId ?? null : null,
+          }));
         if (!pmrLines.length) {
           showError("Add issue quantities for PMR lines.");
           setSubmitting(false);
           return;
         }
+        const thisIssueQty = pmrLines.reduce((s, l) => s + Number(l.issueQty || 0), 0);
+        const remainingBefore = lines
+          .filter((ln) => ln.pmrLineId)
+          .reduce((s, ln) => s + Math.max(0, Number(ln.pmrPendingQty ?? ln.pendingQty ?? 0)), 0);
+        const remainingAfter = Math.max(0, remainingBefore - thisIssueQty);
+        const unitHint = lines.find((ln) => ln.pmrLineId && Number(ln.issueQty) > 0)?.unit ?? null;
         await apiFetch<{ materialIssue: { docNo: string } }>(
           `/api/production-material-requests/${activePmrId}/issue`,
           {
@@ -812,6 +1112,9 @@ export function MaterialIssuePage() {
           workOrderNo: activePmr?.workOrderNo ?? null,
           salesOrderId: activePmr?.salesOrderId ?? null,
           pmrId: activePmrId,
+          issuedQty: thisIssueQty,
+          remainingQty: remainingAfter,
+          unit: unitHint,
         });
         setSubmitting(false);
         return;
@@ -916,6 +1219,70 @@ export function MaterialIssuePage() {
     }
   }
 
+  /**
+   * Picks the next FIFO Ready-to-Issue WO (skips Partially Issued + Approval Pending),
+   * so Store is never blocked after send-for-approval or partial issue.
+   */
+  async function autoSelectNextActionableWorkOrder(excludeWorkOrderId: number | null) {
+    const [fresh, approvals] = await Promise.all([refreshPendingPmrsList(), loadAllowanceApprovals()]);
+    const scoped = mergeAllowanceQueueInfoIntoPmrs(
+      filterPendingPmrsForSessionScope(fresh, sessionScope),
+      approvals,
+    );
+    const next = pickNextReadyToIssuePmrInScope(scoped, sessionScope, excludeWorkOrderId ?? undefined);
+    if (next && typeof next.workOrderId === "number") {
+      selectPmr(next.id, next.workOrderId);
+    }
+  }
+
+  /** Send / resend RM lines above 5% allowance for Admin approval. No stock movement happens here. */
+  async function handleSendForApproval() {
+    if (!activePmrId || typeof fromLocationId !== "number") {
+      showError("Select a from-location and work order first.");
+      return;
+    }
+    const targets = lines.filter((ln) => {
+      if (!ln.pmrLineId || Number(ln.issueQty) <= 0) return false;
+      const allowance = allowanceForLine(ln);
+      return allowance.valid && !allowance.blocked && allowance.requiresAdminApproval;
+    });
+    if (!targets.length) {
+      showError("No RM lines need Admin approval.");
+      return;
+    }
+    for (const ln of targets) {
+      if (!String(ln.allowanceReason ?? "").trim()) {
+        showError("Enter a reason for every line above 5% allowance before sending for approval.");
+        return;
+      }
+    }
+    setSubmitting(true);
+    const submittedWorkOrderId = Number(activePmr?.workOrderId ?? workOrderId ?? 0) || null;
+    try {
+      for (const ln of targets) {
+        await apiFetch("/api/rm-allowance-approvals", {
+          method: "POST",
+          body: JSON.stringify({
+            productionMaterialRequestId: activePmrId,
+            pmrLineId: ln.pmrLineId,
+            enteredAllowanceQty: Number(ln.plannedAllowanceQty || 0),
+            issueQty: Number(ln.issueQty),
+            allowanceReason: String(ln.allowanceReason).trim(),
+            fromLocationId,
+          }),
+        });
+      }
+      showSuccess("Sent for Admin approval. You can select another work order while this is reviewed.");
+      await loadAllowanceApprovals();
+      clearExecution();
+      await autoSelectNextActionableWorkOrder(submittedWorkOrderId);
+    } catch (e) {
+      showError(e instanceof Error ? e.message : "Could not send for Admin approval");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   const fromLoc = ctx?.fromLocations.find((l) => l.id === fromLocationId);
   const toLoc = ctx?.toLocations.find((l) => l.id === toLocationId);
   const woPmrMode = issueMode === "wo-pmr";
@@ -954,6 +1321,44 @@ export function MaterialIssuePage() {
     if (!ln.pmrLineId || !ln.issueQty) return false;
     return !assessIssueLineDraft(ln).allowed;
   });
+  const hasAllowanceBlockedLine = lines.some((ln) => {
+    if (!ln.pmrLineId || Number(ln.issueQty) <= 0) return false;
+    const allowance = allowanceForLine(ln);
+    if (!allowance.valid || allowance.blocked) return true;
+    if (allowance.requiresReason && !String(ln.allowanceReason ?? "").trim()) return true;
+    return allowance.requiresAdminApproval && String(user?.role ?? "").toUpperCase() !== "ADMIN";
+  });
+
+  const isAdminActor = String(user?.role ?? "").toUpperCase() === "ADMIN";
+  const activeLineAllowanceBands = React.useMemo(() => {
+    if (!woPmrMode) return [];
+    return lines
+      .filter((ln) => ln.pmrLineId && Number(ln.issueQty) > 0)
+      .map((ln) => {
+        const allowance = allowanceForLine(ln);
+        return resolveLineAllowanceBand({
+          blocked: allowance.valid ? allowance.blocked : false,
+          requiresAdminApproval: allowance.valid ? allowance.requiresAdminApproval : false,
+          hasReason: Boolean(String(ln.allowanceReason ?? "").trim()),
+          approvalStatus: ln.allowanceApprovalStatus ?? "NONE",
+          isAdmin: isAdminActor,
+        });
+      });
+  }, [lines, woPmrMode, isAdminActor]);
+  const primaryAction = React.useMemo(
+    () => resolveMaterialIssuePrimaryAction(activeLineAllowanceBands, { isAdmin: isAdminActor }),
+    [activeLineAllowanceBands, isAdminActor],
+  );
+  const rejectionReasons = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const ln of lines) {
+      if (ln.allowanceApprovalStatus === "REJECTED" && ln.allowanceApprovalRejectionReason) {
+        set.add(ln.allowanceApprovalRejectionReason);
+      }
+    }
+    return [...set];
+  }, [lines]);
+  const bandAllowsIssue = primaryAction.key === "ISSUE";
 
   const showNoRmAvailableWarning = shouldShowNoRmAvailableWarning({
     executionReady,
@@ -968,13 +1373,48 @@ export function MaterialIssuePage() {
     typeof fromLocationId === "number" &&
     typeof toLocationId === "number" &&
     (woPmrMode
-      ? canSubmitFromBackendIssueDecision(issueDecision, {
+      ? bandAllowsIssue &&
+        canSubmitFromBackendIssueDecision(issueDecision, {
           hasPositiveIssueQty,
           hasToleranceBlockedLine,
           submitting,
           loading: loading || pmrLoading,
         })
-      : hasPositiveIssueQty && !hasToleranceBlockedLine && !submitting && !loading);
+      : hasPositiveIssueQty && !hasToleranceBlockedLine && !hasAllowanceBlockedLine && !submitting && !loading);
+
+  const sendForApprovalDisabled =
+    !executionReady ||
+    !pmrContextReady ||
+    submitting ||
+    loading ||
+    pmrLoading ||
+    !lines.some((ln) => {
+      if (!ln.pmrLineId || Number(ln.issueQty) <= 0) return false;
+      const allowance = allowanceForLine(ln);
+      return (
+        allowance.valid &&
+        !allowance.blocked &&
+        allowance.requiresAdminApproval &&
+        !isAdminActor &&
+        String(ln.allowanceReason ?? "").trim().length > 0
+      );
+    });
+
+  const primaryButtonDisabled = woPmrMode
+    ? primaryAction.key === "ISSUE"
+      ? !canSubmitIssue
+      : primaryAction.key === "SEND_FOR_APPROVAL" || primaryAction.key === "REVISE_RESUBMIT"
+        ? sendForApprovalDisabled
+        : true
+    : !canSubmitIssue;
+
+  function onPrimaryActionClick() {
+    if (!woPmrMode || primaryAction.key === "ISSUE") return submitIssue();
+    if (primaryAction.key === "SEND_FOR_APPROVAL" || primaryAction.key === "REVISE_RESUBMIT") {
+      return handleSendForApproval();
+    }
+    return Promise.resolve();
+  }
 
   const materialIssuePrimaryStrip = React.useMemo(() => {
     if (sessionComplete || !executionReady || !activePmr || !activePmrId) return null;
@@ -1145,6 +1585,36 @@ export function MaterialIssuePage() {
             <p className="mb-1 rounded border border-red-200 bg-red-50 px-2 py-1 text-[11px] text-red-800">{pmrLoadError}</p>
           ) : null}
 
+          {woPmrMode && executionReady && primaryAction.key === "AWAITING_APPROVAL" ? (
+            <div
+              className="mb-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-950"
+              data-testid="material-issue-awaiting-approval-banner"
+            >
+              <p className="font-bold">Awaiting Admin Approval</p>
+              <p className="mt-0.5">
+                This RM allowance request has been sent to Admin for review. This form is read-only until it is
+                decided — pick another work order from the queue while you wait.
+              </p>
+              <Button type="button" size="sm" variant="outline" className="mt-1.5 h-7 text-[11px]" onClick={clearExecution}>
+                Back · Select another work order
+              </Button>
+            </div>
+          ) : null}
+
+          {woPmrMode && executionReady && primaryAction.key === "REVISE_RESUBMIT" ? (
+            <div
+              className="mb-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-950"
+              data-testid="material-issue-rejected-banner"
+            >
+              <p className="font-bold">Rejected by Admin</p>
+              <p className="mt-0.5">
+                {rejectionReasons.length
+                  ? rejectionReasons.join(" · ")
+                  : "Revise the Add Qty or reason below, then resubmit for approval."}
+              </p>
+            </div>
+          ) : null}
+
           <div className="grid gap-1.5 sm:grid-cols-2">
             <label className="erp-form-field block">
               <span className="text-xs font-medium text-slate-600">From location (store)</span>
@@ -1152,7 +1622,7 @@ export function MaterialIssuePage() {
                 className="erp-select mt-1 w-full"
                 value={fromLocationId === "" ? "" : String(fromLocationId)}
                 onChange={(e) => setFromLocationId(e.target.value ? Number(e.target.value) : "")}
-                disabled={loading}
+                disabled={loading || primaryAction.readOnly}
               >
                 <option value="">Select store…</option>
                 {ctx?.fromLocations.map((l) => (
@@ -1168,7 +1638,7 @@ export function MaterialIssuePage() {
                 className="erp-select mt-1 w-full"
                 value={toLocationId === "" ? "" : String(toLocationId)}
                 onChange={(e) => setToLocationId(e.target.value ? Number(e.target.value) : "")}
-                disabled={loading}
+                disabled={loading || primaryAction.readOnly}
               >
                 <option value="">Select production area…</option>
                 {ctx?.toLocations.map((l) => (
@@ -1185,7 +1655,7 @@ export function MaterialIssuePage() {
                   className="erp-select mt-1 w-full"
                   value={workOrderId === "" ? "" : String(workOrderId)}
                   onChange={(e) => onWorkOrderSelect(e.target.value ? Number(e.target.value) : "")}
-                  disabled={loading || pmrLoading}
+                  disabled={loading || pmrLoading || primaryAction.readOnly}
                 >
                   <option value="">Select work order…</option>
                   {actionableWorkOrderOptions.map((wo) => (
@@ -1241,153 +1711,140 @@ export function MaterialIssuePage() {
                   : "Select a work order from the queue to load RM lines."}
               </p>
             </div>
-          ) : (
-            <div className="mt-2 overflow-x-auto rounded border border-slate-200">
-              <table className="erp-mat-issue-table min-w-[720px] w-full text-sm">
-                <thead className="border-b bg-slate-50 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-600">
-                  <tr>
-                    <th>RM item</th>
-                    {woPmrMode ? (
-                      <>
-                        <th className="text-right">Required</th>
-                        <th className="text-right">Issued</th>
-                        <th className="text-right">Short Issue</th>
-                        <th className="text-right">Pending</th>
-                      </>
-                    ) : null}
-                    <th className="text-right">Available</th>
-                    <th className="text-right">Issue now</th>
-                    {woPmrMode ? <th>Status</th> : <th className="w-10" />}
-                  </tr>
-                </thead>
-                <tbody>
-                  {lines.map((ln) => {
-                    const item = ctx?.rmItems.find((i) => i.id === ln.itemId);
-                    const unit = ln.unit ?? item?.unit;
-                    const required = ln.originalRequestQty ?? ln.effectiveRequiredQty ?? 0;
-                    const issued = ln.alreadyIssuedQty ?? 0;
-                    const shortIssue = ln.waivedQty ?? ln.shortIssueQty ?? 0;
-                    const pending = ln.pmrPendingQty ?? ln.pendingQty ?? 0;
-                    const avail = ln.available ?? ln.freeStoreStock ?? ln.issueAvailableStoreQty ?? null;
-                    const lineStatus = resolveMaterialIssueLineStatus({
+          ) : woPmrMode ? (
+            <div className="mt-2 min-w-0 space-y-2" data-testid="material-issue-compact-grid">
+              {lines.map((ln) => {
+                const item = ctx?.rmItems.find((i) => i.id === ln.itemId);
+                const unit = ln.unit ?? item?.unit;
+                const required = ln.originalRequestQty ?? ln.effectiveRequiredQty ?? 0;
+                const theoretical = Number(ln.fullWoRmNeed ?? required);
+                const issued = Number(ln.alreadyIssuedQty ?? 0);
+                const shortIssue = Number(ln.waivedQty ?? ln.shortIssueQty ?? 0);
+                const pending = Number(ln.pmrPendingQty ?? ln.pendingQty ?? 0);
+                const avail = ln.available ?? ln.freeStoreStock ?? ln.issueAvailableStoreQty ?? null;
+                const noIssue = isMaterialIssueLineStockBlocked(pending, avail);
+                const lineStatus = resolveMaterialIssueLineStatus({
+                  pendingQty: pending,
+                  available: avail,
+                  physicalStock: ln.totalStoreStock ?? null,
+                  issueQty: ln.issueQty,
+                  woWaitingProcurement: waitingProcurement,
+                  lineReadinessKey: ln.lineReadinessKey,
+                  lineReadinessLabel: ln.lineReadinessLabel,
+                  lineReadinessExplanation: ln.lineReadinessExplanation,
+                });
+                return (
+                  <MaterialIssueAllowanceRow
+                    key={ln.key}
+                    row={{
+                      key: ln.key,
+                      itemName: ln.itemName ?? item?.itemName ?? "RM item",
+                      unit,
+                      theoreticalQty: theoretical,
+                      issuedQty: issued,
+                      trueShortIssueQty: shortIssue,
                       pendingQty: pending,
-                      available: avail,
-                      physicalStock: ln.totalStoreStock ?? null,
+                      availableQty: ln.loadingAvailable ? null : avail,
+                      allowanceQty: ln.plannedAllowanceQty ?? "0",
+                      allowanceReason: ln.allowanceReason ?? "",
                       issueQty: ln.issueQty,
-                      woWaitingProcurement: waitingProcurement,
-                      lineReadinessKey: ln.lineReadinessKey,
-                      lineReadinessLabel: ln.lineReadinessLabel,
-                      lineReadinessExplanation: ln.lineReadinessExplanation,
-                    });
-                    const issueAssessment = assessIssueLineDraft(ln);
-                    const noIssue = isMaterialIssueLineStockBlocked(pending, avail);
-                    const zeroIssuedRequired = woPmrMode && required > 1e-6 && issued <= 1e-6;
-                    return (
-                      <tr
-                        key={ln.key}
-                        className={cn(
-                          "border-b border-slate-100",
-                          zeroIssuedRequired && "bg-red-50/90",
-                          !zeroIssuedRequired && noIssue && "bg-amber-50/50",
-                        )}
-                        data-testid={zeroIssuedRequired ? "material-issue-zero-issued-row" : undefined}
+                      disabled: noIssue || pmrLoading,
+                      backendStatusLabel: lineStatus.label,
+                      backendStatusExplanation: lineStatus.explanation,
+                      approvalStatus: ln.allowanceApprovalStatus ?? "NONE",
+                      approvalRejectionReason: ln.allowanceApprovalRejectionReason,
+                    }}
+                    actorRole={user?.role}
+                    onExtraQtyChange={(value) => updateExtraAllowanceQty(ln.key, value)}
+                    onIssueQtyChange={(value) =>
+                      setLines((prev) =>
+                        prev.map((row) =>
+                          row.key === ln.key
+                            ? { ...row, issueQty: value, issueQtyTouched: true }
+                            : row,
+                        ),
+                      )
+                    }
+                    onReasonChange={(value) =>
+                      setLines((prev) =>
+                        prev.map((row) =>
+                          row.key === ln.key ? { ...row, allowanceReason: value } : row,
+                        ),
+                      )
+                    }
+                  />
+                );
+              })}
+            </div>
+          ) : (
+            <div className="mt-2 grid min-w-0 gap-2 rounded border border-slate-200 p-2">
+              {lines.map((ln) => {
+                const item = ctx?.rmItems.find((i) => i.id === ln.itemId);
+                const unit = ln.unit ?? item?.unit;
+                const avail = ln.available ?? null;
+                const noIssue = isMaterialIssueLineStockBlocked(1, avail);
+                return (
+                  <div key={ln.key} className="grid min-w-0 gap-2 sm:grid-cols-[minmax(10rem,1fr)_minmax(6rem,.5fr)_minmax(8rem,.6fr)_auto] sm:items-end">
+                    <label className="min-w-0 text-xs font-medium text-slate-600">
+                      RM Item
+                      <select
+                        className="erp-select mt-1 w-full min-w-0"
+                        value={ln.itemId === "" ? "" : String(ln.itemId)}
+                        onChange={(event) => onLineItemChange(ln.key, event.target.value ? Number(event.target.value) : "")}
+                        disabled={!fromLocationId || loading}
                       >
-                        <td className="font-medium text-slate-900">
-                          {woPmrMode && ln.pmrLineId ? (
-                            ln.itemName
-                          ) : (
-                            <select
-                              className="erp-select w-full min-w-0"
-                              value={ln.itemId === "" ? "" : String(ln.itemId)}
-                              onChange={(e) =>
-                                onLineItemChange(ln.key, e.target.value ? Number(e.target.value) : "")
-                              }
-                              disabled={!fromLocationId || loading}
-                            >
-                              <option value="">Select RM…</option>
-                              {ctx?.rmItems.map((i) => (
-                                <option key={i.id} value={i.id}>
-                                  {i.itemName}
-                                </option>
-                              ))}
-                            </select>
-                          )}
-                        </td>
-                        {woPmrMode ? (
-                          <>
-                            <td className="text-right tabular-nums">{fmtQty(required, unit)}</td>
-                            <td className="text-right tabular-nums">{fmtQty(issued, unit)}</td>
-                            <td className="text-right tabular-nums text-slate-700">
-                              {fmtQty(shortIssue, unit)}
-                            </td>
-                            <td className="text-right tabular-nums font-bold text-amber-900">
-                              {fmtQty(pending, unit)}
-                            </td>
-                          </>
-                        ) : null}
-                        <td className="text-right tabular-nums">
-                          {ln.loadingAvailable ? "…" : avail != null ? fmtQty(avail, unit) : "—"}
-                        </td>
-                        <td>
-                          <Input
-                            type="number"
-                            min={0}
-                            step="any"
-                            className={cn(
-                              "h-8 text-right tabular-nums font-bold",
-                              issueAssessment.withinTolerance && "border-amber-400",
-                              !issueAssessment.allowed && issueAssessment.overIssueQty > 1e-6 && "border-red-500",
-                            )}
-                            value={ln.issueQty}
-                            onChange={(e) =>
-                              setLines((prev) =>
-                                prev.map((row) =>
-                                  row.key === ln.key
-                                    ? { ...row, issueQty: e.target.value, issueQtyTouched: true }
-                                    : row,
-                                ),
-                              )
-                            }
-                            disabled={woPmrMode ? noIssue || pmrLoading : !ln.itemId || noIssue}
-                            placeholder="0"
-                          />
-                          {issueAssessment.withinTolerance ? (
-                            <p className="mt-0.5 text-right text-[10px] font-medium leading-snug text-amber-900">
-                              {formatOverIssueToleranceWarning(issueAssessment.overIssueQty, unit)}
-                            </p>
-                          ) : null}
-                          {!issueAssessment.allowed && issueAssessment.overIssueQty > 1e-6 ? (
-                            <p className="mt-0.5 text-right text-[10px] font-medium leading-snug text-red-700">
-                              {formatIssueToleranceExceededMessage()}
-                            </p>
-                          ) : null}
-                        </td>
-                        <td className="align-top">
-                          {woPmrMode ? (
-                            <div>
-                              <span className="text-[11px] font-bold text-slate-800">{lineStatus.label}</span>
-                              {lineStatus.explanation ? (
-                                <p className="mt-0.5 text-[10px] leading-snug text-amber-900">{lineStatus.explanation}</p>
-                              ) : null}
-                            </div>
-                          ) : (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={() => removeLine(ln.key)}
-                              disabled={lines.length <= 1}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                        <option value="">Select RM…</option>
+                        {ctx?.rmItems.map((rm) => <option key={rm.id} value={rm.id}>{rm.itemName}</option>)}
+                      </select>
+                    </label>
+                    <div className="text-right text-sm tabular-nums">
+                      <span className="block text-xs font-medium text-slate-600">Available</span>
+                      {ln.loadingAvailable ? "…" : avail != null ? fmtQty(avail, unit) : "—"}
+                    </div>
+                    <label className="min-w-0 text-xs font-medium text-slate-600">
+                      Issue Now
+                      <Input
+                        type="text"
+                        inputMode="decimal"
+                        pattern="[0-9]*[.]?[0-9]*"
+                        autoComplete="off"
+                        className="mt-1 h-9 min-w-0 text-right tabular-nums"
+                        value={ln.issueQty}
+                        onChange={(event) => {
+                          const next = sanitizeDecimalInput(event.target.value);
+                          if (next == null) return;
+                          setLines((prev) =>
+                            prev.map((row) =>
+                              row.key === ln.key
+                                ? { ...row, issueQty: next, issueQtyTouched: true }
+                                : row,
+                            ),
+                          );
+                        }}
+                        onBlur={() =>
+                          setLines((prev) =>
+                            prev.map((row) =>
+                              row.key === ln.key
+                                ? { ...row, issueQty: normalizeDecimalOnBlur(row.issueQty) }
+                                : row,
+                            ),
+                          )
+                        }
+                        onKeyDown={blockDecimalSpinnerKeys}
+                        onWheel={(event) => {
+                          blockDecimalWheel(event);
+                          (event.currentTarget as HTMLInputElement).blur();
+                        }}
+                        disabled={!ln.itemId || noIssue}
+                        aria-label={`Issue Now for ${item?.itemName ?? "RM item"}`}
+                      />
+                    </label>
+                    <Button type="button" variant="ghost" size="icon" className="h-9 w-9" onClick={() => removeLine(ln.key)} disabled={lines.length <= 1}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
           )}
 
@@ -1578,11 +2035,12 @@ export function MaterialIssuePage() {
               type="button"
               size="sm"
               className="h-10 px-5 font-bold"
-              disabled={!canSubmitIssue}
-              onClick={() => void submitIssue()}
+              disabled={primaryButtonDisabled}
+              onClick={() => void onPrimaryActionClick()}
+              data-testid="material-issue-primary-action"
             >
               <Send className="mr-1 h-4 w-4" />
-              Issue Material
+              {woPmrMode ? primaryAction.label : "Issue Material"}
             </Button>
             <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void loadAll()}>
               Refresh
@@ -1601,6 +2059,24 @@ export function MaterialIssuePage() {
               pendingPmrs={actionablePendingPmrs}
               activePmrId={activePmrId}
               activeWorkOrderId={typeof workOrderId === "number" ? workOrderId : undefined}
+              activeFilter={queueFilterFromUrl}
+              onFilterChange={(key) => {
+                const next = new URLSearchParams(searchParams);
+                const bucket = materialIssueFilterKeyToBucket(key);
+                next.set("bucket", bucket);
+                next.delete("queue");
+                // Changing queue manually clears pinned WO/PMR so list shows for that bucket.
+                next.delete("pmrId");
+                next.delete("workOrderId");
+                if (returnTo) next.set("returnTo", returnTo);
+                if (deepLink.fromPendingActions) next.set("from", "pending-actions");
+                setSearchParams(next, { replace: true });
+                setActivePmrId(null);
+                setActivePmr(null);
+                setIssueDecision(null);
+                setLines([]);
+                setWorkOrderId("");
+              }}
               onSelectPmr={(id, woId) => {
                 setSessionBanner(null);
                 selectPmr(id, woId);

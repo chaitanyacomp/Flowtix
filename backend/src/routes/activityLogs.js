@@ -35,12 +35,13 @@ activityLogsRouter.get("/activity-logs", requireAuth, async (req, res, next) => 
     const where = {};
 
     if (q.salesOrderId != null) {
-      if (q.module && q.module !== "STORE") {
+      // Writers (Dispatch workspace) stamp module=DISPATCH + metadata.salesOrderId.
+      if (q.module && q.module !== "DISPATCH") {
         const err = new Error("salesOrderId filter applies only to DISPATCH module logs.");
         err.statusCode = 400;
         throw err;
       }
-      where.module = "STORE";
+      where.module = "DISPATCH";
       // MySQL JSON path syntax: Prisma expects a string path (e.g. "$.salesOrderId"), not an array.
       where.metadataJson = { path: "$.salesOrderId", equals: q.salesOrderId };
     } else {

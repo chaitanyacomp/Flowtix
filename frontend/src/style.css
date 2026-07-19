@@ -1600,6 +1600,27 @@
     @apply flex max-h-[calc(100dvh-8.25rem)] min-h-0 flex-col gap-1 overflow-hidden !space-y-0 rounded-lg bg-[#f6f7f9] !pb-1;
   }
 
+  /* Short viewports (e.g. 1366×768 @ 100%): page owns vertical scroll so Runner Weight / actions stay reachable. */
+  @media (max-height: 800px) {
+    .bom-vp-page {
+      max-height: none;
+      overflow-x: hidden;
+      overflow-y: auto;
+    }
+
+    .bom-vp-workspace {
+      overflow: visible;
+    }
+
+    .bom-vp-editor {
+      overflow: visible;
+    }
+
+    .bom-vp-editor .bom-vp-workspace {
+      overflow: visible;
+    }
+  }
+
   .bom-vp-head {
     @apply flex shrink-0 items-center justify-between gap-2 border-b border-slate-200/80 bg-white px-1 py-1.5;
   }

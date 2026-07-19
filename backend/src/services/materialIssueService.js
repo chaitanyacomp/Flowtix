@@ -13,6 +13,11 @@ const {
 const { qtyToNumber } = require("./rmPurchaseHelpers");
 const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
 const auditLog = require("./auditLog");
+const {
+  calculatePlannedProcessAllowance,
+  validatePlannedProcessAllowance,
+} = require("./plannedProcessAllowanceService");
+const { resolveApprovedRequestForIssue } = require("./rmAllowanceApprovalService");
 
 const TXN_TYPE = "LOCATION_TRANSFER";
 
@@ -255,6 +260,54 @@ async function createMaterialIssueNote(input, actor = {}, outerTx = null) {
       throw err;
     }
     const itemById = new Map(items.map((i) => [i.id, i]));
+    // Per-line planning + resolved approval (never trust a bare request id from the client).
+    const planningByLineIndex = [];
+    const approvedRowByLineIndex = [];
+    const actorRole = String(actor.role || "").toUpperCase();
+    for (const line of input.lines) {
+      const enteredAllowanceQty = line.enteredAllowanceQty ?? line.plannedAllowanceQty ?? 0;
+      const theoreticalBomQty = line.theoreticalBomQty;
+      const alreadyIssuedQty = line.alreadyIssuedQty;
+      let approvedRow = null;
+      if (actorRole !== "ADMIN") {
+        const probe = calculatePlannedProcessAllowance(
+          theoreticalBomQty,
+          enteredAllowanceQty,
+          alreadyIssuedQty,
+        );
+        if (probe.requiresAdminApproval) {
+          approvedRow = await resolveApprovedRequestForIssue(
+            {
+              pmrLineId: line.pmrLineId,
+              allowanceApprovalRequestId: line.allowanceApprovalRequestId,
+              enteredAllowanceQty,
+              issueQty: line.issueQty,
+              theoreticalBomQty,
+              alreadyIssuedQty,
+            },
+            tx,
+          );
+        }
+      }
+      const planning = validatePlannedProcessAllowance(
+        {
+          allowanceInputSource: "QUANTITY",
+          theoreticalBomQty,
+          alreadyIssuedQty,
+          enteredAllowanceQty,
+          plannedAllowanceQty: enteredAllowanceQty,
+          recommendedIssueQty: line.recommendedIssueQty,
+          allowanceReason: line.allowanceReason,
+        },
+        {
+          ...actor,
+          mode: "ISSUE",
+          approvedAllowanceRequest: approvedRow,
+        },
+      );
+      planningByLineIndex.push(planning);
+      approvedRowByLineIndex.push(approvedRow);
+    }
     const manualAvailabilityByItem = input.productionMaterialRequestId
       ? new Map()
       : new Map(
@@ -308,12 +361,40 @@ async function createMaterialIssueNote(input, actor = {}, outerTx = null) {
         remarks: input.remarks?.trim() || null,
         createdByUserId: actor.userId ?? null,
         lines: {
-          create: input.lines.map((l) => {
+          create: input.lines.map((l, idx) => {
             const it = itemById.get(l.itemId);
+            const planning = planningByLineIndex[idx];
+            const approvedRow = approvedRowByLineIndex[idx];
+            const adminDirect = planning.requiresAdminApproval && actorRole === "ADMIN" && !approvedRow;
             return {
               itemId: l.itemId,
               issueQty: String(l.issueQty),
               unitSnapshot: it?.unit ?? null,
+              theoreticalBomQty: String(planning.theoreticalBomQty),
+              includedRunnerQty: String(Math.max(0, n(l.includedRunnerQty))),
+              allowanceInputSource: planning.allowanceInputSource,
+              enteredAllowancePct:
+                planning.enteredAllowancePct == null ? null : String(planning.enteredAllowancePct),
+              enteredAllowanceQty:
+                planning.enteredAllowanceQty == null ? null : String(planning.enteredAllowanceQty),
+              plannedAllowancePct: String(planning.plannedAllowancePct),
+              plannedAllowanceQty: String(planning.plannedAllowanceQty),
+              recommendedIssueQty: String(planning.recommendedIssueQty),
+              allowanceReason: planning.allowanceReason,
+              allowanceApprovalStatus: planning.approvalStatus,
+              allowanceApprovedByUserId: approvedRow
+                ? approvedRow.reviewedByUserId ?? null
+                : adminDirect
+                  ? actor.userId ?? null
+                  : null,
+              allowanceApprovedAt: approvedRow
+                ? approvedRow.reviewedAt ?? null
+                : adminDirect
+                  ? new Date()
+                  : null,
+              allowanceEnteredByUserId: actor.userId ?? null,
+              allowanceEnteredAt: new Date(),
+              conversionBasis: l.conversionBasis?.trim() || "Canonical BOM/Item Master quantity in stock UOM; runner already included",
             };
           }),
         },
@@ -368,6 +449,24 @@ async function createMaterialIssueNote(input, actor = {}, outerTx = null) {
           module: "MATERIAL_ISSUE",
           actionLabel: "LOCATION_TRANSFER",
           ref: { type: "MATERIAL_ISSUE_NOTE", id: String(note.id), no: docNo },
+          allowanceSnapshots: note.lines.map((line) => ({
+            itemId: line.itemId,
+            theoreticalBomQty: n(line.theoreticalBomQty),
+            includedRunnerQty: n(line.includedRunnerQty),
+            allowanceInputSource: line.allowanceInputSource,
+            enteredAllowancePct:
+              line.enteredAllowancePct == null ? null : n(line.enteredAllowancePct),
+            enteredAllowanceQty:
+              line.enteredAllowanceQty == null ? null : n(line.enteredAllowanceQty),
+            calculatedAllowancePct: n(line.plannedAllowancePct),
+            calculatedAllowanceQty: n(line.plannedAllowanceQty),
+            recommendedIssueQty: n(line.recommendedIssueQty),
+            actualIssueQty: n(line.issueQty),
+            allowanceReason: line.allowanceReason,
+            allowanceApprovalStatus: line.allowanceApprovalStatus,
+            unit: line.unitSnapshot,
+            conversionBasis: line.conversionBasis,
+          })),
         },
       });
     }

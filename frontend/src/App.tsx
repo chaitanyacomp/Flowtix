@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
 import { Input } from "./components/ui/input";
+import { PasswordInput } from "./components/ui/PasswordInput";
 import { useAuth } from "./hooks/useAuth";
 import { describeApiOrigin, getApiUrl } from "./services/api";
 import {
@@ -68,6 +69,7 @@ import { MaterialPlanningPage } from "./pages/MaterialPlanningPage";
 import { RmStockPlanningPage } from "./pages/RmStockPlanningPage";
 import { ProcurementPlanningPage } from "./pages/ProcurementPlanningPage";
 import { MaterialIssuePage } from "./pages/MaterialIssuePage";
+import { MaterialIssueAllowanceLayoutPreviewPage } from "./pages/dev/MaterialIssueAllowanceLayoutPreviewPage";
 import { ProductionReleaseHandoffPage } from "./pages/ProductionReleaseHandoffPage";
 import { ProductionMaterialRequestsPage } from "./pages/ProductionMaterialRequestsPage";
 import { ProductionRmReturnsPage } from "./pages/ProductionRmReturnsPage";
@@ -94,6 +96,7 @@ import { ActivityLogReportPage } from "./pages/ActivityLogReportPage";
 import { DispatchSummaryReportPage } from "./pages/DispatchSummaryReportPage";
 import { DispatchBacklogReportPage } from "./pages/DispatchBacklogReportPage";
 import { AdminSettingsPage } from "./pages/AdminSettingsPage";
+import { AdminUsersPage } from "./pages/AdminUsersPage";
 import { CompanyProfilePage } from "./pages/CompanyProfilePage";
 import { ActivityPage } from "./pages/ActivityPage";
 import { PlanningDashboardPage } from "./pages/PlanningDashboardPage";
@@ -364,13 +367,12 @@ function LoginPage() {
                   >
                     Password
                   </label>
-                  <Input
+                  <PasswordInput
                     id="login-password"
                     className="erp-login-input h-11 text-[14px]"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
-                    type="password"
                     autoComplete="current-password"
                   />
                 </div>
@@ -1137,6 +1139,14 @@ export default function App() {
           }
         />
         <Route
+          path="/admin/users"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN"]}>
+              <AdminUsersPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/admin/company-profile"
           element={
             <ProtectedRoute allowedRoles={["ADMIN"]}>
@@ -1195,6 +1205,12 @@ export default function App() {
           )
         }
       />
+      {import.meta.env.DEV ? (
+        <Route
+          path="/dev/material-issue-allowance-layout"
+          element={<MaterialIssueAllowanceLayoutPreviewPage />}
+        />
+      ) : null}
       <Route path="*" element={<CatchAllRedirect />} />
     </Routes>
   );

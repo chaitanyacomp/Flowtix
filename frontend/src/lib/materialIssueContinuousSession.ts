@@ -9,6 +9,7 @@ import {
   pickActionablePmrForWorkOrder,
   sortPendingPmrsFifo,
 } from "./materialIssueWorkspace";
+import { isReadyToIssueQueuePmr } from "./materialIssueQueueState";
 
 export type MaterialIssueSessionScope = {
   requirementSheetId?: number | null;
@@ -66,6 +67,8 @@ export function formatMaterialIssueSuccessMessage(workOrderLabel: string): strin
   return `Material issued successfully for ${label}.`;
 }
 
+export { formatPartialIssueSuccessMessage } from "./materialIssueQueueState";
+
 export function materialIssueSessionCompleteHeadline(scope: MaterialIssueSessionScope): string {
   if (scope.requirementSheetId && scope.requirementSheetId > 0) {
     return "All material has been issued for this Requirement Sheet.";
@@ -115,28 +118,45 @@ export function pickNextPendingPmrInScope(
   return null;
 }
 
+/**
+ * Next WO for Store after a successful issue: Ready-to-Issue only
+ * (skips Partially Issued and Approval Pending so partial work never blocks the queue).
+ */
+export function pickNextReadyToIssuePmrInScope(
+  pmrs: PendingPmrSummary[],
+  scope: MaterialIssueSessionScope,
+  excludeWorkOrderId?: number,
+): PendingPmrSummary | null {
+  const actionable = filterPmrsWithPendingIssue(filterPendingPmrsForSessionScope(pmrs, scope)).filter(
+    isReadyToIssueQueuePmr,
+  );
+  const excludeWo = Number(excludeWorkOrderId ?? 0);
+  const seenWo = new Set<number>();
+  for (const p of sortPendingPmrsFifo(actionable)) {
+    const woId = Number(p.workOrderId ?? 0);
+    if (woId <= 0 || seenWo.has(woId)) continue;
+    if (excludeWo > 0 && woId === excludeWo) continue;
+    seenWo.add(woId);
+    return pickActionablePmrForWorkOrder(woId, actionable) ?? p;
+  }
+  return null;
+}
+
 export type PostIssueAdvanceResult =
   | { kind: "stay"; pmr: PendingPmrSummary }
   | { kind: "advance"; pmr: PendingPmrSummary | null };
 
-/** After a successful issue: stay on partial WO or advance FIFO to the next waiting WO. */
+/**
+ * After any successful issue: clear the working WO and advance to the next Ready WO.
+ * Partially issued WOs remain in the Partially Issued queue for later return — never "stay".
+ */
 export function resolvePostIssueAdvance(input: {
   issuedWorkOrderId: number;
   freshPending: PendingPmrSummary[];
   scope: MaterialIssueSessionScope;
 }): PostIssueAdvanceResult {
-  const actionable = filterPmrsWithPendingIssue(
-    filterPendingPmrsForSessionScope(input.freshPending, input.scope),
-  );
-  const stillWaiting = actionable.some((p) => Number(p.workOrderId) === input.issuedWorkOrderId);
-  if (stillWaiting) {
-    const pmr =
-      pickActionablePmrForWorkOrder(input.issuedWorkOrderId, actionable) ??
-      actionable.find((p) => Number(p.workOrderId) === input.issuedWorkOrderId);
-    if (pmr) return { kind: "stay", pmr };
-  }
   return {
     kind: "advance",
-    pmr: pickNextPendingPmrInScope(input.freshPending, input.scope, input.issuedWorkOrderId),
+    pmr: pickNextReadyToIssuePmrInScope(input.freshPending, input.scope, input.issuedWorkOrderId),
   };
 }

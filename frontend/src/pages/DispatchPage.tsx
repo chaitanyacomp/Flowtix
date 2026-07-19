@@ -2327,6 +2327,8 @@ export function DispatchPage() {
   /** Drop stale SO/line when open-list refresh removes them (e.g. after full dispatch or commercial close). */
   React.useEffect(() => {
     if (dispatchCompactMode) return;
+    // Keep selection stable while Save Draft is in flight (avoids empty intermediate flashes).
+    if (dispatching) return;
     if (!soId) {
       setSalesOrderLineId(0);
       resetDispatchQty();
@@ -2386,7 +2388,7 @@ export function DispatchPage() {
       setSalesOrderLineId(0);
       resetDispatchQty();
     }
-  }, [soId, displayRows, salesOrderLineId, resetDispatchQty, reopenedPreparedDraft, draftDispatchId, dispatchCompactMode, fromScopedSo, focusSoIdValid, focusSoId]);
+  }, [soId, displayRows, salesOrderLineId, resetDispatchQty, reopenedPreparedDraft, draftDispatchId, dispatchCompactMode, fromScopedSo, focusSoIdValid, focusSoId, dispatching]);
 
   const allLines = selectedSo?.lineStats ?? [];
   /** Regular SO: confirmed backlog (`pendingDispatchQty` > 0). NO_QTY: all cycle / FG lines so reasons stay visible at 0 dispatchable. */
@@ -3323,25 +3325,13 @@ export function DispatchPage() {
         setDispatchInfo("Dispatch draft saved. Use Finalize Dispatch to post stock.");
       }
       setSalesBillStepDispatchId(null);
-      const list = await loadSalesOrders();
+      // Preserve current SO/line after draft save — no auto-advance / empty intermediate states.
+      const preservedSoId = soId;
+      const preservedLineId = salesOrderLineId;
+      await loadSalesOrders();
       await loadLedger();
-      const ready = buildReadySorted(list);
-      let next: { so: SoRow; ls: LineStat } | null = null;
-      if (ready.length === 1) {
-        next = ready[0];
-      } else if (ready.length > 1) {
-        const i = ready.findIndex((x) => x.so.id === soId && x.ls.lineId === salesOrderLineId);
-        if (i >= 0 && i < ready.length - 1) next = ready[i + 1];
-        else if (i === ready.length - 1) next = ready[0];
-        else next = ready[0];
-      }
-      if (next) {
-        selectLineFromBacklog(next.so, next.ls);
-      } else {
-        setSoId(0);
-        setSalesOrderLineId(0);
-        resetDispatchQty();
-      }
+      if (preservedSoId > 0) setSoId(preservedSoId);
+      if (preservedLineId > 0) setSalesOrderLineId(preservedLineId);
     } catch (e) {
       if (e instanceof ApiRequestError && e.code === "IDEMPOTENCY_IN_PROGRESS") {
         setDispatchInfo(
@@ -6598,7 +6588,7 @@ export function DispatchPage() {
                             void onDispatch();
                           }}
                         >
-                          {dispatching ? "Saving…" : DISPATCH_OP.SAVE_DRAFT_QTY}
+                          {dispatching ? "Saving dispatch draft…" : DISPATCH_OP.SAVE_DRAFT_QTY}
                         </Button>
                       </div>
                     ) : null}
@@ -6769,7 +6759,7 @@ export function DispatchPage() {
                                 void onDispatch();
                               }}
                             >
-                              {dispatching ? "Saving…" : DISPATCH_OP.SAVE_DRAFT_QTY}
+                              {dispatching ? "Saving dispatch draft…" : DISPATCH_OP.SAVE_DRAFT_QTY}
                             </Button>
                             <button
                               type="button"
@@ -7228,7 +7218,7 @@ export function DispatchPage() {
                               void onDispatch();
                             }}
                           >
-                            {dispatching ? "Saving…" : existingDraftQty > 0 ? "Update draft qty" : DISPATCH_OP.SAVE_DRAFT_QTY}
+                            {dispatching ? "Saving dispatch draft…" : existingDraftQty > 0 ? "Update draft qty" : DISPATCH_OP.SAVE_DRAFT_QTY}
                           </Button>
                           </div>
                         </div>

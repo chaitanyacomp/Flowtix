@@ -127,6 +127,7 @@ const {
   resumeProductionExecution,
   finishProductionExecution,
   blockReasonLabel,
+  syncShortfallPendingAfterProductionApprove,
 } = require("../services/productionExecutionService");
 const {
   appendTerminalQcScrapRecovery,
@@ -1123,6 +1124,19 @@ productionRouter.post(
       // AFTER commit (see below) to keep this transaction small.
       const result = await prisma.$transaction(async (tx) => {
         await lockWorkOrderForUpdate(tx, id);
+        const executionGuard = await tx.workOrder.findUnique({
+          where: { id },
+          select: { status: true, productionExecution: { select: { executionStatus: true } } },
+        });
+        if (
+          String(executionGuard?.status ?? "").toUpperCase() === "PAUSED" ||
+          String(executionGuard?.productionExecution?.executionStatus ?? "").toUpperCase() === "BLOCKED"
+        ) {
+          const err = new Error("Paused production cannot submit or confirm a final Production Report. Resume first.");
+          err.statusCode = 409;
+          err.code = "PRODUCTION_REPORT_PAUSED";
+          throw err;
+        }
         const confirmed = await approveProductionWorkOrderReport(
           tx,
           id,
@@ -1648,6 +1662,9 @@ productionRouter.get(
         soIdRaw != null && String(soIdRaw).trim() !== "" ? Number(soIdRaw) : null;
       const cycleIdRaw = Number(req.query.cycleId ?? 0);
       const cycleIdFromQuery = Number.isFinite(cycleIdRaw) && cycleIdRaw > 0 ? cycleIdRaw : null;
+      const workOrderIdRaw = Number(req.query.workOrderId ?? 0);
+      const workOrderIdFromQuery =
+        Number.isFinite(workOrderIdRaw) && workOrderIdRaw > 0 ? workOrderIdRaw : null;
 
       const withoutQc = req.query.withoutQc === "1" || req.query.withoutQc === "true";
       const withActiveQc = req.query.withActiveQc === "1" || req.query.withActiveQc === "true";
@@ -1660,7 +1677,12 @@ productionRouter.get(
           qcEntries: { some: { ...QC_ENTRY_ACTIVE_WHERE } },
         };
       }
-      if (salesOrderId && Number.isFinite(salesOrderId) && salesOrderId > 0) {
+      if (workOrderIdFromQuery) {
+        where = {
+          ...where,
+          workOrderLine: { workOrderId: workOrderIdFromQuery },
+        };
+      } else if (salesOrderId && Number.isFinite(salesOrderId) && salesOrderId > 0) {
         const soPeek = await prisma.salesOrder.findUnique({
           where: { id: salesOrderId },
           select: { orderType: true, currentCycleId: true },
@@ -1944,6 +1966,9 @@ const rmConsumptionLineSchema = z.object({
 
 const approveProductionEntrySchema = z.object({
   consumptionLines: z.array(rmConsumptionLineSchema).optional(),
+  remainingDisposition: z.enum(["CONTINUE", "PAUSE", "END_WITH_SHORTAGE", "CLOSE_WITH_SHORTAGE"]).optional(),
+  pauseReason: z.enum(["MACHINE_BREAKDOWN", "WAITING_FOR_RM", "TOOL_MOULD_MAINTENANCE", "QUALITY_CONCERN", "EMERGENCY_PRIORITY_PRODUCTION", "POWER_UTILITY_FAILURE", "MANAGEMENT_HOLD", "OTHER"]).optional(),
+  dispositionRemarks: z.string().max(2000).optional().nullable(),
 });
 
 /**
@@ -1992,6 +2017,60 @@ productionRouter.post(
 
         const { prod, wol, wo, isRegular, bomFound, consumptionWarnings, rmStock, fgItemId, producedQtyNum } =
           approval;
+
+        let remainingDispositionResult = null;
+        if (!isRegular) {
+          const executionContext = await tx.workOrder.findUnique({
+            where: { id: wol.workOrderId },
+            include: {
+              lines: { include: { fgItem: { select: { id: true, itemName: true } } } },
+              salesOrder: { select: { id: true, docNo: true, orderType: true, customerId: true } },
+              productionExecution: true,
+            },
+          });
+          const executionSummary = await computeExecutionSummary(tx, executionContext);
+          if (executionSummary.remainderQty > 1e-6 && !body.remainingDisposition) {
+            const err = new Error("Choose Continue Production, Pause Production, or End Production with Shortage before finalizing this partial production entry.");
+            err.statusCode = 409;
+            err.code = "PRODUCTION_REMAINING_DISPOSITION_REQUIRED";
+            err.details = { summary: executionSummary };
+            throw err;
+          }
+          if (executionSummary.remainderQty > 1e-6 && body.remainingDisposition === "PAUSE") {
+            if (!body.pauseReason) {
+              const err = new Error("Pause reason is required.");
+              err.statusCode = 400;
+              err.code = "PRODUCTION_PAUSE_REASON_REQUIRED";
+              throw err;
+            }
+            remainingDispositionResult = await blockProductionExecution(tx, wol.workOrderId, {
+              blockReason: body.pauseReason,
+              remarks: body.dispositionRemarks,
+              actorUserId: req.user.userId,
+              actorRole: req.user.role,
+            });
+          } else if (executionSummary.remainderQty > 1e-6 && ["END_WITH_SHORTAGE", "CLOSE_WITH_SHORTAGE"].includes(body.remainingDisposition)) {
+            // Production output and the user's decision to end are persisted now,
+            // but shortage/carry-forward is deliberately deferred until the
+            // mandatory RM Production Report is confirmed.
+            await tx.workOrderProductionExecution.upsert({
+              where: { workOrderId: wol.workOrderId },
+              create: { workOrderId: wol.workOrderId, executionStatus: "SHORTFALL_PENDING" },
+              update: { executionStatus: "SHORTFALL_PENDING", blockReason: null, blockRemarks: body.dispositionRemarks?.trim() || null },
+            });
+            remainingDispositionResult = { outcome: "AWAITING_PRODUCTION_REPORT", summary: executionSummary };
+          } else if (executionSummary.remainderQty > 1e-6) {
+            remainingDispositionResult = { outcome: "CONTINUE", summary: executionSummary };
+          } else {
+            // Equal or extra production (WO balance 0): finalize ≠ close. Park for
+            // mandatory Production Report / RM reconciliation before WO closure.
+            await syncShortfallPendingAfterProductionApprove(tx, wol.workOrderId, producedQtyNum);
+            remainingDispositionResult = {
+              outcome: "AWAITING_PRODUCTION_REPORT",
+              summary: executionSummary,
+            };
+          }
+        }
 
         await lockWorkOrderLineForUpdate(tx, wol.id);
         await lockWorkOrderForUpdate(tx, wol.workOrderId);
@@ -2112,7 +2191,7 @@ productionRouter.post(
             reason: "Production approval completed the remaining operational work.",
           });
         }
-        return { wo: woFull ?? wo, prod: prodAfter, bomFound, consumptionWarnings };
+        return { wo: woFull ?? wo, prod: prodAfter, bomFound, consumptionWarnings, remainingDispositionResult };
       });
 
       return res.status(200).json(result);

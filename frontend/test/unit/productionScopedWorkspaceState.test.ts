@@ -64,6 +64,57 @@ describe("productionScopedWorkspaceState", () => {
     ).toBe(true);
   });
 
+  it("keeps a resumed partial WO in production entry mode even when an entry is approved or Pending QC", () => {
+    const resumed = summary({ workOrderId: 20, executionStatus: "RUNNING", producedQty: 1500, remainderQty: 1500 });
+    expect(
+      shouldShowScopedProductionReport({
+        workOrderId: 20,
+        hasApprovedProductionOnWorkOrder: true,
+        navigateNoQtyContext: true,
+        executionSummary: resumed,
+      }),
+    ).toBe(false);
+  });
+
+  it("never shows the final report for a paused WO", () => {
+    const paused = summary({ workOrderId: 20, executionStatus: "BLOCKED", producedQty: 1500, remainderQty: 1500 });
+    expect(
+      shouldShowScopedProductionReport({
+        workOrderId: 20,
+        hasApprovedProductionOnWorkOrder: true,
+        navigateNoQtyContext: true,
+        executionSummary: paused,
+      }),
+    ).toBe(false);
+  });
+
+  it("shows production report when equal/extra production parks as SHORTFALL_PENDING", () => {
+    const reportPending = summary({
+      workOrderId: 20,
+      executionStatus: "SHORTFALL_PENDING",
+      producedQty: 3075,
+      remainderQty: 0,
+      surplusQty: 75,
+    });
+    expect(
+      shouldShowScopedProductionReport({
+        workOrderId: 20,
+        hasApprovedProductionOnWorkOrder: true,
+        navigateNoQtyContext: true,
+        executionSummary: reportPending,
+      }),
+    ).toBe(true);
+  });
+
+  it("allows a WO line to continue while an earlier entry is Pending QC", () => {
+    expect(
+      scopedWorkOrderHasProducibleLine(
+        [{ workOrderId: 20, workOrderLineId: 2, remainingQty: 1500, qcPendingQty: 1500, isCarryForwardLine: false }],
+        20,
+      ),
+    ).toBe(true);
+  });
+
   it("redirects to dashboard when browser back lands on unknown work order", () => {
     expect(
       resolveStaleScopedProductionNavigation({

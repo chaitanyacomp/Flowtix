@@ -4,7 +4,11 @@ const {
   mapSalesBillToTallyExportPayload,
   resolveSalesBillCommercialForTallyExport,
 } = require("../../src/services/salesBillTallyExportPayload");
-const { buildSalesBillTallyXml, buildCommercialVoucherXml } = require("../../src/services/salesBillTallyXml");
+const {
+  buildSalesBillTallyXml,
+  buildSalesBillTallyBulkXml,
+  buildCommercialVoucherXml,
+} = require("../../src/services/salesBillTallyXml");
 
 const companyState = {
   companyGstin: "27AABCD1234E1Z5",
@@ -250,4 +254,35 @@ test("buildSalesBillTallyXml — legacy bill without snapshots still exports", (
   assert.equal(payload.customer.customerGstin, "27LIVEGST0000");
   const xml = buildSalesBillTallyXml(payload);
   assert.match(xml, /<PARTYLEDGERNAME>Acme Live Name<\/PARTYLEDGERNAME>/);
+});
+
+test("buildSalesBillTallyBulkXml — combines multiple vouchers and stock masters in one envelope", () => {
+  const payloadA = mapSalesBillToTallyExportPayload({ bill: baseBill({ id: 201, billNo: "SB-A" }), companyState });
+  const payloadB = mapSalesBillToTallyExportPayload({
+    bill: baseBill({
+      id: 202,
+      billNo: "SB-B",
+      lines: [baseLine({ itemNameSnapshot: "Gadget", item: { itemName: "Gadget", hsnCode: "5678", unit: "Nos" } })],
+    }),
+    companyState,
+  });
+  const singleA = buildSalesBillTallyXml(payloadA);
+  const messagesA = (singleA.match(/<TALLYMESSAGE>/g) || []).length;
+  assert.ok(messagesA >= 1);
+
+  const xml = buildSalesBillTallyBulkXml([payloadA, payloadB]);
+  assert.match(xml, /^<\?xml version="1.0" encoding="UTF-8"\?>/);
+  assert.match(xml, /<TALLYREQUEST>Import Data<\/TALLYREQUEST>/);
+  assert.equal((xml.match(/VCHTYPE="Sales"/g) || []).length, 2);
+  assert.match(xml, /SB-A/);
+  assert.match(xml, /SB-B/);
+  assert.match(xml, /<STOCKITEMNAME>Widget<\/STOCKITEMNAME>/);
+  assert.match(xml, /<STOCKITEMNAME>Gadget<\/STOCKITEMNAME>/);
+  // Bulk must keep stock-item masters from each bill (not only the first TALLYMESSAGE).
+  assert.ok((xml.match(/<TALLYMESSAGE>/g) || []).length >= messagesA + 1);
+});
+
+test("buildSalesBillTallyBulkXml — single payload matches single-bill builder", () => {
+  const payload = mapSalesBillToTallyExportPayload({ bill: baseBill(), companyState });
+  assert.equal(buildSalesBillTallyBulkXml([payload]), buildSalesBillTallyXml(payload));
 });

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Trash2 } from "lucide-react";
 import { Button } from "../../ui/button";
 import { cn } from "../../../lib/utils";
 import type { WastageDetailDraft } from "../../../lib/productionWastageClassification";
@@ -21,9 +22,9 @@ type Props = {
   compact?: boolean;
   /** When true, validation feedback is rendered by the parent sticky footer (compact report panel). */
   hideInlineValidation?: boolean;
-  /** Cap wastage row table height so confirm action stays on screen; rows scroll internally. */
+  /** @deprecated Wastage list no longer uses an internal vertical scrollbar. */
   scrollableRows?: boolean;
-  /** Grow wastage row area to fill remaining middle-panel height (compact containment). */
+  /** @deprecated Wastage list no longer fills/scrolls a bounded region. */
   fillAvailableHeight?: boolean;
   validationMessage?: string | null;
   onChange: (rows: WastageDetailDraft[]) => void;
@@ -41,8 +42,6 @@ export function ProductionReportWastageDetails({
   readOnly = false,
   compact = false,
   hideInlineValidation = false,
-  scrollableRows = false,
-  fillAvailableHeight = false,
   validationMessage = null,
   onChange,
 }: Props) {
@@ -55,14 +54,17 @@ export function ProductionReportWastageDetails({
     [balance, rows, unit, validationMessage],
   );
 
+  const canAddWastageReason =
+    !readOnly && balance.status !== "complete" && balance.remainingQty > 1e-6;
+
   const addRow = React.useCallback(() => {
+    if (!(balance.remainingQty > 1e-6) || balance.status === "complete") return;
     const nextTypeId = suggestNextWastageTypeId(wastageTypes, rows);
     const key = newRowKey();
     const remaining = Math.max(0, balance.remainingQty);
     const qty =
-      remaining > 1e-6
-        ? suggestWastageQtyForTypeSelection(totalWastageQty, rows, key, "", unit) ?? fmtWastageQty(remaining)
-        : "";
+      suggestWastageQtyForTypeSelection(totalWastageQty, rows, key, "", unit) ??
+      fmtWastageQty(remaining, unit);
     onChange([
       ...rows,
       {
@@ -72,7 +74,7 @@ export function ProductionReportWastageDetails({
         remarks: "",
       },
     ]);
-  }, [balance.remainingQty, onChange, rows, totalWastageQty, unit, wastageTypes]);
+  }, [balance.remainingQty, balance.status, onChange, rows, totalWastageQty, unit, wastageTypes]);
 
   const updateRow = React.useCallback(
     (key: string, patch: Partial<WastageDetailDraft>) => {
@@ -110,12 +112,12 @@ export function ProductionReportWastageDetails({
 
   const balanceTone =
     balance.status === "complete"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-950"
+      ? "text-emerald-900"
       : balance.status === "over"
-        ? "border-red-200 bg-red-50 text-red-950"
+        ? "text-red-900"
         : balance.status === "remaining"
-          ? "border-amber-200 bg-amber-50 text-amber-950"
-          : "border-slate-200 bg-slate-50 text-slate-800";
+          ? "text-amber-950"
+          : "text-slate-800";
 
   const messageTone =
     balance.status === "over"
@@ -124,89 +126,53 @@ export function ProductionReportWastageDetails({
         ? "border-emerald-200 bg-emerald-50 text-emerald-950"
         : "border-amber-200 bg-amber-50 text-amber-950";
 
+  const overQty = balance.classifiedQty - balance.totalWastageQty;
+  const oneLineBalance =
+    balance.status === "over"
+      ? `Required wastage: ${fmtWastageQty(balance.totalWastageQty, unit)} ${unit} · Classified: ${fmtWastageQty(balance.classifiedQty, unit)} ${unit} · Over by: ${fmtWastageQty(overQty, unit)} ${unit}`
+      : `Required wastage: ${fmtWastageQty(balance.totalWastageQty, unit)} ${unit} · Classified: ${fmtWastageQty(balance.classifiedQty, unit)} ${unit} · Remaining to classify: ${fmtWastageQty(Math.max(0, balance.remainingQty), unit)} ${unit}`;
+
   return (
     <div
-      className={cn(
-        "min-w-0",
-        fillAvailableHeight ? "flex min-h-0 flex-col gap-1.5" : compact ? "space-y-1.5" : "space-y-2",
-      )}
+      className={cn("min-w-0", compact ? "space-y-1" : "space-y-2")}
       data-testid="production-report-wastage-details"
     >
-      <div className="flex shrink-0 flex-wrap items-baseline justify-between gap-2">
+      <div className="flex shrink-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
         <h4 className={cn("font-semibold text-slate-800", compact ? "text-[12px]" : "text-[13px]")}>Wastage Details</h4>
+        {totalWastageQty > 1e-6 ? (
+          <p
+            className={cn("tabular-nums", compact ? "text-[11px] font-medium" : "text-[11px]", balanceTone)}
+            data-testid="production-wastage-balance-strip"
+          >
+            {oneLineBalance}
+          </p>
+        ) : null}
       </div>
 
-      {totalWastageQty > 1e-6 ? (
-        <div
-          className={cn("shrink-0 rounded border px-2 py-1.5 text-[11px]", balanceTone)}
-          data-testid="production-wastage-balance-strip"
-        >
-          <div className="flex flex-wrap gap-x-4 gap-y-0.5 tabular-nums">
-            <span>
-              Total wastage:{" "}
-              <strong>
-                {fmtWastageQty(balance.totalWastageQty)} {unit}
-              </strong>
-            </span>
-            <span>
-              Classified:{" "}
-              <strong>
-                {fmtWastageQty(balance.classifiedQty)} {unit}
-              </strong>
-            </span>
-            <span>
-              {balance.status === "over" ? (
-                <>
-                  Over by:{" "}
-                  <strong>
-                    {fmtWastageQty(balance.classifiedQty - balance.totalWastageQty)} {unit}
-                  </strong>
-                </>
-              ) : (
-                <>
-                  Remaining:{" "}
-                  <strong>
-                    {fmtWastageQty(Math.max(0, balance.remainingQty))} {unit}
-                  </strong>
-                </>
-              )}
-            </span>
-          </div>
-        </div>
-      ) : null}
-
       {rows.length === 0 && !readOnly ? (
-        <p className="shrink-0 text-[11px] text-slate-600">Add wastage reasons that sum to the total wastage before confirming.</p>
+        <p className="shrink-0 text-[11px] text-slate-600">Add wastage reasons that sum to the required wastage before confirming.</p>
       ) : null}
 
       {rows.length > 0 ? (
-        <div
-          className={cn(
-            scrollableRows || fillAvailableHeight
-              ? "overflow-x-hidden overflow-y-auto rounded border border-slate-100"
-              : "overflow-x-auto",
-            fillAvailableHeight
-              ? "min-h-[6rem] flex-1"
-              : scrollableRows
-                ? "max-h-[min(14rem,32vh)]"
-                : null,
-          )}
-          data-testid={scrollableRows || fillAvailableHeight ? "production-wastage-rows-scroll" : undefined}
-        >
+        <div className="overflow-x-auto rounded border border-slate-100" data-testid="production-wastage-rows">
           <table className={cn("w-full border-collapse text-slate-800", compact ? "table-fixed text-[11px]" : "text-[12px]")}>
             <thead>
               <tr className="border-b border-slate-200 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">
                 <th className={cn("px-2 font-medium", compact ? "w-[38%] py-0.5" : "py-1")}>Wastage Type</th>
-                <th className={cn("px-2 text-right font-medium", compact ? "w-[18%] py-0.5" : "py-1")}>Qty ({unit})</th>
+                <th className={cn("px-2 text-right font-medium", compact ? "w-[4.5rem] py-0.5" : "py-1")}>Qty</th>
                 <th className={cn("px-2 font-medium", compact ? "py-0.5" : "py-1")}>Remarks</th>
-                {!readOnly ? <th className={cn("px-2 text-right font-medium", compact ? "w-[4.5rem] py-0.5" : "py-1")}>Delete</th> : null}
+                {!readOnly ? (
+                  <th className={cn("px-1 text-center font-medium", compact ? "w-8 py-0.5" : "py-1")}>
+                    <span className="sr-only">Delete</span>
+                  </th>
+                ) : null}
               </tr>
             </thead>
             <tbody>
               {rows.map((row, rowIndex) => {
                 const typeName = wastageTypes.find((t) => t.id === row.wastageTypeId)?.name ?? "—";
                 const rowRemaining = remainingWastageAfterRow(totalWastageQty, rows, rowIndex);
-                const showRowRemaining = !readOnly && rows.length > 1 && totalWastageQty > 1e-6;
+                const showRowRemaining = !compact && !readOnly && rows.length > 1 && totalWastageQty > 1e-6;
                 return (
                   <tr key={row.key} className="border-b border-slate-100">
                     <td className={cn("px-2", compact ? "py-0.5" : "py-1")}>
@@ -216,7 +182,7 @@ export function ProductionReportWastageDetails({
                         <select
                           className={cn(
                             "w-full rounded border border-slate-200 bg-white px-1.5",
-                            compact ? "h-7 min-w-0 text-[11px]" : "h-8 min-w-[9rem] text-[12px]",
+                            compact ? "h-8 min-w-0 text-[12px]" : "h-8 min-w-[9rem] text-[12px]",
                           )}
                           value={row.wastageTypeId > 0 ? String(row.wastageTypeId) : ""}
                           onChange={(e) => updateRow(row.key, { wastageTypeId: Number(e.target.value) })}
@@ -230,15 +196,15 @@ export function ProductionReportWastageDetails({
                         </select>
                       )}
                     </td>
-                    <td className={cn("px-2 text-right align-top", compact ? "py-0.5" : "py-1")}>
+                    <td className={cn("px-2 text-right align-middle", compact ? "py-0.5" : "py-1")}>
                       {readOnly ? (
-                        <span className="tabular-nums">{fmtWastageQty(Number(row.qty))}</span>
+                        <span className="tabular-nums">{fmtWastageQty(Number(row.qty), unit)}</span>
                       ) : (
                         <div className="inline-flex flex-col items-end gap-0.5">
                           <input
                             className={cn(
-                              "w-[5.5rem] rounded border border-slate-200 px-1.5 text-right tabular-nums",
-                              compact ? "h-7 text-[11px]" : "h-8 text-[12px]",
+                              "rounded border border-slate-200 px-1.5 text-right tabular-nums",
+                              compact ? "h-8 w-[4.25rem] text-[12px]" : "h-8 w-[5.5rem] text-[12px]",
                             )}
                             type="number"
                             min="0"
@@ -253,7 +219,7 @@ export function ProductionReportWastageDetails({
                                 rowRemaining <= 1e-6 ? "font-medium text-emerald-700" : "text-amber-800",
                               )}
                             >
-                              Remaining: {fmtWastageQty(Math.max(0, rowRemaining))} {unit}
+                              Remaining: {fmtWastageQty(Math.max(0, rowRemaining), unit)} {unit}
                             </span>
                           ) : null}
                         </div>
@@ -266,7 +232,7 @@ export function ProductionReportWastageDetails({
                         <input
                           className={cn(
                             "w-full rounded border border-slate-200 px-1.5",
-                            compact ? "h-7 min-w-0 text-[11px]" : "h-8 min-w-[8rem] text-[12px]",
+                            compact ? "h-8 min-w-0 text-[12px]" : "h-8 min-w-[8rem] text-[12px]",
                           )}
                           value={row.remarks}
                           onChange={(e) => updateRow(row.key, { remarks: e.target.value })}
@@ -274,9 +240,16 @@ export function ProductionReportWastageDetails({
                       )}
                     </td>
                     {!readOnly ? (
-                      <td className={cn("px-2 text-right", compact ? "py-0.5" : "py-1")}>
-                        <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-[11px]" onClick={() => removeRow(row.key)}>
-                          Delete
+                      <td className={cn("px-1 text-center", compact ? "py-0.5" : "py-1")}>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className={cn("text-slate-500 hover:text-rose-700", compact ? "h-8 w-8 p-0" : "h-7 px-2 text-[11px]")}
+                          onClick={() => removeRow(row.key)}
+                          aria-label="Delete wastage row"
+                        >
+                          {compact ? <Trash2 className="h-3.5 w-3.5" /> : "Delete"}
                         </Button>
                       </td>
                     ) : null}
@@ -289,13 +262,14 @@ export function ProductionReportWastageDetails({
       ) : null}
 
       {!readOnly ? (
-        <div className="shrink-0 pt-0.5 pb-1">
+        <div className="shrink-0">
           <Button
             type="button"
             variant="outline"
             size="sm"
-            className={cn("h-8 shrink-0", compact ? "text-[11px]" : "text-[12px]")}
+            className={cn("shrink-0", compact ? "h-7 text-[11px]" : "h-8 text-[12px]")}
             onClick={addRow}
+            disabled={!canAddWastageReason}
             data-testid="add-wastage-reason-btn"
           >
             + Add Wastage Reason

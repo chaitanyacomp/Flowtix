@@ -1,318 +1,131 @@
 import * as React from "react";
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { apiFetch } from "../services/api";
-import { PageContainer, PageNoQtyFlowBackLink, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
-import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
-import { displayDispatchNo, displaySalesOrderNo } from "../lib/docNoDisplay";
-import { useWorkQueueContext } from "../hooks/useWorkQueueContext";
-import { SalesBillWorkQueueHeader } from "../components/sales/SalesBillWorkQueueHeader";
-import { withWorkQueueState } from "../lib/workQueueContext";
+import { blockNumericStepperKey, defaultBillNow, isDispatchSelectable, selectAllEligible, selectAllState } from "../lib/salesBillSelection";
 
-type EligibleDispatch = {
-  dispatchId: number;
-  dispatchNo: string;
-  dispatchDate: string;
-  salesOrderId: number;
-  salesOrderDocNo?: string | null;
-  customerName: string | null;
-  itemName: string | null;
-  dispatchedQty: string;
-  workflowStatus: string;
-  draftBillId?: number | null;
-  hasDraftBill?: boolean;
+type DispatchRow = {
+  dispatchId: number; dispatchNo: string; dispatchDate: string; salesOrderId: number;
+  salesOrderDocNo?: string | null; customerName?: string | null; itemName?: string | null;
+  hsnCode?: string | null; unit?: string | null; dispatchedQty: string;
+  previouslyBilledQty?: string; reservedOtherDraftQty?: string; availableQty?: string;
 };
 
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString();
-}
-
-function dispatchDateMs(iso: string): number {
-  const d = new Date(iso);
-  const t = d.getTime();
-  return Number.isFinite(t) ? t : 0;
-}
-
-function todayYmdLocal(): string {
-  const t = new Date();
-  const y = t.getFullYear();
-  const m = String(t.getMonth() + 1).padStart(2, "0");
-  const d = String(t.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
+const today = () => new Date().toISOString().slice(0, 10);
+const qty = (value: unknown) => Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 3 });
 
 export function SalesBillNewPage() {
   const navigate = useNavigate();
-  const location = useLocation();
   const [sp] = useSearchParams();
-  const { workQueue, isPendingActionsQueue } = useWorkQueueContext();
-  const source = sp.get("source") ?? "";
-  const fromNoQtySo = source === "no_qty_so";
-  const fromDispatch = sp.get("from") === "dispatch";
-  const fromPendingActions = sp.get("from") === "pending-actions" || isPendingActionsQueue;
-  const workQueueDriven = Boolean(workQueue?.returnToPendingActions);
-  const skipDispatchPicker = workQueueDriven;
-  const dispatchIdFromUrl = (sp.get("dispatchId") ?? "").trim();
-  const focusSoId = Number(sp.get("salesOrderId") ?? 0);
-  const focusSoIdValid = Number.isFinite(focusSoId) && focusSoId > 0;
-  const [focusSo, setFocusSo] = React.useState<{ id: number; customerName: string } | null>(null);
-
-  const [rows, setRows] = React.useState<EligibleDispatch[]>([]);
-  const [dispatchId, setDispatchId] = React.useState<string>(() =>
-    /^\d+$/.test(dispatchIdFromUrl) && Number(dispatchIdFromUrl) > 0 ? dispatchIdFromUrl : "",
-  );
-  const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [seedRows, setSeedRows] = React.useState<DispatchRow[]>([]);
+  const [rows, setRows] = React.useState<DispatchRow[]>([]);
+  const [soId, setSoId] = React.useState(Number(sp.get("salesOrderId") || 0));
+  const [selected, setSelected] = React.useState<Record<number, boolean>>({});
+  const [billNow, setBillNow] = React.useState<Record<number, string>>({});
+  const [billDate, setBillDate] = React.useState(today);
+  const [transportAmount, setTransportAmount] = React.useState("0");
+  const [chargedBy, setChargedBy] = React.useState<"OUR_COMPANY" | "TRANSPORTER_DIRECTLY">("OUR_COMPANY");
+  const [transporterName, setTransporterName] = React.useState("");
+  const [referenceNo, setReferenceNo] = React.useState("");
+  const [remarks, setRemarks] = React.useState("");
+  const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const [loaded, setLoaded] = React.useState(false);
-  const [newBillDate, setNewBillDate] = React.useState(todayYmdLocal);
-  const queueAutoStartedRef = React.useRef(false);
-  const queueAutoContinueRef = React.useRef(false);
-
-  const openBillFromDispatch = React.useCallback(
-    async (id: number) => {
-      if (!Number.isFinite(id) || id <= 0) return;
-      setBusy(true);
-      setLoadError(null);
-      try {
-        const bill = await apiFetch<{ id: number }>(`/api/sales-bills/from-dispatch/${id}`, {
-          method: "POST",
-          body: JSON.stringify(fromNoQtySo && focusSoIdValid ? { billDate: newBillDate } : {}),
-        });
-        const navState = workQueue ? withWorkQueueState(workQueue) : undefined;
-        if (fromNoQtySo && focusSoIdValid) {
-          const qs = new URLSearchParams();
-          qs.set("source", "no_qty_so");
-          qs.set("salesOrderId", String(focusSoId));
-          qs.set("dispatchId", String(id));
-          if (fromPendingActions) qs.set("from", "pending-actions");
-          navigate(
-            withReportsReturnContextIfPresent(`/sales-bills/${bill.id}?${qs.toString()}`, location.search),
-            { replace: true, state: navState },
-          );
-        } else {
-          const qs = fromPendingActions ? "?from=pending-actions" : "";
-          navigate(
-            withReportsReturnContextIfPresent(`/sales-bills/${bill.id}${qs}`, location.search),
-            { replace: true, state: navState },
-          );
-        }
-      } catch (e) {
-        setLoadError(e instanceof Error ? e.message : "Could not start the bill.");
-      } finally {
-        setBusy(false);
-      }
-    },
-    [focusSoId, focusSoIdValid, fromNoQtySo, fromPendingActions, location.search, navigate, newBillDate, workQueue],
-  );
+  const selectAllRef = React.useRef<HTMLInputElement>(null);
 
   React.useEffect(() => {
-    setLoadError(null);
-    setLoaded(false);
-    apiFetch<EligibleDispatch[]>("/api/sales-bills/eligible-dispatches")
-      .then((all) => {
-        const list = Array.isArray(all) ? all : [];
-        if (fromNoQtySo && focusSoIdValid) {
-          const scoped = list
-            .filter((r) => Number(r.salesOrderId) === focusSoId)
-            .sort((a, b) => dispatchDateMs(b.dispatchDate) - dispatchDateMs(a.dispatchDate) || Number(b.dispatchId) - Number(a.dispatchId));
-          setRows(scoped);
-          if (scoped.length > 0) setDispatchId(String(scoped[0].dispatchId));
-          else setDispatchId("");
-          return;
-        }
-        setRows(list);
-        const urlId = (sp.get("dispatchId") ?? "").trim();
-        if ((fromDispatch || fromPendingActions || workQueueDriven) && /^\d+$/.test(urlId) && Number(urlId) > 0) {
-          const exists = list.some((r) => Number(r.dispatchId) === Number(urlId));
-          if (exists) setDispatchId(urlId);
-        }
-      })
-      .catch((e) => setLoadError(e instanceof Error ? e.message : "Could not load eligible dispatches."))
-      .finally(() => setLoaded(true));
-  }, [fromNoQtySo, fromDispatch, fromPendingActions, workQueueDriven, focusSoId, focusSoIdValid, dispatchIdFromUrl, sp]);
+    void apiFetch<DispatchRow[]>("/api/sales-bills/eligible-dispatches").then((data) => {
+      setSeedRows(data);
+      if (!soId && data[0]?.salesOrderId) setSoId(data[0].salesOrderId);
+    }).catch((e) => setError(e instanceof Error ? e.message : "Unable to load billing eligibility."));
+  }, []);
 
   React.useEffect(() => {
-    if (!fromNoQtySo || !focusSoIdValid) {
-      setFocusSo(null);
-      return;
-    }
-    apiFetch<any>(`/api/sales-orders/${focusSoId}`)
-      .then((so) => {
-        const customerName = so?.customer?.name ?? so?.po?.customer?.name ?? "—";
-        setFocusSo({ id: focusSoId, customerName });
-      })
-      .catch(() => setFocusSo({ id: focusSoId, customerName: "—" }));
-  }, [fromNoQtySo, focusSoId, focusSoIdValid]);
+    if (!(soId > 0)) return;
+    setError(null);
+    void apiFetch<DispatchRow[]>(`/api/sales-bills/sales-orders/${soId}/eligible-dispatches`).then((data) => {
+      setRows(data);
+      setSelected({}); setBillNow(defaultBillNow(data));
+    }).catch((e) => setError(e instanceof Error ? e.message : "Unable to load dispatches."));
+  }, [soId]);
 
-  React.useEffect(() => {
-    if (!workQueue || queueAutoStartedRef.current) return;
-    const item = workQueue.queueItems[workQueue.currentIndex];
-    if (!item) return;
-    queueAutoStartedRef.current = true;
-    if (item.billId) {
-      navigate(
-        withReportsReturnContextIfPresent(`/sales-bills/${item.billId}?from=pending-actions`, location.search),
-        { state: withWorkQueueState(workQueue), replace: true },
-      );
-      return;
-    }
-    if (item.dispatchId) {
-      setDispatchId(String(item.dispatchId));
-    }
-  }, [workQueue, location.search, navigate]);
+  const salesOrders = React.useMemo(() => {
+    const map = new Map<number, DispatchRow>();
+    for (const row of seedRows) if (!map.has(row.salesOrderId)) map.set(row.salesOrderId, row);
+    return [...map.values()];
+  }, [seedRows]);
+  const chosen = rows.filter((row) => selected[row.dispatchId]);
+  const billQty = chosen.reduce((sum, row) => sum + Number(billNow[row.dispatchId] || 0), 0);
+  const allState = selectAllState(rows, selected);
+  React.useEffect(() => { if (selectAllRef.current) selectAllRef.current.indeterminate = allState.indeterminate; }, [allState.indeterminate]);
 
-  React.useEffect(() => {
-    if (!workQueue || !loaded || busy || loadError) return;
-    const item = workQueue.queueItems[workQueue.currentIndex];
-    if (!item?.dispatchId || item.billId) return;
-    if (Number(dispatchId) !== item.dispatchId) return;
-    if (queueAutoContinueRef.current) return;
-    queueAutoContinueRef.current = true;
-    void openBillFromDispatch(item.dispatchId);
-  }, [workQueue, loaded, busy, loadError, dispatchId, openBillFromDispatch]);
-
-  async function onContinue() {
-    const id = Number(dispatchId);
-    await openBillFromDispatch(id);
+  function toggleRow(row: DispatchRow, checked: boolean) {
+    setSelected((current) => ({ ...current, [row.dispatchId]: checked }));
+    if (checked) setBillNow((current) => ({ ...current, [row.dispatchId]: String(row.availableQty || "") }));
   }
 
-  const selected = rows.find((r) => String(r.dispatchId) === dispatchId);
-  const none = loaded && !loadError && rows.length === 0;
-  const continuingDraft = Boolean(selected?.hasDraftBill && selected?.draftBillId);
-  const queueOpening = skipDispatchPicker && (busy || !loaded || (workQueue && !queueAutoContinueRef.current && !queueAutoStartedRef.current));
+  function toggleAll(checked: boolean) {
+    setSelected(selectAllEligible(rows, checked));
+    if (checked) setBillNow(defaultBillNow(rows));
+  }
 
-  return (
-    <PageContainer>
-      <StickyWorkspaceHead
-        lead={
-          fromNoQtySo ? (
-            <PageNoQtyFlowBackLink step="SALES_BILL" />
-          ) : (
-            <PageSmartBackLink
-              defaultTo={fromPendingActions ? "/pending-actions" : "/sales-bills"}
-              defaultLabel={fromPendingActions ? "Back to Pending Actions" : "Back to sales bills"}
-            />
-          )
-        }
-      >
-        <div className="min-w-0 space-y-1">
-          <h1 className="text-lg font-semibold leading-snug text-slate-900">Sales bill</h1>
-          <p className="text-sm leading-relaxed text-slate-600">Create customer invoice from confirmed dispatch (phase 1: 1 dispatch → 1 bill)</p>
-          {fromNoQtySo && focusSoIdValid ? (
-            <p className="text-sm leading-relaxed text-slate-700">
-              <span className="font-medium">SO #{focusSoId}</span>
-              <span className="text-slate-500"> · {focusSo?.customerName ?? "—"}</span>
-            </p>
-          ) : null}
-          {fromNoQtySo && focusSoIdValid ? (
-            <p className="text-xs leading-relaxed text-slate-600">Sales Bill is created only from actual dispatch quantity.</p>
-          ) : null}
-        </div>
-      </StickyWorkspaceHead>
+  async function createDraft() {
+    const allocations = chosen.map((row) => ({ dispatchId: row.dispatchId, billNowQty: Number(billNow[row.dispatchId] || 0) }));
+    if (!allocations.length || allocations.some((row) => !(row.billNowQty > 0))) return setError("Select dispatches and enter a Bill Now quantity greater than zero.");
+    const over = chosen.find((row) => Number(billNow[row.dispatchId]) > Number(row.availableQty || 0));
+    if (over) return setError(`Bill Now exceeds available quantity for ${over.dispatchNo}.`);
+    setBusy(true); setError(null);
+    try {
+      const bill = await apiFetch<{ id: number }>("/api/sales-bills/from-sales-order", { method: "POST", body: JSON.stringify({
+        salesOrderId: soId, billDate, allocations,
+        transportation: { amount: Number(transportAmount || 0), chargedBy, transporterName: transporterName || null, referenceNo: referenceNo || null, remarks: remarks || null },
+      }) });
+      navigate(`/sales-bills/${bill.id}`);
+    } catch (e) { setError(e instanceof Error ? e.message : "Unable to create Sales Bill draft."); }
+    finally { setBusy(false); }
+  }
 
-      {workQueue ? <SalesBillWorkQueueHeader workQueue={workQueue} className="mb-3" /> : null}
-
-      {queueOpening ? (
-        <Card className="w-full max-w-xl min-w-0 overflow-hidden">
-          <CardContent className="px-4 py-8 text-sm text-slate-600" aria-busy="true">
-            Opening bill from Pending Actions queue…
-          </CardContent>
-        </Card>
-      ) : (
-        <Card className="w-full max-w-xl min-w-0 overflow-hidden">
-          <CardHeader>
-            <CardTitle className="text-base">{skipDispatchPicker ? "Opening bill" : "Choose dispatch"}</CardTitle>
-          </CardHeader>
-          <CardContent className="grid min-w-0 gap-4">
-            {loadError ? (
-              <div className="min-w-0 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm leading-relaxed text-red-800 break-words">
-                {loadError}
-              </div>
-            ) : null}
-
-            {none ? <p className="text-sm leading-relaxed text-slate-700">All dispatches already billed.</p> : null}
-
-            {!none && !loadError && !skipDispatchPicker ? (
-              <>
-                <p className="text-sm leading-relaxed text-slate-600">
-                  Choose a confirmed dispatch. If you already started a draft for the same dispatch, it will be reopened.
-                </p>
-
-                <div className="grid gap-1.5">
-                  <label className="text-xs font-medium text-slate-600" htmlFor="dispatch-ref">
-                    Dispatch ref
-                  </label>
-                  <select
-                    id="dispatch-ref"
-                    className="flex h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm"
-                    value={dispatchId}
-                    onChange={(e) => {
-                      setDispatchId(e.target.value);
-                      setLoadError(null);
-                    }}
-                  >
-                    <option value="">Select dispatch…</option>
-                    {rows.map((r) => (
-                      <option key={r.dispatchId} value={String(r.dispatchId)}>
-                        Dispatch No: {displayDispatchNo(r.dispatchId, r.dispatchNo)} · SO No:{" "}
-                        {displaySalesOrderNo(r.salesOrderId, r.salesOrderDocNo)} · {r.customerName ?? "—"} · {r.itemName ?? "—"} · Qty{" "}
-                        {r.dispatchedQty} · {formatDate(r.dispatchDate)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {selected ? (
-                  <div className="min-w-0 rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                    <div className="break-words">
-                      <span className="font-medium text-slate-800">Customer:</span> {selected.customerName ?? "—"}
-                    </div>
-                    <div className="break-words">
-                      <span className="font-medium text-slate-800">Item:</span> {selected.itemName ?? "—"} · <span className="font-medium text-slate-800">Qty:</span>{" "}
-                      {selected.dispatchedQty}
-                    </div>
-                    <div>
-                      <span className="font-medium text-slate-800">Dispatch date:</span> {formatDate(selected.dispatchDate)}
-                    </div>
-                    {selected.hasDraftBill ? (
-                      <div className="mt-1 text-amber-700">
-                        Draft bill found for this dispatch.
-                        {selected.draftBillId ? ` Continue Draft Bill (#${selected.draftBillId}).` : " Continue Draft Bill."}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {fromNoQtySo ? (
-                  <div className="grid gap-1.5">
-                    <label className="text-xs font-medium text-slate-600" htmlFor="sb-new-bill-date">
-                      Bill date *
-                    </label>
-                    <Input
-                      id="sb-new-bill-date"
-                      type="date"
-                      className="h-10"
-                      value={newBillDate}
-                      onChange={(e) => setNewBillDate(e.target.value)}
-                    />
-                    <p className="text-xs leading-relaxed text-slate-500">
-                      Applicable rates are picked from approved rate contracts using this bill date (not dispatch date).
-                    </p>
-                  </div>
-                ) : null}
-
-                <Button type="button" className="w-full sm:w-auto" disabled={!dispatchId || busy} onClick={() => void onContinue()}>
-                  {busy ? "Working…" : continuingDraft ? "Continue Draft Bill" : "Create Sales Bill"}
-                </Button>
-              </>
-            ) : null}
-          </CardContent>
-        </Card>
-      )}
-    </PageContainer>
-  );
+  return <PageContainer className="space-y-3">
+    <StickyWorkspaceHead lead={<PageSmartBackLink defaultTo="/sales-bills" defaultLabel="Back to Sales Bills" />}>
+      <div><h1 className="text-lg font-semibold text-slate-900">Create Sales Bill</h1><p className="text-xs text-slate-600">Combine eligible dispatch quantities from one Sales Order.</p></div>
+    </StickyWorkspaceHead>
+    {error ? <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div> : null}
+    <section className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+      <div className="grid gap-3 md:grid-cols-3">
+        <label className="text-xs font-semibold text-slate-700">Sales Order
+          <select className="mt-1 h-9 w-full rounded border border-slate-300 px-2 text-sm" value={soId || ""} onChange={(e) => setSoId(Number(e.target.value))}>
+            <option value="">Select Sales Order</option>
+            {salesOrders.map((row) => <option key={row.salesOrderId} value={row.salesOrderId}>{row.salesOrderDocNo || `SO-${row.salesOrderId}`} · {row.customerName}</option>)}
+          </select>
+        </label>
+        <label className="text-xs font-semibold text-slate-700">Customer<Input className="mt-1" value={rows[0]?.customerName || ""} readOnly /></label>
+        <label className="text-xs font-semibold text-slate-700">Bill date<Input className="mt-1" type="date" value={billDate} onChange={(e) => setBillDate(e.target.value)} /></label>
+      </div>
+    </section>
+    <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-200 px-3 py-2 text-sm font-semibold">Dispatch selection</div>
+      <div className="overflow-x-auto"><table className="w-full min-w-[900px] text-xs"><thead className="bg-slate-50 text-slate-600"><tr>
+        <th className="px-2 py-2 text-left"><label className="inline-flex items-center gap-1.5 whitespace-nowrap"><input ref={selectAllRef} type="checkbox" aria-label="Select all eligible dispatches" checked={allState.checked} disabled={!rows.some(isDispatchSelectable)} onChange={(e) => toggleAll(e.target.checked)} /><span>Select All</span></label></th>
+        {['Dispatch / Date','Item','Dispatched','Already billed','Reserved elsewhere','Available','Bill now','Unit'].map((h) => <th key={h} className="px-2 py-2 text-left">{h}</th>)}
+      </tr></thead><tbody>{rows.map((row) => <tr key={row.dispatchId} className="border-t border-slate-100">
+        <td className="px-2 py-1.5"><input type="checkbox" checked={Boolean(selected[row.dispatchId])} disabled={!isDispatchSelectable(row)} onChange={(e) => toggleRow(row, e.target.checked)} /></td>
+        <td className="px-2 py-1.5 font-medium">{row.dispatchNo}<div className="font-normal text-slate-500">{new Date(row.dispatchDate).toLocaleDateString()}</div></td>
+        <td className="px-2 py-1.5">{row.itemName}</td><td className="px-2 py-1.5 tabular-nums">{qty(row.dispatchedQty)}</td>
+        <td className="px-2 py-1.5 tabular-nums">{qty(row.previouslyBilledQty)}</td><td className="px-2 py-1.5 tabular-nums">{qty(row.reservedOtherDraftQty)}</td>
+        <td className="px-2 py-1.5 font-semibold tabular-nums">{qty(row.availableQty)}</td>
+        <td className="px-2 py-1.5"><Input className="h-8 w-28 text-right" type="text" inputMode="decimal" disabled={!selected[row.dispatchId]} value={billNow[row.dispatchId] || ""} onWheel={(e) => e.currentTarget.blur()} onKeyDown={(e) => { if (blockNumericStepperKey(e.key)) e.preventDefault(); }} onChange={(e) => setBillNow((s) => ({ ...s, [row.dispatchId]: e.target.value }))} /></td>
+        <td className="px-2 py-1.5">{row.unit}</td></tr>)}</tbody></table></div>
+    </section>
+    <section className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+      <div className="mb-2 text-sm font-semibold">Additional charges</div><div className="grid gap-3 md:grid-cols-3">
+        <label className="text-xs font-semibold">Transportation charges<Input className="mt-1" type="text" inputMode="decimal" value={transportAmount} onWheel={(e) => e.currentTarget.blur()} onKeyDown={(e) => { if (blockNumericStepperKey(e.key)) e.preventDefault(); }} onChange={(e) => setTransportAmount(e.target.value)} /></label>
+        <label className="text-xs font-semibold">Charged by<select className="mt-1 h-9 w-full rounded border border-slate-300 px-2" value={chargedBy} onChange={(e) => setChargedBy(e.target.value as typeof chargedBy)}><option value="OUR_COMPANY">Our Company</option><option value="TRANSPORTER_DIRECTLY">Transporter Directly</option></select></label>
+        <label className="text-xs font-semibold">Transporter name<Input className="mt-1" value={transporterName} onChange={(e) => setTransporterName(e.target.value)} /></label>
+        <label className="text-xs font-semibold">LR / vehicle / reference<Input className="mt-1" value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} /></label>
+        <label className="text-xs font-semibold md:col-span-2">Remarks<Input className="mt-1" value={remarks} onChange={(e) => setRemarks(e.target.value)} /></label>
+      </div>{chargedBy === "OUR_COMPANY" ? <p className="mt-2 text-xs text-slate-600">Transportation GST is allocated proportionately across invoice items.</p> : <p className="mt-2 text-xs text-amber-700">The transporter will bill the customer separately; this amount is excluded from this invoice.</p>}
+    </section>
+    <div className="sticky bottom-0 flex items-center justify-between rounded-lg border border-slate-200 bg-white/95 px-3 py-2 shadow-lg backdrop-blur"><span className="text-sm font-semibold">{chosen.length} dispatches · {qty(billQty)} total quantity</span><Button disabled={busy || !chosen.length} onClick={() => void createDraft()}>{busy ? "Creating…" : "Create Sales Bill Draft"}</Button></div>
+  </PageContainer>;
 }

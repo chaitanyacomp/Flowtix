@@ -26,42 +26,57 @@ function scriptDir() {
 }
 
 /**
- * Detect install / repo home:
- * - tools/ under release → release parent → FT home (parent of release) or release itself
- * - deployment/ under repo → repo root
+ * Detect install / repo home (FT_ERP_HOME override preserved).
+ * Installed layout C:\FT-ERP\tools → C:\FT-ERP (not C:\).
+ * Keep in sync with deployment/lib/resolveInstallHome.js.
  */
 function resolveHome() {
-  if (process.env.FT_ERP_HOME && String(process.env.FT_ERP_HOME).trim()) {
-    return path.resolve(String(process.env.FT_ERP_HOME).trim());
-  }
-
-  const here = scriptDir();
-  const base = path.basename(here);
-
-  // release/.../tools
-  if (base === "tools") {
-    const releaseDir = path.resolve(here, "..");
-    const parent = path.resolve(releaseDir, "..");
-    // Prefer FT-ERP home (parent of releases/) when structure matches
-    if (fs.existsSync(path.join(parent, "releases")) || fs.existsSync(path.join(parent, "shared"))) {
-      return parent;
+  const { resolveInstallHome } = (() => {
+    try {
+      return require("./lib/resolveInstallHome");
+    } catch {
+      // Packaged tools/backup-db.js is flat — use inline twin of resolveInstallHome.
+      return {
+        resolveInstallHome(scriptDirectory, env = process.env) {
+          if (env.FT_ERP_HOME && String(env.FT_ERP_HOME).trim()) {
+            return path.resolve(String(env.FT_ERP_HOME).trim());
+          }
+          const here = path.resolve(scriptDirectory);
+          const base = path.basename(here);
+          if (base === "tools") {
+            const toolsParent = path.resolve(here, "..");
+            const grandParent = path.resolve(toolsParent, "..");
+            if (
+              fs.existsSync(path.join(toolsParent, "shared")) ||
+              fs.existsSync(path.join(toolsParent, "releases")) ||
+              fs.existsSync(path.join(toolsParent, "app"))
+            ) {
+              return toolsParent;
+            }
+            if (path.basename(grandParent) === "releases") {
+              return path.resolve(grandParent, "..");
+            }
+            if (
+              fs.existsSync(path.join(grandParent, "releases")) ||
+              fs.existsSync(path.join(grandParent, "shared"))
+            ) {
+              return grandParent;
+            }
+            if (path.basename(grandParent) === "release") {
+              return path.resolve(grandParent, "..");
+            }
+            if (fs.existsSync(path.join(grandParent, "backend"))) {
+              return grandParent;
+            }
+            return toolsParent;
+          }
+          if (base === "deployment") return path.resolve(here, "..");
+          return path.resolve(here, "..");
+        },
+      };
     }
-    // Dev layout: repo/release/Flowtix-vX/tools → repo root
-    if (path.basename(parent) === "release") {
-      return path.resolve(parent, "..");
-    }
-    if (fs.existsSync(path.join(parent, "backend"))) {
-      return parent;
-    }
-    return parent;
-  }
-
-  // deployment/ under repo
-  if (base === "deployment") {
-    return path.resolve(here, "..");
-  }
-
-  return path.resolve(here, "..");
+  })();
+  return resolveInstallHome(scriptDir(), process.env);
 }
 
 function resolveSharedDir(home) {

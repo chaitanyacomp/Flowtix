@@ -204,6 +204,15 @@ const issueSchema = z.object({
       z.object({
         pmrLineId: z.number().int().positive(),
         issueQty: z.number().positive(),
+        theoreticalBomQty: z.number().nonnegative(),
+        includedRunnerQty: z.number().nonnegative().optional().default(0),
+        allowanceInputSource: z.enum(["QUANTITY"]).optional().default("QUANTITY"),
+        enteredAllowanceQty: z.number().nonnegative().optional().nullable(),
+        plannedAllowancePct: z.number().min(0).max(10).optional(),
+        plannedAllowanceQty: z.number().nonnegative().optional(),
+        recommendedIssueQty: z.number().nonnegative().optional(),
+        allowanceReason: z.string().max(500).optional().nullable(),
+        allowanceApprovalRequestId: z.number().int().positive().optional().nullable(),
       }),
     )
     .min(1),

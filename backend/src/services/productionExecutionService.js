@@ -23,7 +23,7 @@ const EPS = 1e-6;
 const PRODUCTION_EXECUTION_PENDING_LABELS = Object.freeze({
   NOT_STARTED: "Ready to Start Production",
   RUNNING: "Continue Production",
-  SHORTFALL_PENDING: "Resolve Production Shortfall",
+  SHORTFALL_PENDING: "Complete Production Report",
   BLOCKED: "Production Paused",
 });
 
@@ -52,7 +52,9 @@ function deriveProductionQueueActionLabel({ nextAction, execStatus }) {
   if (na === "ON_HOLD") return "Review Hold";
   if (na === "NEXT_RS_REQUIRED") return "Create Next RS";
   if (na === "SALES_BILL_PENDING") return "Create Sales Bill";
-  if (na === "PRODUCTION_EXECUTION_BLOCKED") return PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED;
+  if (na === "PRODUCTION_EXECUTION_BLOCKED" || na === "PRODUCTION_PAUSED") {
+    return PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED;
+  }
   if (na === "PRODUCTION_SHORTFALL_DECISION") return PRODUCTION_EXECUTION_PENDING_LABELS.SHORTFALL_PENDING;
   return productionExecutionPendingActionLabel(execStatus);
 }
@@ -328,6 +330,28 @@ async function blockProductionExecution(tx, workOrderId, { blockReason, remarks,
     err.statusCode = 409;
     throw err;
   }
+  const terminalWo = new Set(["COMPLETED", "REJECTED", "CLOSED_WITH_SHORTFALL", "CANCELLED", "CLOSED"]);
+  if (terminalWo.has(String(wo.status ?? "").toUpperCase())) {
+    const err = new Error("Cannot pause a closed or terminal work order.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  // Idempotent: already paused/blocked — refresh reason/remarks without duplicating side effects.
+  if (wo.productionExecution?.executionStatus === "BLOCKED") {
+    const execution = await tx.workOrderProductionExecution.update({
+      where: { workOrderId },
+      data: {
+        blockReason,
+        blockRemarks: remarks?.trim() || null,
+      },
+    });
+    return {
+      execution,
+      summary: await computeExecutionSummary(tx, { ...wo, productionExecution: execution }),
+      alreadyBlocked: true,
+    };
+  }
 
   const summary = await computeExecutionSummary(tx, wo);
   if (summary.remainderQty <= EPS && summary.producedQty <= EPS) {
@@ -389,6 +413,25 @@ async function blockProductionExecution(tx, workOrderId, { blockReason, remarks,
 async function resumeProductionExecution(tx, workOrderId, { actorUserId, actorRole }) {
   const wo = await loadNoQtyExecutionContext(tx, workOrderId);
   const exec = wo.productionExecution;
+  const terminalWo = new Set(["COMPLETED", "REJECTED", "CLOSED_WITH_SHORTFALL", "CANCELLED", "CLOSED"]);
+  if (terminalWo.has(String(wo.status ?? "").toUpperCase())) {
+    const err = new Error("Cannot resume a closed or terminal work order.");
+    err.statusCode = 409;
+    throw err;
+  }
+  if (exec?.executionStatus === "COMPLETED") {
+    const err = new Error("Cannot resume a finalized production execution.");
+    err.statusCode = 409;
+    throw err;
+  }
+  // Idempotent: already running after resume.
+  if (exec?.executionStatus === "RUNNING") {
+    return {
+      execution: exec,
+      summary: await computeExecutionSummary(tx, wo),
+      alreadyResumed: true,
+    };
+  }
   if (!exec || exec.executionStatus !== "BLOCKED") {
     const err = new Error("Only blocked production execution can be resumed.");
     err.statusCode = 409;
@@ -425,26 +468,28 @@ async function resumeProductionExecution(tx, workOrderId, { actorUserId, actorRo
 }
 
 /**
- * After an approved NO_QTY batch: mark execution SHORTFALL_PENDING when the batch triggers
- * the less-than-WO shortfall decision (same rule as frontend completion evaluate).
+ * After an approved shop-floor batch: mark execution SHORTFALL_PENDING when the WO
+ * quantity balance is exhausted (equal or extra within RM cap) so the mandatory
+ * Production Report is required before close. Pause (BLOCKED) and partial CONTINUE
+ * leave this helper as a no-op. Explicit End-with-Shortage already sets the same status.
+ *
+ * `approvedBatchQty` is retained for call-site compatibility; post-approve summary is authoritative.
  */
-async function syncShortfallPendingAfterProductionApprove(tx, workOrderId, approvedBatchQty) {
+async function syncShortfallPendingAfterProductionApprove(tx, workOrderId, _approvedBatchQty) {
   const wo = await loadNoQtyExecutionContext(tx, workOrderId);
   if (isGreenLevelWorkOrder(wo)) {
     return wo.productionExecution ?? (await ensureProductionExecutionRecord(tx, workOrderId));
   }
   const exec = wo.productionExecution ?? (await ensureProductionExecutionRecord(tx, workOrderId));
   if (exec.executionStatus === "COMPLETED" || exec.executionStatus === "BLOCKED") return exec;
+  if (exec.executionStatus === "SHORTFALL_PENDING") return exec;
 
   const summary = await computeExecutionSummary(tx, { ...wo, productionExecution: exec });
-  if (summary.producedQty <= EPS || summary.remainderQty <= EPS || (summary.surplusQty ?? 0) > EPS) {
-    return exec;
-  }
+  if (summary.producedQty <= EPS) return exec;
 
-  const batchQty = round3(n(approvedBatchQty));
-  if (!(batchQty + EPS >= summary.remainderQty)) return exec;
-
-  if (exec.executionStatus === "SHORTFALL_PENDING") return exec;
+  // Plan met / extra (remainder 0) → Production Report Pending. Partial CONTINUE keeps RUNNING.
+  const planMetOrExtra = summary.remainderQty <= EPS || (summary.surplusQty ?? 0) > EPS;
+  if (!planMetOrExtra) return exec;
 
   return tx.workOrderProductionExecution.update({
     where: { workOrderId },
@@ -507,17 +552,10 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
   const summaryPreview = await computeExecutionSummary(tx, wo);
 
   if (wo.productionExecution?.executionStatus === "BLOCKED") {
-    const allowPausedShortfallClose =
-      shortfallOutcome &&
-      FINISH_OUTCOMES.includes(shortfallOutcome) &&
-      summaryPreview.remainderQty > EPS &&
-      summaryPreview.producedQty > EPS;
-    if (!allowPausedShortfallClose) {
-      const err = new Error("Production execution is blocked. Resume production before finishing.");
-      err.statusCode = 409;
-      err.code = "WO_EXEC_BLOCKED";
-      throw err;
-    }
+    const err = new Error("Production execution is paused. Resume production before preparing or confirming the final report.");
+    err.statusCode = 409;
+    err.code = "WO_EXEC_BLOCKED";
+    throw err;
   }
 
   const summary = summaryPreview;
@@ -529,7 +567,8 @@ async function finishProductionExecution(tx, workOrderId, input, { actorUserId, 
     throw err;
   }
 
-  // Full production or surplus — no shortfall remainder
+  // Production execution always closes through the mandatory RM Production
+  // Report boundary. Entry approval, pause, resume and QC may never bypass it.
   await assertProductionReportConfirmedForExecution(tx, workOrderId);
 
   if (summary.remainderQty <= EPS) {
@@ -806,19 +845,9 @@ async function getProductionExecutionSummary(db, workOrderId) {
       },
     });
   }
-  if (supportsShopFloorExecutionWorkOrder(wo, wo.salesOrder) && wo.productionExecution) {
-    await db.$transaction(async (tx) => {
-      await reconcileShortfallPendingStatus(tx, wo);
-    });
-    wo = await db.workOrder.findUnique({
-      where: { id: workOrderId },
-      include: {
-        lines: { include: { fgItem: { select: { id: true, itemName: true } } } },
-        salesOrder: { select: { id: true, docNo: true, orderType: true, customerId: true } },
-        productionExecution: true,
-      },
-    });
-  }
+  // Read paths must never manufacture a remaining-balance decision from quantity
+  // heuristics. Legacy reconciliation is diagnostic-only; new dispositions are
+  // persisted atomically with draft finalization.
   return computeExecutionSummary(db, wo);
 }
 

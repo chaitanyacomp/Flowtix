@@ -82,8 +82,10 @@ describe("pendingActionsWorkBuckets", () => {
 
   it("workspace list href strips document-specific query params", () => {
     expect(
-      pendingActionWorkspaceListHref("/material-issue?returnTo=pending-actions&workOrderId=101"),
-    ).toBe("/material-issue?returnTo=pending-actions");
+      pendingActionWorkspaceListHref(
+        "/material-issue?bucket=readyToIssue&returnTo=pending-actions&workOrderId=101&pmrId=9",
+      ),
+    ).toBe("/material-issue?bucket=readyToIssue&returnTo=pending-actions&from=pending-actions");
     expect(pendingActionWorkspaceListHref("/dispatch?salesOrderId=42&source=pending-actions")).toBe(
       "/dispatch?source=pending-actions",
     );
@@ -185,23 +187,31 @@ describe("pendingActionsWorkBuckets", () => {
     expect(multi[0]?.openLabel).toBe("Open List");
   });
 
-  it("production pending buckets deep-link workspace list with scoped bucket filter", () => {
+  it("production pending buckets deep-link workspace overview with bucket filter (no SO/cycle/WO pin)", () => {
     const ready = groupPendingActionsIntoWorkBuckets([
       row({
         id: "a",
         action: "Ready to Start Production",
-        documentNo: "WO-26-0001",
-        href: "/production?from=pending-actions&workOrderId=1&flow=REGULAR_SO&salesOrderId=5",
+        documentNo: "WO-26-0003",
+        href: "/production?from=pending-actions&workOrderId=3&flow=NO_QTY&salesOrderId=245&cycleId=12&source=no_qty_so",
       }),
       row({
         id: "b",
         action: "Ready to Start Production",
-        documentNo: "WO-26-0002",
-        href: "/production?from=pending-actions&workOrderId=2&flow=REGULAR_SO&salesOrderId=5",
+        documentNo: "WO-26-0004",
+        href: "/production?from=pending-actions&workOrderId=4&flow=NO_QTY&salesOrderId=245&cycleId=12&source=no_qty_so",
       }),
     ]);
-    expect(ready[0]?.listHref).toContain("productionBucket=readyToStart");
     expect(ready[0]?.openLabel).toBe("Open Production Workspace");
+    expect(ready[0]?.openHref).toContain("productionBucket=readyToStart");
+    expect(ready[0]?.openHref).toContain("pwSection=ready");
+    expect(ready[0]?.openHref).toContain("from=pending-actions");
+    expect(ready[0]?.openHref).toContain("returnTo=pending-actions");
+    expect(ready[0]?.openHref).not.toContain("workOrderId=");
+    expect(ready[0]?.openHref).not.toContain("salesOrderId=");
+    expect(ready[0]?.openHref).not.toContain("cycleId=");
+    expect(ready[0]?.openHref).not.toContain("flow=");
+    expect(ready[0]?.openHref).not.toContain("source=no_qty_so");
 
     const cont = groupPendingActionsIntoWorkBuckets([
       row({
@@ -218,8 +228,28 @@ describe("pendingActionsWorkBuckets", () => {
       }),
     ]);
     expect(cont[0]?.listHref).toContain("productionBucket=inProgress");
-    expect(cont[0]?.listHref).toContain("flow=NO_QTY");
+    expect(cont[0]?.listHref).toContain("pwSection=active");
+    expect(cont[0]?.listHref).not.toContain("flow=NO_QTY");
     expect(cont[0]?.openLabel).toBe("Open Production Workspace");
+  });
+
+  it("single Ready to Start Production item opens Ready tab with focused card (not scoped process)", () => {
+    const single = groupPendingActionsIntoWorkBuckets([
+      row({
+        id: "one",
+        action: "Ready to Start Production",
+        documentNo: "WO-26-0004",
+        href: "/production?from=pending-actions&workOrderId=4&workOrderLineId=10&flow=NO_QTY&salesOrderId=245&cycleId=12&source=no_qty_so",
+      }),
+    ]);
+    expect(single[0]?.openLabel).toBe("Open Production Workspace");
+    expect(single[0]?.openHref).toContain("pwSection=ready");
+    expect(single[0]?.openHref).toContain("pwFocus=4");
+    expect(single[0]?.openHref).toContain("productionBucket=readyToStart");
+    expect(single[0]?.openHref).toContain("from=pending-actions");
+    expect(single[0]?.openHref).toContain("returnTo=pending-actions");
+    expect(single[0]?.openHref).not.toContain("workOrderId=");
+    expect(single[0]?.openHref).not.toContain("source=no_qty_so");
   });
 
   it("resolvePendingActionGroupKey normalizes dispatch labels", () => {

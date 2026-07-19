@@ -27,9 +27,13 @@ function row(partial: Partial<DashboardProductionStatusSource> = {}): DashboardP
 }
 
 describe("operationalStatusFromProductionRow — REGULAR", () => {
-  it("labels partially produced when produced and balance remain", () => {
+  it("labels Continue when produced and balance remain (entry QC does not override)", () => {
     const s = operationalStatusFromProductionRow(row({ producedQty: 40, balanceQty: 60 }));
-    expect(s.label).toBe("Partially Produced");
+    expect(s.label).toBe("Continue");
+    const withQc = operationalStatusFromProductionRow(
+      row({ producedQty: 2000, balanceQty: 3000, hasPendingQc: true, nextAction: "PRODUCTION_PENDING" }),
+    );
+    expect(withQc.label).toBe("Continue");
   });
 
   it("labels HOLD as on hold instead of running production", () => {
@@ -105,6 +109,7 @@ describe("operationalStatusFromProductionRow — NO_QTY", () => {
       producedQty: 8000,
       balanceQty: 2000,
       nextAction: "NEXT_RS_REQUIRED",
+      productionExecutionStatus: "COMPLETED",
       cycleNo: 1,
     });
     const wo168 = noQty({
@@ -136,7 +141,7 @@ describe("operationalStatusFromProductionRow — NO_QTY", () => {
     expect(s.tone).toBe("partial");
   });
 
-  it("uses QC Pending for NO_QTY and Green Level rows awaiting QC", () => {
+  it("uses QC Pending for NO_QTY and Green Level rows awaiting QC only when no remaining balance", () => {
     const noQtyQc = noQty({ hasPendingQc: true, nextAction: "QC_PENDING", producedQty: 500, balanceQty: 0 });
     expect(operationalStatusFromProductionRow(noQtyQc, [noQtyQc]).label).toBe("QC Pending");
 
@@ -148,6 +153,17 @@ describe("operationalStatusFromProductionRow — NO_QTY", () => {
       balanceQty: 0,
     });
     expect(operationalStatusFromProductionRow(greenQc, [greenQc]).label).toBe("QC Pending");
+  });
+
+  it("NO_QTY partial with Pending QC and remaining balance is Continue (not QC Pending)", () => {
+    const r = noQty({
+      hasPendingQc: true,
+      nextAction: "PRODUCTION_PENDING",
+      producedQty: 2000,
+      balanceQty: 3000,
+      productionExecutionStatus: "RUNNING",
+    });
+    expect(operationalStatusFromProductionRow(r, [r]).label).toBe("Continue");
   });
 });
 
@@ -163,6 +179,7 @@ describe("buildDashboardProductionStatusRows", () => {
       producedQty: 8000,
       balanceQty: 2000,
       nextAction: "NEXT_RS_REQUIRED",
+      productionExecutionStatus: "COMPLETED",
       cycleNo: 1,
     });
     const wo168 = row({
@@ -197,6 +214,8 @@ describe("summarizeDashboardProductionAttention", () => {
       producedQty: 8000,
       balanceQty: 2000,
       nextAction: "NEXT_RS_REQUIRED",
+      productionExecutionStatus: "COMPLETED",
+      cycleNo: 1,
     });
     const wo168 = row({
       workOrderId: 168,
@@ -206,6 +225,7 @@ describe("summarizeDashboardProductionAttention", () => {
       producedQty: 0,
       balanceQty: 5000,
       nextAction: "PRODUCTION_PENDING",
+      cycleNo: 2,
     });
     const s = summarizeDashboardProductionAttention([wo167, wo168]);
     expect(s.activeWorkOrderCount).toBe(1);

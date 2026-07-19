@@ -17,6 +17,7 @@ import {
   dispatchBacklogLeadCellClass,
   dispatchBacklogRowEmphasis,
   dispatchBacklogStatusTone,
+  filterActionableDispatchBacklogRows,
 } from "../lib/dispatchBacklog";
 import { getDrillRowProps, salesOrdersFocusHref, withReportsReturnContext } from "../lib/drillDownRoutes";
 import { useDrillActivable } from "../hooks/useDrillAccess";
@@ -33,7 +34,6 @@ import {
 type Customer = { id: number; name: string };
 type StatusFilter = "ALL" | "APPROVED" | "IN_PROCESS";
 type SortKey = "date" | "pending";
-const PENDING_QTY_EPS = 1e-6;
 
 const DEFAULT_SORT_KEY: SortKey = "date";
 const DEFAULT_SORT_DIR: "asc" | "desc" = "asc";
@@ -109,7 +109,8 @@ export function DispatchBacklogReportPage() {
     deps: [],
     fetcher: (signal) =>
       apiFetch<DispatchBacklogRow[]>("/api/dashboard/dispatch-backlog", { signal }).then((raw) =>
-        (Array.isArray(raw) ? raw : []).filter((r) => Number(r.pendingQty ?? 0) > PENDING_QTY_EPS),
+        // Align with Dispatch Workspace prepare-headroom: never count blocked zero-dispatchable lines.
+        filterActionableDispatchBacklogRows(Array.isArray(raw) ? raw : []),
       ),
   });
 

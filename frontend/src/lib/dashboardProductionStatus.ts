@@ -8,9 +8,16 @@ import {
   noQtyOperatorPendingQtyFromRow,
 } from "./noQtyShortagePresentation";
 import { mapQueueReadinessToOperationalPresentation } from "./workOrderReadinessUx";
+import { canAcceptNewProductionEntry } from "./productionActiveEligibility";
 
 /** Minimal production-queue row shape for dashboard live status (from /api/dashboard/production-queue). */
 export type DashboardProductionStatusSource = {
+  productionWorkState?: "READY_TO_START" | "CONTINUE_PRODUCTION" | "PAUSED_PRODUCTION" | null;
+  hasOpenDraft?: boolean;
+  openDraftProductionId?: number | null;
+  itemCode?: string | null;
+  /** Reserved for the future machine-assignment read model; never inferred client-side. */
+  machineLabel?: string | null;
   workOrderId: number;
   workOrderNo: string;
   workOrderLineId?: number;
@@ -34,6 +41,8 @@ export type DashboardProductionStatusSource = {
   sourceType?: string | null;
   nextAction?: string | null;
   hasPendingQc?: boolean;
+  pendingQcEntryCount?: number;
+  pendingQcQty?: number;
   dispatchableQty?: number;
   /** NO_QTY carry-forward shortfall keyed to planning pointer (informational). */
   lastShortageQty?: number;
@@ -46,6 +55,13 @@ export type DashboardProductionStatusSource = {
   rmReadyForProduction?: boolean | null;
   /** Backend-owned CTA label from production-queue (`deriveProductionQueueActionLabel`). */
   actionLabel?: string | null;
+  /**
+   * Backend canonical flag: WO line may accept a new production entry.
+   * When omitted, frontend `assessProductionEntryEligibility` derives the same rule.
+   */
+  canAcceptProductionEntry?: boolean | null;
+  /** Pause / block timestamp when WO is PAUSED or execution BLOCKED. */
+  pausedAt?: string | null;
 };
 
 export type ProductionOperationalStatusTone =
@@ -74,8 +90,16 @@ export type DashboardProductionStatusRow = DashboardProductionStatusSource & {
   erpAdjustedPlanningQty: number;
   progressPct: number;
   showProgressBar: boolean;
-  /** False when no operator action remains (e.g. shortage already on a later WO). */
+  /**
+   * Broader operator-actionable flag (Work Order Workspace sectioning, Next Cycle, etc.).
+   * False when shortage already moved to a later WO / shortfall closed.
+   */
   countsAsActive: boolean;
+  /**
+   * Production Workspace Active Production only — true when the WO can accept a new production entry.
+   * Never derived from plannedQty − producedQty alone.
+   */
+  countsAsActiveProduction: boolean;
   sortRank: number;
 };
 
@@ -123,7 +147,7 @@ function soItemKey(row: DashboardProductionStatusSource): string | null {
   return `${soId}:${itemId}`;
 }
 
-/** Build cross-row index to detect later cycle / WO for the same SO line. */
+/** Build cross-row index used only to corroborate an explicit finalized carry-forward. */
 export function buildNoQtyCarryContext(rows: DashboardProductionStatusSource[]): NoQtyCarryContext {
   const bySoItem = new Map<string, NoQtyPeer[]>();
   for (const r of rows) {
@@ -137,7 +161,7 @@ export function buildNoQtyCarryContext(rows: DashboardProductionStatusSource[]):
   return { bySoItem };
 }
 
-/** True when a later WO or higher cycle exists for this SO+item (shortage moved forward). */
+/** A same-cycle sibling WO is never carry-forward evidence. */
 export function noQtyShortageAbsorbedByLaterRow(
   row: DashboardProductionStatusSource,
   ctx: NoQtyCarryContext | null | undefined,
@@ -149,10 +173,16 @@ export function noQtyShortageAbsorbedByLaterRow(
   if (!peers || peers.length < 2) return false;
   const myWo = row.workOrderId;
   const myCycle = Number(row.cycleNo ?? 0);
+  const exec = String(row.productionExecutionStatus ?? "").trim().toUpperCase();
+  const next = String(row.nextAction ?? "").trim().toUpperCase();
+  const woStatus = String(row.status ?? "").trim().toUpperCase();
+  const hasExplicitFinalShortfall =
+    woStatus === "CLOSED_WITH_SHORTFALL" ||
+    (exec === "COMPLETED" && next === "NEXT_RS_REQUIRED");
+  if (!hasExplicitFinalShortfall || myCycle <= 0) return false;
   return peers.some((p) => {
     if (p.workOrderId === myWo) return false;
-    if (p.workOrderId > myWo) return true;
-    return myCycle > 0 && p.cycleNo > myCycle;
+    return p.cycleNo > myCycle;
   });
 }
 
@@ -215,12 +245,29 @@ function effectiveProductionHref(row: DashboardProductionStatusSource): string |
  */
 function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): ProductionOperationalStatus {
   const next = String(row.nextAction ?? "").trim().toUpperCase();
+  const producedEarly = Number(row.producedQty ?? 0);
+  const remainingEarly = Math.max(0, Number(row.balanceQty ?? 0));
   if (next) {
     // REGULAR does not use Next Cycle framing — keep historical Partially Produced for NEXT_RS.
     if (next === "NEXT_RS_REQUIRED") {
       return { label: "Partially Produced", tone: "partial" };
     }
+    // Entry QC with executable remaining balance → Continue (not QA-in-progress for the whole WO).
+    if (
+      (row.hasPendingQc || next === "QC_PENDING") &&
+      remainingEarly > ROW_NUM_EPS &&
+      (next === "PRODUCTION_PENDING" || next === "PRODUCTION_DRAFT_REVIEW" || producedEarly > ROW_NUM_EPS)
+    ) {
+      return { label: "Continue", tone: "partial" };
+    }
     const mapped = mapQueueReadinessToOperationalPresentation(row);
+    if (
+      (mapped.label === "QA in progress" || mapped.label === "QC Pending") &&
+      remainingEarly > ROW_NUM_EPS &&
+      producedEarly > ROW_NUM_EPS
+    ) {
+      return { label: "Continue", tone: "partial" };
+    }
     // Preserve prior REGULAR nuance: READY_FOR_PRODUCTION gate with zero produced → Partial RM at Production
     if (
       mapped.label === "Ready for Production" &&
@@ -262,14 +309,15 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
   if (gate != null && !rmReady && produced <= ROW_NUM_EPS) {
     return { label: "Waiting for Production", tone: "running" };
   }
-  if (row.hasPendingQc) {
+  // Entry QC must not replace WO execution status when remaining capacity is executable.
+  if (row.hasPendingQc && remaining <= ROW_NUM_EPS) {
     return { label: "QC Pending", tone: "qc" };
   }
   if (dispatchable > ROW_NUM_EPS && route === "dispatch") {
     return { label: "Waiting Dispatch", tone: "dispatch" };
   }
   if (produced > ROW_NUM_EPS && remaining > ROW_NUM_EPS) {
-    return { label: "Partially Produced", tone: "partial" };
+    return { label: "Continue", tone: "partial" };
   }
   if (produced <= ROW_NUM_EPS) {
     const canStart =
@@ -313,16 +361,30 @@ function operationalStatusFromNoQtyRow(
     return { label: "Shortfall Closed", tone: "idle" };
   }
 
-  if (next === "QC_PENDING" || row.hasPendingQc || route === "qc") {
-    return { label: "QC Pending", tone: "qc" };
-  }
+  const execStatus = String(row.productionExecutionStatus ?? "").toUpperCase();
 
-  if (produced > ROW_NUM_EPS && remaining > ROW_NUM_EPS && absorbed) {
+  // Finalized shortfall / later-WO absorption is terminal for production even when QC remains.
+  if (produced > ROW_NUM_EPS && (remaining > ROW_NUM_EPS || execStatus === "COMPLETED") && absorbed) {
     return {
       label: "Carried Forward",
       tone: "carriedForward",
       contextHint: "Shortage moved to next RS/WO",
     };
+  }
+
+  if (execStatus === "COMPLETED") {
+    if (next === "QC_PENDING" || row.hasPendingQc || route === "qc") {
+      return { label: "QC Pending", tone: "qc" };
+    }
+    return { label: "Production Complete", tone: "idle" };
+  }
+
+  // Entry-level QC with remaining balance → Continue (not WO-level QC Pending).
+  if ((next === "QC_PENDING" || row.hasPendingQc || route === "qc") && remaining <= ROW_NUM_EPS) {
+    return { label: "QC Pending", tone: "qc" };
+  }
+  if (row.hasPendingQc && remaining > ROW_NUM_EPS && produced > ROW_NUM_EPS) {
+    return { label: "Continue", tone: "running" };
   }
 
   if (next) {
@@ -397,11 +459,11 @@ function operationalStatusFromGreenLevelRow(row: DashboardProductionStatusSource
   if (woStatus === "CLOSED_WITH_SHORTFALL") {
     return { label: "Shortfall Closed", tone: "idle" };
   }
-  if (row.hasPendingQc) {
+  if (row.hasPendingQc && remaining <= ROW_NUM_EPS) {
     return { label: "QC Pending", tone: "qc" };
   }
   if (produced > ROW_NUM_EPS && remaining > ROW_NUM_EPS) {
-    return { label: "Continue Production", tone: "running" };
+    return { label: "Continue", tone: "running" };
   }
   if (produced <= ROW_NUM_EPS) {
     if (woStatus === "IN_PROGRESS" || woStatus === "PENDING") {
@@ -434,6 +496,7 @@ export function productionStatusShowsProgressBar(tone: ProductionOperationalStat
   return tone !== "carryForward" && tone !== "carriedForward";
 }
 
+/** Broader actionable flag for Work Order Workspace (not Active Production eligibility). */
 export function productionStatusCountsAsActive(status: ProductionOperationalStatus): boolean {
   if (status.label === "Carried Forward" || status.label === "Shortfall Closed") return false;
   return true;
@@ -510,20 +573,25 @@ export function buildDashboardProductionStatusRows(
       progressPct,
       showProgressBar: productionStatusShowsProgressBar(operationalStatus.tone),
       countsAsActive: productionStatusCountsAsActive(operationalStatus),
+      countsAsActiveProduction: canAcceptNewProductionEntry({
+        ...r,
+        absorbedByLaterWo: isNoQtyOrder(r.orderType) ? noQtyShortageAbsorbedByLaterRow(r, noQtyCtx) : false,
+      }),
       sortRank: 0,
     };
     rowEnriched.sortRank = sortRankForRow(rowEnriched);
     return rowEnriched;
   });
 
-  const active = enriched.filter((r) => r.countsAsActive);
+  const activeProduction = enriched.filter((r) => r.countsAsActiveProduction);
   const carriedForward = enriched.filter((r) => r.operationalStatus.label === "Carried Forward");
-  const activeWorkOrderCount = new Set(active.map((r) => r.workOrderId)).size;
+  const activeWorkOrderCount = new Set(activeProduction.map((r) => r.workOrderId)).size;
 
-  const displaySorted = [...active].sort(compareRowsForDisplay);
+  const displaySorted = [...activeProduction].sort(compareRowsForDisplay);
 
-  const activeCount = active.length;
+  const activeCount = activeProduction.length;
   return {
+    /** Active Production list — only WOs that can accept a new production entry. */
     visible: displaySorted.slice(0, limit),
     all: enriched,
     activeCount,

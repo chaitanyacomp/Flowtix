@@ -6,7 +6,9 @@ import {
   buildWastageRemainingToClassifyMessage,
   computeWastageClassificationBalance,
   isWastageClassificationComplete,
+  productionReportLeaveWarningMessage,
   remainingWastageAfterRow,
+  shouldBlockLeaveProductionReport,
   sumWastageDetailDraftQty,
   suggestNextWastageTypeId,
   suggestWastageQtyForTypeSelection,
@@ -126,5 +128,51 @@ describe("productionWastageClassification", () => {
   it("formats mismatch message with totals", () => {
     expect(buildWastageClassificationMismatchMessage(2.85, 2.3, "Kg")).toContain("Classify remaining 0.55 Kg");
     expect(sumWastageDetailDraftQty([{ key: "a", wastageTypeId: 1, qty: "1.2", remarks: "" }])).toBe(1.2);
+  });
+
+  it("blocks leave when wastage classification is incomplete even if draft is not locally dirty", () => {
+    const incompleteRows = [{ key: "a", wastageTypeId: 1, qty: "1", remarks: "" }];
+    expect(
+      shouldBlockLeaveProductionReport({
+        confirmed: false,
+        localDirty: false,
+        totalWastageQty: 2.85,
+        wastageRows: incompleteRows,
+      }),
+    ).toBe(true);
+    expect(
+      shouldBlockLeaveProductionReport({
+        confirmed: false,
+        localDirty: true,
+        totalWastageQty: 0,
+        wastageRows: [],
+      }),
+    ).toBe(true);
+    expect(
+      shouldBlockLeaveProductionReport({
+        confirmed: false,
+        localDirty: false,
+        totalWastageQty: 2,
+        wastageRows: [
+          { key: "a", wastageTypeId: 1, qty: "1", remarks: "" },
+          { key: "b", wastageTypeId: 2, qty: "1", remarks: "" },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      shouldBlockLeaveProductionReport({
+        confirmed: true,
+        localDirty: true,
+        totalWastageQty: 2.85,
+        wastageRows: incompleteRows,
+      }),
+    ).toBe(false);
+    expect(
+      productionReportLeaveWarningMessage({
+        localDirty: false,
+        totalWastageQty: 2.85,
+        wastageRows: incompleteRows,
+      }),
+    ).toMatch(/WO will not be closed/i);
   });
 });

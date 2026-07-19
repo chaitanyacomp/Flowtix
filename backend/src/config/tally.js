@@ -32,6 +32,9 @@ const TALLY_LEDGER_PATTERNS = {
   inputIgstPrefix: "Input IGST",
 };
 
+const TALLY_TRANSPORTATION_LEDGER = String(process.env.TALLY_TRANSPORTATION_LEDGER || "").trim() || null;
+const TALLY_ROUND_OFF_LEDGER = String(process.env.TALLY_ROUND_OFF_LEDGER || "Round Off").trim();
+
 /**
  * Tally invoice-mode inventory defaults (see Tally sample XML for Sales Invoice View).
  * Used when company has batch/godown disabled — Tally still expects these placeholder names.
@@ -41,5 +44,5 @@ const TALLY_INVENTORY_DEFAULTS = {
   batchName: "Primary Batch",
 };
 
-module.exports = { TALLY_LEDGER_NAMES, TALLY_LEDGER_PATTERNS, TALLY_INVENTORY_DEFAULTS };
+module.exports = { TALLY_LEDGER_NAMES, TALLY_LEDGER_PATTERNS, TALLY_INVENTORY_DEFAULTS, TALLY_TRANSPORTATION_LEDGER, TALLY_ROUND_OFF_LEDGER };
 

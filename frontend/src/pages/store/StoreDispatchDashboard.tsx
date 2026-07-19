@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Boxes, ChevronRight, ClipboardList, PackageMinus, PackageSearch, Truck } from "lucide-react";
+import { Boxes, ChevronRight, ClipboardList, Factory, PackageMinus, PackageSearch, Truck } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { buttonVariants } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
@@ -26,6 +26,7 @@ import type { ResolvedNoQtyContinuation } from "../../lib/noQtyDashboardContinua
 import { erpKpi } from "../../lib/erpFoundationTokens";
 import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../../hooks/useErpRefreshTick";
 import { useRouteActive } from "../../hooks/useRouteActive";
+import { useUrlQueryState } from "../../hooks/useUrlQueryState";
 import { useStoreDashboardOperationalData } from "../../hooks/useStoreDashboardOperationalData";
 import {
   computeNoQtyExecutionSummaryMetrics,
@@ -47,6 +48,10 @@ import {
 import { StoreNoQtyExecutionSummaryCard } from "../../components/erp/StoreNoQtyExecutionSummaryCard";
 import { StoreRmccSummaryCard } from "../../components/erp/StoreRmccSummaryCard";
 import { StoreProcurementMonitor } from "../../components/erp/StoreProcurementMonitor";
+import { StoreProductionMonitorPanel } from "../../components/erp/store/StoreProductionMonitorPanel";
+
+const STORE_TAB_OMIT = { storeTab: "operations" } as const;
+type StoreDashboardTab = "operations" | "production-monitor";
 
 const DASH_SHELL = dashboardShell.page;
 const DASH_MAX = dashboardShell.max;
@@ -148,12 +153,22 @@ export function StoreDispatchDashboard({
   const navigate = useNavigate();
   const toast = useToast();
   const isDashboardRoute = useRouteActive("/dashboard");
+  const { read, patch } = useUrlQueryState(STORE_TAB_OMIT);
+  const storeTab = read.enum("storeTab", ["operations", "production-monitor"] as const, "operations");
+  const setStoreTab = React.useCallback(
+    (tab: StoreDashboardTab) => {
+      patch({ storeTab: tab === "operations" ? null : tab });
+    },
+    [patch],
+  );
   const internalTick = useErpRefreshTick(["dashboard"], {
     pollIntervalMs: ERP_DASHBOARD_POLL_MS,
     enabled: isDashboardRoute && refreshTick == null,
   });
   const liveTick = refreshTick ?? internalTick;
-  const operational = useStoreDashboardOperationalData(liveTick, { enabled: isDashboardRoute });
+  const operational = useStoreDashboardOperationalData(liveTick, {
+    enabled: isDashboardRoute && storeTab === "operations",
+  });
 
   const executionMetrics = React.useMemo(
     () => computeNoQtyExecutionSummaryMetrics(operational.inboxRows),
@@ -236,7 +251,7 @@ export function StoreDispatchDashboard({
             ) : null}
           </div>
 
-          {pendingActions ? (
+          {pendingActions && storeTab === "operations" ? (
             <PendingActionsDashboardCard
               count={pendingActions.count}
               loading={pendingActions.loading}
@@ -244,8 +259,21 @@ export function StoreDispatchDashboard({
             />
           ) : null}
 
-          <div className="erp-op-workspace-primary erp-card-surface flex flex-col gap-1 rounded-lg border border-slate-200/90 px-2.5 py-1.5 shadow-sm">
+          <div
+            className="erp-op-workspace-primary erp-card-surface flex flex-col gap-1 rounded-lg border border-slate-200/90 px-2.5 py-1.5 shadow-sm"
+            role="tablist"
+            aria-label="Store Operations workspace tabs"
+          >
             <div className="flex flex-wrap items-center gap-1.5">
+            <ErpActionButton
+              tier={storeTab === "operations" ? "primary" : "tertiary"}
+              className="gap-1.5"
+              data-testid="store-tab-operations"
+              aria-selected={storeTab === "operations"}
+              onClick={() => setStoreTab("operations")}
+            >
+              Operations
+            </ErpActionButton>
             <ErpActionButton
               tier="primary"
               className="gap-1.5"
@@ -279,6 +307,16 @@ export function StoreDispatchDashboard({
               Material Issue
             </ErpActionButton>
             <ErpActionButton
+              tier={storeTab === "production-monitor" ? "primary" : "tertiary"}
+              className={cn("gap-1.5", storeTab === "production-monitor" && "ring-2 ring-blue-300")}
+              data-testid="store-quick-production-monitor"
+              aria-selected={storeTab === "production-monitor"}
+              onClick={() => setStoreTab("production-monitor")}
+            >
+              <Factory className="h-3.5 w-3.5" aria-hidden />
+              Production Monitor
+            </ErpActionButton>
+            <ErpActionButton
               tier="primary"
               className="gap-1.5"
               data-testid="store-quick-dispatch"
@@ -307,13 +345,19 @@ export function StoreDispatchDashboard({
               Stock
             </ErpActionButton>
             </div>
-            {!rmccQuickActionAvailable && !operational.initialLoading ? (
+            {!rmccQuickActionAvailable && !operational.initialLoading && storeTab === "operations" ? (
               <p className="text-[10px] leading-snug text-slate-500" data-testid="store-quick-rmcc-hint">
                 {STORE_RMCC_UNAVAILABLE_HINT}
               </p>
             ) : null}
           </div>
 
+          {storeTab === "production-monitor" ? (
+            <StoreProductionMonitorPanel refreshTick={liveTick} />
+          ) : null}
+
+          {storeTab === "operations" ? (
+          <>
           <div className="max-w-full overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <ErpKpiStrip
               className={erpKpi.stripCompact}
@@ -449,18 +493,22 @@ export function StoreDispatchDashboard({
               <CardHeader className="border-b border-slate-100 p-2.5 pb-2">
                 <CardTitle className="flex items-center gap-2 text-[14px] font-bold text-slate-900">
                   <Truck className="h-4 w-4 text-slate-600" aria-hidden />
-                  Dispatch backlog
+                  Prepare headroom
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 p-2.5 pt-2">
                 {dispatchBacklogCount === 0 && backlogPreview.length === 0 ? (
-                  <ErpEmptyState variant="inline" title="No dispatch backlog" body="Lines in dispatch prep will appear here." />
+                  <ErpEmptyState
+                    variant="inline"
+                    title="No prepare headroom"
+                    body="Blocked lines with zero dispatchable qty stay in Dispatch Workspace under Cannot prepare now — they are not backlog."
+                  />
                 ) : (
                   <>
                     {dispatchBacklogCount > 0 ? (
                       <StoreDashCard
-                        title="Dispatch backlog"
-                        detail={`${dispatchBacklogCount} line(s) in dispatch prep`}
+                        title="Prepare headroom"
+                        detail={`${dispatchBacklogCount} line(s) with positive dispatchable qty`}
                         actionLabel="Open dispatch"
                         href="/dispatch?source=dashboard"
                         navState={dashboardDispatchNav}
@@ -468,10 +516,10 @@ export function StoreDispatchDashboard({
                     ) : null}
                     {backlogPreview.length > 0 ? (
                       <div className="erp-op-workspace-secondary rounded-md border border-slate-200/90 bg-slate-50/80 px-2 py-1.5">
-                        <div className="text-[10px] font-semibold text-slate-600">Recent dispatch-ready lines</div>
+                        <div className="text-[10px] font-semibold text-slate-600">Lines with prepare headroom</div>
                         <ul className="mt-1 space-y-1 text-[11px] text-slate-800">
                           {backlogPreview.slice(0, 5).map((r) => (
-                            <li key={`${r.salesOrderId}-${r.salesOrderLineId}`} className="truncate">
+                            <li key={`${r.salesOrderId}-${r.salesOrderLineId ?? r.itemId}-${r.cycleId ?? "x"}`} className="truncate">
                               {displaySalesOrderNo(r.salesOrderId, r.salesOrderNo)} · {r.itemName} ·{" "}
                               <span className="tabular-nums font-medium">{formatQty(Number(r.dispatchableNow ?? 0))}</span>
                             </li>
@@ -484,6 +532,8 @@ export function StoreDispatchDashboard({
               </CardContent>
             </Card>
           </div>
+          </>
+          ) : null}
         </div>
       </div>
     </div>

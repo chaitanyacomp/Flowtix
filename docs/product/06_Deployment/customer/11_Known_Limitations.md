@@ -6,10 +6,13 @@
 | DB restore | Manual SQL restore only (no automated restore CLI) |
 | Cloud | LAN / local-server model only |
 | Roles | Product roles: ADMIN, STORE, PURCHASE, PRODUCTION, QA (demo personas map onto these) |
-| Forced password change | Operational policy; no first-login forced-change flag in v1.0.0 |
+| Forced password change | Admin → Settings → Users can reset passwords; first-login forced-change flag remains out of scope for v1.0.0 |
 | MSI / WiX | Inno Setup wrapper is the supported installer |
 | Licensing server | Offline LAN license enforcement not included in this milestone |
 | Demo seed | Creates masters + sample SOs; remaining workflow posts via UI |
 | Installer wizard vs bootstrap | Inno may report “installed” even if Batch 9 post-install fails — always confirm live `app\`/`web\`, `SETUP_EXIT=0`, and intact `releases\…\app\server.js` (FT-DEP-001 §35.4.1) |
+| Tally HTTP proxy | Not required when Tally and Flowtix backend run on the same PC and `http://localhost:9000` responds |
+| Packaged vs source runtime | Some Node patterns (source-relative `require.resolve`, bare `@prisma/client` Decimal) work in source but fail in `app/server.js` — see FT-DEP-001 §28.5.1; fixed in packaging v1.14.2 |
+| Tally import confirmation | Sales/Purchase Bill “exported” marks XML downloaded from Flowtix; operator must still import into Tally and confirm there |
 
 Fill site-specific notes in FT-DEP-013 when deploying.

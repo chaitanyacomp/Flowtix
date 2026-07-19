@@ -40,6 +40,7 @@
 | 1.0.9 | 2026-07-14 | FT ERP Product Team | §7.12 — NO_QTY close/FG PAs route to NO_QTY Agreements (never Regular Orders) |
 | 1.0.10 | 2026-07-14 | FT ERP Product Team | §7.12 / stage SSOT — Ready to Close only when assessNoQtySoClosure COMPLETE |
 | 1.0.11 | 2026-07-14 | FT ERP Product Team | Decision-only recovery cycle — zero-demand RS finalize after KEEP/WAIVE |
+| 1.0.12 | 2026-07-19 | FT ERP Product Team | §7.13 — RM Allowance Approval Pending Actions (Admin; async; no stock on approve) |
 
 **Supersedes:** None.
 
@@ -392,6 +393,24 @@ Once the return is submitted (`productionRmReturnPending.status = PENDING`):
 
 **Counts rule:** Dashboard badge, Pending Actions count, and API `actions[]` include **actionable** rows only.
 
+### 7.13 RM Allowance Approval (Material Issue — above 5% through 10%)
+
+Store owns **creation/submission** of an RM allowance approval request when Planned Process Allowance (Add Qty ÷ applicable BOM) is above 5% through 10%. Submission creates **no stock movement**. Store continues other WOs immediately (Approval Pending must never block the Material Issue workspace).
+
+| Surface | Role | Behavior |
+|---------|------|----------|
+| **Pending Actions (actionable)** | Admin only | Emit **RM Allowance Approval** for each `RmAllowanceApprovalRequest` in `PENDING_APPROVAL`, deep-linked to Pending Actions with `focus=rm-allowance-approval` + request id |
+| **Pending Actions (actionable)** | Store / Production | **SHALL NOT** receive this actionable PA |
+| **Material Issue side queue** | Store | Tabs: Ready to Issue · Partially Issued · Approval Pending · Approved · Rejected / Revision Required. Backend `issueQueueState` + allowance status drive classification. Approval-pending never appears in Ready |
+| **Pending Actions → Material Issue deep links** | Store | Canonical query `bucket=` values: `readyToIssue`, `partiallyIssued`, `approvalPending`, `approved`, `rejected`. Always include `from=pending-actions` and `returnTo=pending-actions`. **Open List** activates the bucket and shows that queue’s cards (no arbitrary WO preselect). **Open** (single) adds `workOrderId` + `pmrId` and loads that card. Mapping: Issue Material → `readyToIssue`; Continue RM Issue → `partiallyIssued`; RM Allowance Awaiting Admin → `approvalPending`; RM Allowance Approved → `approved`; RM Allowance Rejected → `rejected`. Stale targets reclassify to the correct bucket; never silent Ready fallback when another bucket was requested |
+| **Approve** | Admin | Status → `APPROVED` only — **does not** issue stock or reserve stock |
+| **Reject** | Admin | Status → `REJECTED`; rejection reason mandatory |
+| **Self-approve** | Admin who is also requester | **Forbidden** |
+
+**APIs:** `POST /api/rm-allowance-approvals` (STORE/ADMIN submit); `POST …/:id/approve` / `…/reject` (ADMIN); final issue via existing PMR Material Issue path with resolved approval fingerprint.
+
+**Counts rule:** Admin Pending Actions badge includes these rows while `PENDING_APPROVAL`. After Approve/Reject/Issue, rows leave the actionable inbox; history remains on `RmAllowanceApprovalRequest` + audit log.
+
 ### 7.12 NO_QTY close / FG disposition Pending Actions (navigation)
 
 Recovery/closure Pending Actions emitted by `fetchNoQtyRecoveryPendingActions` **SHALL NOT** deep-link to Regular Orders (`/sales-orders` without `soType=NO_QTY`, or legacy `focusSalesOrderId`).
@@ -697,6 +716,7 @@ flowchart TB
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Workflow Engine overview and Pending Actions contract |
+| 1.0.12 | 2026-07-19 | FT ERP Product Team | §7.13 RM Allowance Approval Pending Actions (async Admin approve/reject; no stock on approve) |
 
 ---
 

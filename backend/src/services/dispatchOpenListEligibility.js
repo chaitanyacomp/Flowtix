@@ -7,6 +7,8 @@ const { REPORT_QUEUE_EPS, computeSalesOrderDispatchLineStats } = require("./repo
 
 /**
  * Per-line: should this row appear on the Dispatch open list / SO dropdown?
+ * May include blocked "Cannot prepare now" NO_QTY rows (remaining demand, zero headroom)
+ * so the workspace can show why prepare is blocked. Do NOT use this for dashboard backlog KPIs.
  * @param {{ pendingDispatchQty?: unknown; dispatchPendingLock?: unknown; dispatchable?: unknown; dispatchableQty?: unknown; orderQty?: unknown; dispatched?: unknown }} lineStat
  * @param {string | null | undefined} orderType
  */
@@ -30,6 +32,43 @@ function isDispatchOpenListLineCandidate(lineStat, orderType) {
   if (lock > REPORT_QUEUE_EPS) return true;
   if (pend > REPORT_QUEUE_EPS && dbl > REPORT_QUEUE_EPS) return true;
   return false;
+}
+
+/**
+ * Dashboard / Control Tower / Store "Dispatch backlog" KPI row.
+ * Count only lines with positive prepare headroom (dispatchableNow > 0).
+ * Excludes: Cannot prepare now (blocked), zero qty, fully dispatched, ledger/history-only rows.
+ * Distinct from {@link isDispatchOpenListLineCandidate}.
+ * @param {{ dispatchableNow?: unknown; dispatchable?: unknown; dispatchableQty?: unknown; pendingQty?: unknown; pendingDispatchQty?: unknown; orderedQty?: unknown; orderQty?: unknown; dispatchedQty?: unknown; dispatched?: unknown }} row
+ * @param {string | null | undefined} [orderType]
+ */
+function isDispatchBacklogActionableLine(row, orderType) {
+  const dbl = Number(row?.dispatchableNow ?? row?.dispatchable ?? row?.dispatchableQty ?? 0);
+  if (!(dbl > REPORT_QUEUE_EPS)) return false;
+
+  if (orderType === "NO_QTY") {
+    // NO_QTY cycle auto-ready may report headroom with pendingDispatchQty at 0.
+    return true;
+  }
+
+  const pending = Number(row?.pendingQty ?? row?.pendingDispatchQty ?? 0);
+  if (pending > REPORT_QUEUE_EPS) return true;
+
+  const ordered = Number(row?.orderedQty ?? row?.orderQty ?? 0);
+  const dispatched = Number(row?.dispatchedQty ?? row?.dispatched ?? 0);
+  if (ordered > REPORT_QUEUE_EPS && dispatched + REPORT_QUEUE_EPS >= ordered) return false;
+
+  // When pending fields are absent, positive dispatchable is sufficient (snapshot rows always set pending).
+  if (row?.pendingQty == null && row?.pendingDispatchQty == null) return true;
+  return false;
+}
+
+/**
+ * @param {Array<Record<string, unknown>> | null | undefined} rows
+ * @param {string | null | undefined} [orderType]
+ */
+function filterDispatchBacklogActionableRows(rows, orderType) {
+  return (rows || []).filter((r) => isDispatchBacklogActionableLine(r, orderType ?? r?.orderType));
 }
 
 /**
@@ -83,6 +122,8 @@ function salesOrderHasDispatchOpenListLines(so) {
 
 module.exports = {
   isDispatchOpenListLineCandidate,
+  isDispatchBacklogActionableLine,
+  filterDispatchBacklogActionableRows,
   isSalesOrderCommerciallyClosedForDispatch,
   shouldExcludeSalesOrderFromDispatchOpenList,
   filterLineStatsForDispatchOpenList,

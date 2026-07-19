@@ -17,11 +17,15 @@ export function ProductionNoQtyViewportShell({
   left,
   right,
   className,
-  viewportOffsetClass = "lg:h-[calc(100dvh-11.5rem)] lg:max-h-[calc(100dvh-11.5rem)]",
+  viewportOffsetClass = "lg:h-[calc(100dvh-11.5rem)] lg:max-h-[calc(100dvh-11.5rem)] max-lg:min-h-0",
 }: Props) {
   return (
     <div
-      className={cn("flex min-h-0 flex-1 flex-col overflow-hidden", viewportOffsetClass, className)}
+      className={cn(
+        "flex min-h-0 flex-1 flex-col overflow-hidden max-[800px]:max-h-none max-[800px]:overflow-y-auto",
+        viewportOffsetClass,
+        className,
+      )}
       data-testid="production-no-qty-viewport-shell"
     >
       <OperatorMainSplit

@@ -24,7 +24,7 @@ describe("manufacturingNavigationContinuity", () => {
         returnTo: "rm-control-center",
         salesOrderId: 4,
       }),
-    ).toBe("/material-issue?pmrId=7&workOrderId=42&returnTo=rm-control-center&salesOrderId=4");
+    ).toBe("/material-issue?workOrderId=42&pmrId=7&salesOrderId=4&returnTo=rm-control-center");
     expect(buildMaterialIssueDeepLink({ pmrId: 7, returnTo: "rm-control-center" })).toBe(
       "/material-issue?pmrId=7&returnTo=rm-control-center",
     );

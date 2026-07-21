@@ -4,9 +4,8 @@ import { cn } from "../../lib/utils";
 import { buttonVariants } from "../ui/button";
 import type { ProcurementPendingRow } from "./ProcurementPendingDashboardCard";
 import type { DashboardProductionStatusSource } from "../../lib/dashboardProductionStatus";
-import { buildDashboardProductionStatusRows } from "../../lib/dashboardProductionStatus";
+import { summarizeFactoryProductionCounters } from "../../lib/adminDashboardClassification";
 import { buildRmControlCenterHref } from "../../lib/woProcurementContinuity";
-import { productionHrefFromDashboardRow } from "../../lib/operationalWorkspaceLinks";
 import { displaySalesOrderNo } from "../../lib/docNoDisplay";
 import { REGULAR_TERMS } from "../../lib/flowTerminology";
 
@@ -33,7 +32,7 @@ type RmRiskRow = {
 type Props = {
   data: DashboardDataSlice | null;
   prodQueue: DashboardProductionStatusSource[] | null;
-  prodWaitingWoCount: number;
+  prodWaitingWoCount?: number;
   prodWaitingIssueCount: number;
   procurementPending: ProcurementPendingRow[] | null;
   qcBatchCount: number;
@@ -42,6 +41,8 @@ type Props = {
   qcRejectionPct: number;
   rmRisk?: RmRiskRow[] | null;
   className?: string;
+  /** When true, show factory counters only (no duplicate WO micro-queues). */
+  compactCountersOnly?: boolean;
 };
 
 function StatLine({
@@ -143,7 +144,6 @@ function MicroQueue({
 export function DashboardLiveFactoryPanel({
   data,
   prodQueue,
-  prodWaitingWoCount,
   prodWaitingIssueCount,
   procurementPending,
   qcBatchCount,
@@ -152,10 +152,9 @@ export function DashboardLiveFactoryPanel({
   qcRejectionPct,
   rmRisk,
   className,
+  compactCountersOnly = false,
 }: Props) {
-  const prodStats = buildDashboardProductionStatusRows(prodQueue ?? [], { limit: 200 });
-  const running = prodStats.visible.filter((r) => r.operationalStatus.tone === "running");
-  const waitingQcProd = prodStats.visible.filter((r) => r.operationalStatus.tone === "qc");
+  const factoryCounters = summarizeFactoryProductionCounters(prodQueue);
   const procurementRows = procurementPending ?? [];
   const pendingApproval = procurementRows.filter((r) =>
     String(r.operationalKey ?? r.nextActionKey ?? "")
@@ -166,25 +165,12 @@ export function DashboardLiveFactoryPanel({
     (r) => r.pendingPoStatus && r.pendingPoStatus !== "NONE" && r.pendingPoStatus !== "COMPLETE",
   ).length;
 
-  const runningRows = running.slice(0, 5).map((r) => ({
-    key: `${r.workOrderId}-${r.flowLabel}`,
-    primary: r.workOrderNo ?? `WO #${r.workOrderId}`,
-    secondary: r.itemName ?? r.customerName ?? undefined,
-    meta: r.operationalStatus.label,
-    to: r.workOrderId
-      ? productionHrefFromDashboardRow({
-          workOrderId: r.workOrderId,
-          workOrderLineId: r.workOrderLineId,
-          salesOrderId: r.salesOrderId,
-          orderType: r.orderType,
-          cycleId: r.cycleId,
-          actionHref: r.actionHref,
-        })
-      : "/production",
-  }));
-
   const blockedRows = React.useMemo(() => {
-    const src = rmRisk ?? [];
+    const src = (rmRisk ?? []).filter((r) => {
+      const qt = String((r as { queueType?: string }).queueType ?? "").toUpperCase();
+      if (qt === "READY_TO_RELEASE_WO") return false;
+      return true;
+    });
     if (!src.length) return [];
     const byCase = new Map<
       string,
@@ -268,15 +254,18 @@ export function DashboardLiveFactoryPanel({
     }));
 
   return (
-    <section aria-label="Live factory operations" className={cn("shrink-0 space-y-1.5", className)}>
-      <h2 className="text-[20px] font-bold tracking-tight text-slate-900">Live factory</h2>
+    <section aria-label="Factory status" className={cn("shrink-0 space-y-1.5", className)}>
+      <h2 className="text-[16px] font-bold tracking-tight text-slate-900">Factory status</h2>
       <div className="overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200/90">
         <div className="grid divide-y divide-slate-200/80 lg:grid-cols-4 lg:divide-x lg:divide-y-0">
           <StatBlock title="Production" href="/production?source=dashboard">
-            <StatLine label="Running" value={running.length} tone="ok" />
-            <StatLine label="Blocked" value={prodWaitingWoCount} tone={prodWaitingWoCount > 0 ? "warn" : "default"} />
+            <StatLine label="Ready to Start" value={factoryCounters.readyToStart} tone={factoryCounters.readyToStart > 0 ? "ok" : "default"} />
+            <StatLine label="Running" value={factoryCounters.running} tone={factoryCounters.running > 0 ? "ok" : "default"} />
+            <StatLine label="Paused" value={factoryCounters.paused} tone={factoryCounters.paused > 0 ? "warn" : "default"} />
+            <StatLine label="Blocked" value={factoryCounters.blocked} tone={factoryCounters.blocked > 0 ? "warn" : "default"} />
+            <StatLine label="Awaiting Report" value={factoryCounters.awaitingReport} />
+            <StatLine label="Pending QC" value={factoryCounters.pendingQc} tone={factoryCounters.pendingQc > 0 ? "warn" : "default"} />
             <StatLine label="Waiting RM" value={prodWaitingIssueCount} tone={prodWaitingIssueCount > 0 ? "warn" : "default"} />
-            <StatLine label="Waiting QC" value={waitingQcProd.length + qcBatchCount} tone={qcBatchCount > 0 ? "warn" : "default"} />
           </StatBlock>
           <StatBlock title="RM procurement" href={buildRmControlCenterHref({ returnTo: "dashboard" })}>
             <StatLine
@@ -299,22 +288,23 @@ export function DashboardLiveFactoryPanel({
           </StatBlock>
         </div>
 
-        <div className="grid border-t border-slate-200/80 lg:grid-cols-2 xl:grid-cols-4">
-          <MicroQueue title="Running production" href="/production" emptyLabel="No active runs" rows={runningRows} />
-          <MicroQueue
-            title="Blocked WOs"
-            href={buildRmControlCenterHref({ onlyBlocked: true, returnTo: "dashboard" })}
-            emptyLabel={REGULAR_TERMS.DASHBOARD_NO_WO_RM_BLOCKERS_LABEL}
-            rows={blockedRows}
-          />
-          <MicroQueue
-            title="Waiting GRN"
-            href="/rm-po-grn?focus=pending-requests"
-            emptyLabel="No pending GRN"
-            rows={grnRows}
-          />
-          <MicroQueue title="QC pending" href="/qc-entry" emptyLabel="QC clear" rows={[]} />
-        </div>
+        {!compactCountersOnly ? (
+          <div className="grid border-t border-slate-200/80 lg:grid-cols-2 xl:grid-cols-3">
+            <MicroQueue
+              title="Blocked WOs"
+              href={buildRmControlCenterHref({ onlyBlocked: true, returnTo: "dashboard" })}
+              emptyLabel={REGULAR_TERMS.DASHBOARD_NO_WO_RM_BLOCKERS_LABEL}
+              rows={blockedRows}
+            />
+            <MicroQueue
+              title="Waiting GRN"
+              href="/rm-po-grn?focus=pending-requests"
+              emptyLabel="No pending GRN"
+              rows={grnRows}
+            />
+            <MicroQueue title="QC pending" href="/qc-entry" emptyLabel="QC clear" rows={[]} />
+          </div>
+        ) : null}
       </div>
     </section>
   );

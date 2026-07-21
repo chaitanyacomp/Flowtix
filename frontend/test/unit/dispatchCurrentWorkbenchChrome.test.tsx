@@ -44,4 +44,21 @@ describe("DispatchCurrentWorkbenchChrome", () => {
     expect(html).toContain("Next Action");
     expect(html).toContain("Workbench body");
   });
+
+  it("renders header qty actions in the KPI strip when provided", () => {
+    const html = renderToStaticMarkup(
+      <DispatchCurrentWorkbenchChrome
+        soBalance={100}
+        usableFg={80}
+        dispatchingNow={20}
+        remainingAfter={80}
+        formatQty={(n) => String(n)}
+        guidance={{ currentAction: "Enter qty", nextAction: "Save Draft Qty" }}
+        headerActions={<div data-testid="dispatch-qty-header-entry">Qty entry</div>}
+      />,
+    );
+    expect(html).toContain("dispatch-current-header-actions");
+    expect(html).toContain("dispatch-qty-header-entry");
+    expect(html.indexOf("dispatch-current-kpi-strip")).toBeLessThan(html.indexOf("dispatch-qty-header-entry"));
+  });
 });

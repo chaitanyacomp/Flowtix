@@ -14,7 +14,15 @@ const {
 const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
 
 const Decimal = Prisma.Decimal;
+/** Active requests that block a new submit until superseded. */
 const ACTIVE_STATUSES = ["PENDING_APPROVAL", "APPROVED"];
+/**
+ * Statuses cleared when a newer request is submitted or the fingerprint is invalidated.
+ * REJECTED is included so a revise/resubmit does not leave a stale Rejected Pending Action.
+ */
+const SUPERSEDABLE_STATUSES = ["PENDING_APPROVAL", "APPROVED", "REJECTED"];
+/** PMR statuses that still allow Store Material Issue. */
+const STORE_ISSUE_PMR_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED"];
 const QTY_EPS = 0.000001;
 
 function n(v) {
@@ -69,8 +77,8 @@ function serializeRequest(row) {
 
 const includeRelations = {
   workOrder: { select: { id: true, docNo: true, salesOrderId: true, salesOrder: { select: { docNo: true } } } },
-  productionMaterialRequest: { select: { id: true, docNo: true } },
-  pmrLine: { select: { id: true, unitSnapshot: true, issuedQty: true, requiredQty: true } },
+  productionMaterialRequest: { select: { id: true, docNo: true, status: true } },
+  pmrLine: { select: { id: true, unitSnapshot: true, issuedQty: true, requiredQty: true, waivedQty: true } },
   item: { select: { id: true, itemName: true, unit: true } },
   requestedBy: { select: { id: true, name: true, role: true } },
   reviewedBy: { select: { id: true, name: true, role: true } },
@@ -80,11 +88,52 @@ async function supersedeActiveRequests(tx, pmrLineId, exceptId = null) {
   await tx.rmAllowanceApprovalRequest.updateMany({
     where: {
       pmrLineId,
-      status: { in: ACTIVE_STATUSES },
+      status: { in: SUPERSEDABLE_STATUSES },
       ...(exceptId ? { id: { not: exceptId } } : {}),
     },
     data: { status: "SUPERSEDED", updatedAt: new Date() },
   });
+}
+
+/**
+ * Mark an approval SUPERSEDED when quantities drift after approve/request.
+ * Never writes REJECTED — invalidated ≠ rejected.
+ */
+async function markRmAllowanceApprovalSuperseded(requestId, db = prisma) {
+  const id = Number(requestId);
+  if (!id) return null;
+  const existing = await db.rmAllowanceApprovalRequest.findUnique({
+    where: { id },
+    select: { id: true, status: true },
+  });
+  if (!existing) return null;
+  if (!SUPERSEDABLE_STATUSES.includes(String(existing.status))) return existing;
+  return db.rmAllowanceApprovalRequest.update({
+    where: { id },
+    data: { status: "SUPERSEDED", updatedAt: new Date() },
+  });
+}
+
+/**
+ * True when a Store PA / Material Issue bucket should still surface this approval.
+ * Requires: current REJECTED|APPROVED|PENDING_APPROVAL, open PMR, and remaining qty on the RM line.
+ */
+function isRmAllowanceRequestActionableForStore(row) {
+  const status = String(row?.status ?? "");
+  if (!["PENDING_APPROVAL", "APPROVED", "REJECTED"].includes(status)) return false;
+  const pmrStatus = String(row?.productionMaterialRequest?.status ?? row?.pmrStatus ?? "");
+  if (!STORE_ISSUE_PMR_STATUSES.includes(pmrStatus)) return false;
+  const line = row?.pmrLine ?? null;
+  if (line) {
+    const required = n(line.requiredQty);
+    const issued = n(line.issuedQty);
+    const waived = n(line.waivedQty ?? line.shortIssueQty ?? 0);
+    const pending = Math.max(0, required - issued - waived);
+    if (pending <= QTY_EPS) return false;
+  } else if (row?.linePendingQty != null) {
+    if (n(row.linePendingQty) <= QTY_EPS) return false;
+  }
+  return true;
 }
 
 /**
@@ -128,6 +177,7 @@ async function submitRmAllowanceApprovalRequest(input, actor = {}, db = prisma) 
         allowanceInputSource: "QUANTITY",
         theoreticalBomQty,
         alreadyIssuedQty,
+        issueQty,
         enteredAllowanceQty: addQty,
         allowanceReason: reason,
       },
@@ -406,6 +456,7 @@ async function resolveApprovedRequestForIssue(input, db = prisma) {
     throw approvalError("Approval request does not match this PMR line.", "APPROVAL_LINE_MISMATCH", 409);
   }
   if (!qtyClose(row.addQty, addQty)) {
+    await markRmAllowanceApprovalSuperseded(row.id, db);
     throw approvalError(
       "Add Qty changed after approval. Resubmit for Admin approval.",
       "APPROVAL_INVALIDATED",
@@ -421,6 +472,7 @@ async function resolveApprovedRequestForIssue(input, db = prisma) {
   }
   const applicableNow = applicableBomRequirement(theoreticalBomQty, alreadyIssuedQty);
   if (!qtyClose(row.applicableBomQty, applicableNow) || !qtyClose(row.alreadyIssuedQty, alreadyIssuedQty)) {
+    await markRmAllowanceApprovalSuperseded(row.id, db);
     throw approvalError(
       "BOM entitlement or already-issued quantity changed after approval. Resubmit for Admin approval.",
       "APPROVAL_INVALIDATED",
@@ -428,6 +480,7 @@ async function resolveApprovedRequestForIssue(input, db = prisma) {
     );
   }
   if (!qtyClose(row.allowancePct, planning.plannedAllowancePct)) {
+    await markRmAllowanceApprovalSuperseded(row.id, db);
     throw approvalError(
       "Allowance % no longer matches the approved request. Resubmit for Admin approval.",
       "APPROVAL_INVALIDATED",
@@ -450,6 +503,23 @@ async function markRmAllowanceApprovalIssued(requestId, { materialIssueNoteId, u
   });
 }
 
+/**
+ * After a ≤5% issue (no approval used), clear leftover Rejected/Approved/Pending
+ * rows on the line so they cannot remain as stale Store Pending Actions.
+ */
+async function clearStaleAllowanceRequestsAfterNormalIssue(pmrLineId, db = prisma) {
+  const id = Number(pmrLineId);
+  if (!id) return { count: 0 };
+  const result = await db.rmAllowanceApprovalRequest.updateMany({
+    where: {
+      pmrLineId: id,
+      status: { in: SUPERSEDABLE_STATUSES },
+    },
+    data: { status: "SUPERSEDED", updatedAt: new Date() },
+  });
+  return { count: result?.count ?? 0 };
+}
+
 module.exports = {
   submitRmAllowanceApprovalRequest,
   listRmAllowanceApprovals,
@@ -458,6 +528,11 @@ module.exports = {
   rejectRmAllowanceApprovalRequest,
   resolveApprovedRequestForIssue,
   markRmAllowanceApprovalIssued,
+  markRmAllowanceApprovalSuperseded,
+  clearStaleAllowanceRequestsAfterNormalIssue,
+  isRmAllowanceRequestActionableForStore,
   serializeRequest,
   ACTIVE_STATUSES,
+  SUPERSEDABLE_STATUSES,
+  STORE_ISSUE_PMR_STATUSES,
 };

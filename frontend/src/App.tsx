@@ -228,7 +228,10 @@ function LoginPage() {
     try {
       const loggedIn = await auth.login(email.trim(), password);
       clearSessionExpiredMessage();
-      const dest = resolvePostLoginDestination(searchParams.get("returnTo"), { role: loggedIn.role });
+      const dest = resolvePostLoginDestination(searchParams.get("returnTo"), {
+        role: loggedIn.role,
+        landingPath: loggedIn.landingPath,
+      });
       if (import.meta.env.DEV) {
         // eslint-disable-next-line no-console
         console.debug("[auth] navigate →", dest);
@@ -246,7 +249,10 @@ function LoginPage() {
   }
 
   if (auth.isAuthed) {
-    const dest = resolvePostLoginDestination(searchParams.get("returnTo"), { role: auth.user?.role });
+    const dest = resolvePostLoginDestination(searchParams.get("returnTo"), {
+      role: auth.user?.role,
+      landingPath: auth.user?.landingPath,
+    });
     return <Navigate to={dest} replace />;
   }
 

@@ -64,7 +64,7 @@ describe("noQtyRsActionLabels", () => {
 
   it("uses standard button labels", () => {
     expect(openCurrentRsButtonLabel()).toBe("Open Current RS");
-    expect(createCycleRsButtonLabel(2)).toBe("Create Cycle 2 RS");
+    expect(createCycleRsButtonLabel(2)).toBe("Create Cycle 2 Requirement Sheet");
     expect(createNextRsButtonLabel(null)).toBe("Create Next Requirement Sheet");
     expect(createNextRsButtonLabel(3)).toBe("Create Cycle 3 Requirement Sheet");
   });
@@ -75,7 +75,7 @@ describe("noQtyRsActionLabels", () => {
         hasRs: false,
         currentCycleNo: 1,
       }),
-    ).toBe("Create Cycle 1 RS");
+    ).toBe("Create Cycle 1 Requirement Sheet");
     expect(
       resolveCreateRsButtonLabel({
         hasRs: true,

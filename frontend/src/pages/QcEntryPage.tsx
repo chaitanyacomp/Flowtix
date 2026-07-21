@@ -16,6 +16,7 @@ import { formatQcQuantity, formatQcQuantityForInput } from "../lib/quantityDispl
 import { sanitizeQtyInputDraft } from "../lib/quantityDraft";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { isValidNumberDraft, type NumberDraft, toNumberDraft } from "../lib/numberDraft";
 import { useAuth } from "../hooks/useAuth";
 import { useCanOpenRequirementSheet } from "../hooks/useIsAdmin";
@@ -28,15 +29,12 @@ import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 import { useDependentFieldFocus } from "../hooks/useDependentFieldFocus";
 import { useMandatoryPositiveQtyDraft } from "../hooks/useMandatoryPositiveQtyDraft";
 import {
-  OperatorMainSplit,
-  OperatorMetricBadge,
   OperatorPageBody,
   OperatorStatusBadge,
-  OperatorTopBar,
   operatorInputClass,
   operatorTableRowClass,
-  operatorTableRowQcClass,
 } from "../components/erp/OperatorWorkbench";
+import { blockDecimalSpinnerKeys, blockDecimalWheel } from "../lib/keyboardDecimalInput";
 import { cn } from "../lib/utils";
 import {
   PageBackLink,
@@ -69,6 +67,7 @@ import {
   qcCompletionPostActionHash,
   resolvePostQcSaveAdvance,
   resolveQcCompletionOutcome,
+  resolveQcSaveInspectionStatus,
   sortPendingQcByProductionFifo,
   type QualityQueueRow,
 } from "../lib/qcWorkspaceUx";
@@ -76,10 +75,8 @@ import {
   isNoQtyDispatchReadyFromNextAction,
   isQcProductionQueueClear,
   mapRegularPostQcDispatchHandoff,
-  qcStatusFromRollups,
   resolveNoQtyPostQcActionHref,
   resolveRegularPostQcDispatchHref,
-  type QcBatchStatus,
 } from "../lib/qcWorkspaceReadinessUx";
 
 type ReworkQcQueueRow = {
@@ -193,7 +190,7 @@ type ProdRow = {
   qcPendingQty?: number;
   workOrderLine: {
     id: number;
-    fgItem: { id: number; itemName: string };
+    fgItem: { id: number; itemName: string; unit?: string | null };
     workOrder: {
       id: number;
       docNo?: string | null;
@@ -278,37 +275,28 @@ function HoldDispositionCard({
       <div className="mt-3 grid max-w-xl gap-2 sm:grid-cols-3">
         <div className="erp-form-field">
           <span className="erp-form-label">To usable</span>
-          <Input
-            type="number"
-            min={0}
-            step="any"
+          <DecimalInput
             className="tabular-nums"
             value={toUsableStr}
-            onChange={(e) => setToUsableStr(e.target.value)}
+            onValueChange={setToUsableStr}
             disabled={disabled}
           />
         </div>
         <div className="erp-form-field">
           <span className="erp-form-label">To rework QC</span>
-          <Input
-            type="number"
-            min={0}
-            step="any"
+          <DecimalInput
             className="tabular-nums"
             value={toReworkStr}
-            onChange={(e) => setToReworkStr(e.target.value)}
+            onValueChange={setToReworkStr}
             disabled={disabled}
           />
         </div>
         <div className="erp-form-field">
           <span className="erp-form-label">To scrap</span>
-          <Input
-            type="number"
-            min={0}
-            step="any"
+          <DecimalInput
             className="tabular-nums"
             value={toScrapStr}
-            onChange={(e) => setToScrapStr(e.target.value)}
+            onValueChange={setToScrapStr}
             disabled={disabled}
           />
         </div>
@@ -387,6 +375,10 @@ function safeItemNameForRow(r: ProdRow): string {
   return String((r as any)?.workOrderLine?.fgItem?.itemName ?? "");
 }
 
+function safeItemUnitForRow(r: ProdRow): string {
+  return String((r as any)?.workOrderLine?.fgItem?.unit ?? "").trim();
+}
+
 function safeProductionRowId(r: ProdRow): number {
   const id = Number((r as any)?.id ?? 0);
   return Number.isFinite(id) && id > 0 ? id : 0;
@@ -394,18 +386,6 @@ function safeProductionRowId(r: ProdRow): number {
 
 function safeIsoDate(r: ProdRow): string {
   return String((r as any)?.date ?? "");
-}
-
-type QcStatus = QcBatchStatus;
-
-function qcStatusForRollups(roll: { accepted: number; rejected: number; pending: number }): QcStatus {
-  return qcStatusFromRollups(roll);
-}
-
-function qcStatusLabel(s: QcStatus): string {
-  if (s === "AWAITING_QC") return PRODUCTION_QA_TERMS.AWAITING_QA;
-  if (s === "PARTIAL_QC") return "Partial QC";
-  return "Completed QC";
 }
 
 export function QcEntryPage() {
@@ -490,8 +470,8 @@ export function QcEntryPage() {
   >([]);
   const [reworkQcRows, setReworkQcRows] = React.useState<ReworkQcQueueRow[]>([]);
   const [reworkQcItemId, setReworkQcItemId] = React.useState(0);
-  const [reworkCheckedQty, setReworkCheckedQty] = React.useState<NumberDraft>("");
-  const [reworkRejectedQty, setReworkRejectedQty] = React.useState<NumberDraft>("");
+  const [reworkCheckedQty, setReworkCheckedQty] = React.useState("");
+  const [reworkRejectedQty, setReworkRejectedQty] = React.useState("");
   const [reworkRejectedBucket, setReworkRejectedBucket] = React.useState<RejectedStockBucket | null>(null);
   const [reworkReason, setReworkReason] = React.useState("");
   const [reworkSaving, setReworkSaving] = React.useState(false);
@@ -509,7 +489,7 @@ export function QcEntryPage() {
   const [noQtyQcNextActionError, setNoQtyQcNextActionError] = React.useState<string | null>(null);
   const [recheckDispId, setRecheckDispId] = React.useState(0);
   const [, setRecheckCheckedQty] = React.useState<NumberDraft>("");
-  const [recheckRejectedQty, setRecheckRejectedQty] = React.useState<NumberDraft>("");
+  const [recheckRejectedQty, setRecheckRejectedQty] = React.useState("");
   // Final QC for rework does not allow routing rejects back to rework/hold/usable.
   // Rejected qty is always scrapped.
   const [, setRecheckRejectedBucket] = React.useState<RejectedStockBucket | null>(null);
@@ -601,20 +581,20 @@ export function QcEntryPage() {
   >([]);
   const [adjSoLoading, setAdjSoLoading] = React.useState(false);
   const [adjSelectedSoId, setAdjSelectedSoId] = React.useState(0);
-  const [adjCheckedQty, setAdjCheckedQty] = React.useState<NumberDraft>("");
-  const [adjRejectedQty, setAdjRejectedQty] = React.useState<NumberDraft>("");
+  const [adjCheckedQty, setAdjCheckedQty] = React.useState("");
+  const [adjRejectedQty, setAdjRejectedQty] = React.useState("");
   const [adjReason, setAdjReason] = React.useState("");
   const [adjSaving, setAdjSaving] = React.useState(false);
 
   const [prodShowFilter, setProdShowFilter] = React.useState<"ALL" | "AWAITING" | "COMPLETED">("AWAITING");
+  const [qualityQueueFilter, setQualityQueueFilter] = React.useState("");
 
   const qcFormRef = React.useRef<HTMLDivElement | null>(null);
-  const productionSelectRef = React.useRef<HTMLSelectElement | null>(null);
   const checkedQtyRef = React.useRef<HTMLInputElement | null>(null);
   useFastEntryForm({
     containerRef: qcFormRef,
-    initialFocusRef: productionSelectRef,
-    initialFocusEnabled: Boolean(listReady && rows.length > 0),
+    initialFocusRef: checkedQtyRef,
+    initialFocusEnabled: Boolean(listReady && rows.length > 0 && productionId > 0),
   });
 
   useDependentFieldFocus({
@@ -633,8 +613,10 @@ export function QcEntryPage() {
     const raw = (location.hash ?? "").replace(/^#/, "");
     if (!raw) return;
     const id = raw.startsWith("qc-") ? raw : `qc-${raw}`;
+    // Keep the inspection workbench stable — do not jump the page for pending QC focus.
+    if (id === "qc-production-pending") return;
     const t = window.setTimeout(() => {
-      document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }, 100);
     return () => window.clearTimeout(t);
   }, [listReady, location.hash, dispQueues]);
@@ -1429,6 +1411,7 @@ export function QcEntryPage() {
     // Derived invariant (defensive): accepted+rejected must equal inspectingNow.
     if (Math.abs((acceptedNow + rejectedNow) - inspectingNow) > 1e-6) return "Accepted + Rejected must equal Inspecting now.";
     if (rejectedNow > 1e-6) {
+      if (!reason.trim()) return "Rejection reason is required.";
       const rw = Number(rejSplitRework);
       const hd = Number(rejSplitHold);
       const sc = Number(rejSplitScrap);
@@ -1447,6 +1430,7 @@ export function QcEntryPage() {
     checkedQtyValid,
     checkedParsed,
     rejectedNumForForm,
+    reason,
     rejSplitRework,
     rejSplitHold,
     rejSplitScrap,
@@ -1463,7 +1447,36 @@ export function QcEntryPage() {
       rejectedNumForForm <= checkedParsed + 1e-6 &&
       draftAcceptedQty >= -1e-6 &&
       checkedParsed <= selectedRollups.pending + 1e-6 &&
-      (rejectedNumForForm <= 1e-6 || qcInlineValidationMsg == null),
+      (rejectedNumForForm <= 1e-6 || (reason.trim().length > 0 && qcInlineValidationMsg == null)),
+  );
+
+  const qcSaveInspectionStatus = React.useMemo(
+    () =>
+      resolveQcSaveInspectionStatus({
+        hasSelection: productionId > 0 && Boolean(selectedRollups),
+        awaitingQty: Number(selectedRollups?.pending ?? 0),
+        canSubmit: qcFormCanSubmit,
+        inspectingQty: checkedQtyValid && checkedParsed != null ? checkedParsed : null,
+        checkedQtyValid,
+        rejectedQty: rejectedNumForForm,
+        reasonTrimmed: reason.trim(),
+        inlineValidationMsg: qcInlineValidationMsg,
+        readyQtyLabel:
+          checkedQtyValid && checkedParsed != null
+            ? fmtQcQty(checkedParsed, selected ? safeItemUnitForRow(selected) : null)
+            : "",
+      }),
+    [
+      productionId,
+      selectedRollups,
+      qcFormCanSubmit,
+      checkedQtyValid,
+      checkedParsed,
+      rejectedNumForForm,
+      reason,
+      qcInlineValidationMsg,
+      selected,
+    ],
   );
 
   function openReverseQcModal(args: {
@@ -1535,6 +1548,7 @@ export function QcEntryPage() {
   }
 
   async function onSubmit() {
+    if (saving) return;
     setError(null);
     if (!selected || !selectedRollups) return;
     const pending = selectedRollups.pending;
@@ -1573,6 +1587,10 @@ export function QcEntryPage() {
       return;
     }
     if (rejectedNum > 1e-6) {
+      if (!reason.trim()) {
+        setError("Rejection reason is required.");
+        return;
+      }
       const rw = rejSplitRework === "" ? 0 : Number(rejSplitRework);
       const hd = rejSplitHold === "" ? 0 : Number(rejSplitHold);
       const sc = rejSplitScrap === "" ? 0 : Number(rejSplitScrap);
@@ -1758,28 +1776,6 @@ export function QcEntryPage() {
     });
   }, [productionBatchesAll, prodShowFilter]);
 
-  const productionBatchesForDropdown = React.useMemo(() => {
-    // Keep dropdown stable + readable: show filtered list, sorted by "Awaiting QC" high→low, then id desc.
-    try {
-      const list = [...(Array.isArray(productionBatchesFiltered) ? productionBatchesFiltered : [])];
-      list.sort((a, b) => {
-        const qa = safeQcRollupsForRow(a);
-        const qb = safeQcRollupsForRow(b);
-        const da = qa.pending > 1e-6 ? 0 : 1;
-        const db = qb.pending > 1e-6 ? 0 : 1;
-        if (da !== db) return da - db;
-        const ta = safeIsoDate(a) ? new Date(safeIsoDate(a)).getTime() : Number.POSITIVE_INFINITY;
-        const tb = safeIsoDate(b) ? new Date(safeIsoDate(b)).getTime() : Number.POSITIVE_INFINITY;
-        if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return ta - tb;
-        if (Number.isFinite(ta) !== Number.isFinite(tb)) return Number.isFinite(ta) ? -1 : 1;
-        return safeProductionRowId(a) - safeProductionRowId(b);
-      });
-      return list;
-    } catch {
-      return [];
-    }
-  }, [productionBatchesFiltered]);
-
   const qcQueueRows = React.useMemo(() => {
     // Queue panel focuses on batches that still have something to inspect (pending > 0).
     try {
@@ -1789,7 +1785,6 @@ export function QcEntryPage() {
           return {
             r,
             q,
-            status: qcStatusForRollups(q),
             productionId: safeProductionRowId(r),
             pendingQty: q.pending,
             date: safeIsoDate(r),
@@ -2077,12 +2072,16 @@ export function QcEntryPage() {
     return buildQualityQueueRows({
       pendingQc: qcQueueRows.map(({ r, q }) => ({
         productionId: r.id,
+        productionDocNo: r.docNo ?? null,
         itemName: r.workOrderLine?.fgItem?.itemName ?? "Batch",
         workOrderLabel: displayWorkOrderNo(
           Number(r.workOrderLine?.workOrder?.id ?? 0),
           r.workOrderLine?.workOrder?.docNo ?? null,
         ),
+        batchDate: toYmdFromIso(safeIsoDate(r)) || null,
         pendingQty: q.pending,
+        unit: safeItemUnitForRow(r) || null,
+        statusLabel: PRODUCTION_QA_TERMS.PENDING_QC,
       })),
       dispositions,
       customerReturns: custReturnQcRows.map((r) => ({
@@ -2092,6 +2091,7 @@ export function QcEntryPage() {
         qty: Number(r.qty ?? 0),
       })),
       fmtQty: fmtQcQty,
+      formatProductionEntryNo: (id, docNo) => displayProductionEntryNo(id, docNo),
     });
   }, [
     custReturnQcRows,
@@ -2105,12 +2105,20 @@ export function QcEntryPage() {
 
   const [activeQualityQueueRowId, setActiveQualityQueueRowId] = React.useState<string | null>(null);
 
+  React.useEffect(() => {
+    if (productionId > 0) {
+      setActiveQualityQueueRowId(`pending-qc-${productionId}`);
+    }
+  }, [productionId]);
+
   const handleQualityQueueSelect = React.useCallback(
     (row: QualityQueueRow) => {
       setActiveQualityQueueRowId(row.id);
       if (row.kind === "PENDING_QC" && row.productionId) {
         setProductionId(row.productionId);
         patch({ [DRILL_QUERY.productionId]: String(row.productionId) });
+        navigate({ hash: "qc-production-pending" }, { replace: true });
+        return;
       }
       if (row.kind === "REWORK_PENDING" && row.dispositionId) {
         setRecheckDispId(row.dispositionId);
@@ -2118,7 +2126,7 @@ export function QcEntryPage() {
       const hash = row.anchor.replace(/^#/, "");
       navigate({ hash }, { replace: true });
       window.setTimeout(() => {
-        document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "start" });
+        document.getElementById(hash)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       }, 80);
     },
     [navigate, patch],
@@ -2276,44 +2284,79 @@ export function QcEntryPage() {
             ) : qcBackLink ? (
               <PageBackLink to={qcBackLink.to} label={qcBackLink.label} />
             ) : null}
-            <div className="min-w-0">
-              {qcBreadcrumb.length > 0 ? (
-                <nav aria-label="Breadcrumb" className="mb-0.5 flex flex-wrap items-center gap-1 text-[10px] text-slate-500">
-                  {qcBreadcrumb.map((crumb, idx) => (
-                    <React.Fragment key={`${crumb.label}-${idx}`}>
-                      {idx > 0 ? <span aria-hidden className="text-slate-300">›</span> : null}
-                      {crumb.href ? (
-                        <Link to={crumb.href} className="font-medium text-slate-600 hover:text-slate-900">
-                          {crumb.label}
-                        </Link>
-                      ) : (
-                        <span className="font-semibold text-slate-800">{crumb.label}</span>
-                      )}
-                    </React.Fragment>
-                  ))}
-                </nav>
-              ) : null}
-              <h1 className="text-sm font-semibold leading-tight tracking-tight text-slate-900">
-                {PRODUCTION_QA_TERMS.WORKSPACE_TITLE}
-              </h1>
-            </div>
-            <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:justify-end">
-              <label className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] text-slate-600">
-                <input
-                  type="checkbox"
-                  className="h-3.5 w-3.5 rounded border-slate-300"
-                  checked={showAdvancedQcTools}
-                  onChange={(e) => setShowAdvancedQcTools(e.target.checked)}
-                />
-                Advanced / admin
-              </label>
+            <h1 className="min-w-0 text-[15px] font-semibold leading-tight tracking-tight text-slate-900">
+              {PRODUCTION_QA_TERMS.WORKSPACE_TITLE}
+            </h1>
+            {listReady ? (
+              <div className="flex flex-wrap items-center gap-1.5 text-[13px]">
+                <Link
+                  to={`${qcChipBaseTo}#qc-production-pending`}
+                  className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Pending <span className="tabular-nums font-semibold text-slate-900">{qcQueueRows.length}</span>
+                </Link>
+                <Link
+                  to={`${qcChipBaseTo}#qc-rework-pending`}
+                  className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Rework <span className="tabular-nums font-semibold text-slate-900">{qcHeaderQueueCounts.rework}</span>
+                </Link>
+                <Link
+                  to={`${qcChipBaseTo}#qc-hold-decisions`}
+                  className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Hold <span className="tabular-nums font-semibold text-slate-900">{qcHeaderQueueCounts.hold}</span>
+                </Link>
+                <Link
+                  to={`${qcChipBaseTo}#qc-recent-scrap`}
+                  className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Scrap <span className="tabular-nums font-semibold text-slate-900">{qcSummaryScrapToday}</span>
+                </Link>
+              </div>
+            ) : (
+              <span className="text-[13px] text-slate-500">Loading…</span>
+            )}
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <details className="relative">
+                <summary className="cursor-pointer list-none rounded border border-slate-200 bg-white px-2 py-1 text-[12px] font-medium text-slate-600 hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
+                  More
+                </summary>
+                <div className="absolute right-0 z-20 mt-1 w-52 rounded-md border border-slate-200 bg-white p-2 shadow-md">
+                  <label className="flex cursor-pointer select-none items-center gap-1.5 text-[13px] text-slate-700">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 rounded border-slate-300"
+                      checked={showAdvancedQcTools}
+                      onChange={(e) => setShowAdvancedQcTools(e.target.checked)}
+                    />
+                    Advanced / admin
+                  </label>
+                </div>
+              </details>
               <Link to="/qc-report" className="shrink-0">
-                <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]">
+                <Button type="button" variant="outline" size="sm" className="h-8 text-[13px]">
                   QC Report
                 </Button>
               </Link>
             </div>
           </div>
+          {qcBreadcrumb.length > 0 ? (
+            <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-1 text-[12px] text-slate-500">
+              {qcBreadcrumb.map((crumb, idx) => (
+                <React.Fragment key={`${crumb.label}-${idx}`}>
+                  {idx > 0 ? <span aria-hidden className="text-slate-300">›</span> : null}
+                  {crumb.href ? (
+                    <Link to={crumb.href} className="font-medium text-slate-600 hover:text-slate-900">
+                      {crumb.label}
+                    </Link>
+                  ) : (
+                    <span className="font-semibold text-slate-800">{crumb.label}</span>
+                  )}
+                </React.Fragment>
+              ))}
+            </nav>
+          ) : null}
           {qcEmbeddedStages.length > 0 ? (
             <nav aria-label="Workflow stage" className="flex flex-wrap items-center gap-1.5 text-[10px]">
               {qcEmbeddedStages.map((step, idx) => (
@@ -2443,58 +2486,26 @@ export function QcEntryPage() {
               ) : null}
             </>
           ) : null}
-          {listReady && roleUi.showQcSecondaryQueueChips ? (
-            <div className="flex flex-wrap gap-1 border-t border-slate-100 pt-1">
-              <Link
-                to={`${qcChipBaseTo}#qc-production-pending`}
-                className="inline-flex items-center gap-1 rounded border border-slate-200/90 bg-white px-1.5 py-0 text-[10px] font-medium text-slate-700 hover:bg-slate-50"
-              >
-                {PRODUCTION_QA_TERMS.PENDING_QC}
-                <span className="tabular-nums font-semibold text-slate-900">{qcQueueRows.length}</span>
-              </Link>
-              <Link
-                to={`${qcChipBaseTo}#qc-rework-pending`}
-                className="inline-flex items-center gap-1 rounded border border-slate-200/90 bg-white px-1.5 py-0 text-[10px] font-medium text-slate-700 hover:bg-slate-50"
-              >
-                Rework
-                <span className="tabular-nums font-semibold text-slate-900">{qcHeaderQueueCounts.rework}</span>
-              </Link>
-              <Link
-                to={`${qcChipBaseTo}#qc-hold-decisions`}
-                className="inline-flex items-center gap-1 rounded border border-slate-200/90 bg-white px-1.5 py-0 text-[10px] font-medium text-slate-700 hover:bg-slate-50"
-              >
-                Hold
-                <span className="tabular-nums font-semibold text-slate-900">{qcHeaderQueueCounts.hold}</span>
-              </Link>
-              <Link
-                to={`${qcChipBaseTo}#qc-recent-scrap`}
-                className="inline-flex items-center gap-1 rounded border border-slate-200/90 bg-white px-1.5 py-0 text-[10px] font-medium text-slate-700 hover:bg-slate-50"
-              >
-                Scrap
-                <span className="tabular-nums font-semibold text-slate-900">{qcSummaryScrapToday}</span>
-              </Link>
-            </div>
-          ) : (
-            <p className="text-[11px] text-slate-500">Loading queue summary…</p>
-          )}
         </OperationalContextSticky>
         {qcDrillBannerActive ? (
           <div
             className={cn(
-              "rounded border px-1.5 py-0.5 text-[10px] text-slate-500",
-              qcBannerSoft ? "border-amber-100 bg-amber-50/60 text-amber-900/90" : "border-slate-200/80 bg-slate-50/80 text-slate-500",
+              "flex flex-wrap items-center gap-2 rounded border px-2.5 py-1 text-[13px]",
+              qcBannerSoft ? "border-amber-200 bg-amber-50/70 text-amber-950" : "border-slate-200 bg-slate-50 text-slate-700",
             )}
+            data-testid="qc-focus-strip"
           >
-            <div className="flex flex-wrap items-center justify-between gap-1.5">
-              <div className="min-w-0 truncate">
-                <span className="text-slate-400">Focus:</span>{" "}
-                <span className="font-medium text-slate-900">{qcBannerTitle}</span>
-              </div>
-              <Button type="button" variant="outline" size="sm" className="h-6 px-2 text-[10px]" onClick={clearQcDrillFocus}>
-                Clear
-              </Button>
-            </div>
-            {qcBannerHint ? <p className="mt-0.5 text-[10px] leading-snug text-amber-900/90">{qcBannerHint}</p> : null}
+            <span className="min-w-0 truncate">
+              Focused batch: <span className="font-semibold text-slate-900">{qcBannerTitle}</span>
+            </span>
+            <button
+              type="button"
+              className="shrink-0 font-semibold text-sky-800 underline-offset-2 hover:underline"
+              onClick={clearQcDrillFocus}
+            >
+              Clear
+            </button>
+            {qcBannerHint ? <span className="w-full text-[12px] text-amber-900/90">{qcBannerHint}</span> : null}
           </div>
         ) : null}
         {focusedProductionMissing ? (
@@ -2534,14 +2545,6 @@ export function QcEntryPage() {
           />
         ) : null}
         <OperatorPageBody className="gap-1.5">
-          <div className="max-w-md">
-            <QualityInspectionQueuePanel
-              rows={qualityQueueRows}
-              activeRowId={activeQualityQueueRowId}
-              onSelectRow={handleQualityQueueSelect}
-              loading={!listReady}
-            />
-          </div>
           {!fromNoQtySo &&
           !roleUi.isPureQcOperator &&
           focusSoIdValid &&
@@ -2724,12 +2727,7 @@ export function QcEntryPage() {
         className="min-w-0 overflow-hidden border-slate-200 shadow-sm"
         {...(productionId > 0 ? { [DRILL_DATA.productionId]: productionId } : {})}
       >
-        <CardHeader className="border-b border-slate-100 bg-slate-50/50 px-2 py-0.5">
-          <CardTitle className="text-[11px] font-semibold leading-none tracking-tight text-slate-900">
-            {PRODUCTION_QA_TERMS.PENDING_QC}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-0.5 px-2 py-0.5">
+        <CardContent className="space-y-2 px-3 py-2">
           {showNoQtyQcNextStepPanel && !noQtyPrimaryNextInHeader && !noQtyQcNextActionLoading && noQtyQcNextAction ? (
             <details className="erp-advanced-section">
               <summary className="cursor-pointer select-none list-none px-2 py-1 text-[11px] font-semibold text-slate-500 [&::-webkit-details-marker]:hidden">
@@ -2900,10 +2898,8 @@ export function QcEntryPage() {
           ) : focusedProductionMissing ? null : productionBatchesFiltered.length === 0 ? (
             <>
               {fromNoQtySo && focusSoIdValid && listReady && productionBatchesAll.length > 0 ? (
-                <p className="mt-1 text-[12px] leading-snug text-slate-600">
-                  No batches awaiting QC for this filter. Use{" "}
-                  <span className="font-medium text-slate-800">Show: All</span> or{" "}
-                  <span className="font-medium text-slate-800">Completed QC</span> above to review batches.
+                <p className="mt-1 text-[13px] leading-snug text-slate-600">
+                  No batches awaiting QC in the Quality Queue for this view.
                 </p>
               ) : null}
               {showNoPendingQcBatchesMessage ? (
@@ -2912,12 +2908,10 @@ export function QcEntryPage() {
                   title={getRoleEmptyState("qc_batches", roleUi.role).title}
                   body={
                     getRoleEmptyState("qc_batches", roleUi.role).body ?? (
-                      <>
-                        Use <span className="font-medium text-slate-800">Show: All</span> or{" "}
-                        <span className="font-medium text-slate-800">Completed QC</span> to review batches.
-                      </>
+                      <>No production batches are awaiting quality inspection.</>
                     )
                   }
+
                 />
               ) : null}
               {!fromNoQtySo && focusSoIdValid && productionBatchesAll.length === 0 ? (
@@ -3029,485 +3023,413 @@ export function QcEntryPage() {
               ) : null}
               <div
                 className={cn(
-                  "mx-auto w-full max-w-[1120px]",
+                  "mx-auto w-full",
                   fromNoQtySo && noQtyLastQcSave && "hidden",
                 )}
+                ref={qcFormRef}
+                data-testid="qc-inspection-workbench"
               >
-              <OperatorTopBar className="gap-0.5 rounded border border-slate-200 bg-white p-0.5 shadow-sm [&_.erp-form-field]:gap-px">
-                <label className="erp-form-field w-fit shrink-0 [&_span]:leading-none">
-                  <span className="text-[10px] font-medium text-slate-600">Show</span>
-                  <select
-                    className={cn("erp-select mt-0.5 w-[12.5rem] min-w-0 text-[13px]", operatorInputClass)}
-                    value={prodShowFilter}
-                    onChange={(e) => setProdShowFilter(e.target.value as typeof prodShowFilter)}
-                  >
-                    <option value="ALL">All</option>
-                    <option value="AWAITING">{PRODUCTION_QA_TERMS.AWAITING_QA}</option>
-                    <option value="COMPLETED">Completed QC</option>
-                  </select>
-                </label>
-                <div className="erp-form-field min-w-[12rem] max-w-[22rem] shrink-0 [&_span]:leading-none">
-                  <span className="text-[10px] font-medium text-slate-600">Batch</span>
-                  <select
-                    ref={productionSelectRef}
-                    className={cn("erp-select mt-0.5 w-full min-w-0 text-[13px]", operatorInputClass)}
-                    value={productionId === 0 ? "" : String(productionId)}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      const id = v === "" ? 0 : Number(v);
-                      setProductionId(id);
-                      patch({ [DRILL_QUERY.productionId]: id > 0 ? String(id) : null });
-                    }}
-                  >
-                    <option value="">Select batch…</option>
-                    {productionBatchesForDropdown.map((r) => {
-                      const q = safeQcRollupsForRow(r);
-                      const status = qcStatusForRollups(q);
-                      return (
-                        <option key={r.id} value={r.id}>
-                          {displayProductionEntryNo(r.id, r.docNo)}
-                          {fromNoQtySo && safeCycleNoForRow(r) != null ? ` · Cycle ${safeCycleNoForRow(r)}` : ""} ·{" "}
-                          {safeItemNameForRow(r) || "—"} · {qcStatusLabel(status)} · awaiting {fmtQcQty(q.pending)}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </div>
-                <div className="erp-form-field min-w-[9rem] shrink-0 [&_span]:leading-none">
-                  <span className="text-[10px] font-medium text-slate-600">Item</span>
-                  <Input
-                    readOnly
-                    className={cn("mt-0.5 cursor-default bg-slate-50 text-[13px]", operatorInputClass)}
-                    value={selected ? safeItemNameForRow(selected) : ""}
-                    placeholder="—"
-                    aria-label="Item"
+                <div
+                  className="grid items-start gap-3 lg:grid-cols-[minmax(0,36%)_minmax(0,64%)]"
+                  data-testid="qc-inspection-split"
+                >
+                  <QualityInspectionQueuePanel
+                    className="min-h-0 lg:max-h-[min(calc(100dvh-10rem),40rem)]"
+                    rows={qualityQueueRows}
+                    activeRowId={activeQualityQueueRowId}
+                    onSelectRow={handleQualityQueueSelect}
+                    loading={!listReady}
+                    filterText={qualityQueueFilter}
+                    onFilterTextChange={setQualityQueueFilter}
                   />
-                </div>
-                <div className="erp-form-field w-fit shrink-0 [&_span]:leading-none">
-                  <span className="text-[10px] font-medium text-slate-600">Batch date</span>
-                  <Input
-                    type="date"
-                    readOnly
-                    className={cn("mt-0.5 w-[11rem] cursor-default bg-slate-50 tabular-nums text-[13px]", operatorInputClass)}
-                    value={selected ? toYmdFromIso(safeIsoDate(selected)) : ""}
-                    aria-label="Production batch date"
-                  />
-                </div>
-                {selectedRollups ? (
-                  <div className="flex flex-wrap items-stretch gap-px">
-                    <OperatorMetricBadge
-                      className="px-1 py-px [&_span:first-child]:text-[9px] [&_span:last-child]:text-[12px]"
-                      label="Produced"
-                      value={fmtQcQty(selectedRollups.produced)}
-                    />
-                    <OperatorMetricBadge
-                      className="px-1 py-px [&_span:first-child]:text-[9px] [&_span:last-child]:text-[12px]"
-                      label="Accepted"
-                      value={fmtQcQty(selectedRollups.accepted)}
-                    />
-                    <OperatorMetricBadge
-                      className="px-1 py-px [&_span:first-child]:text-[9px] [&_span:last-child]:text-[12px]"
-                      label="Rejected"
-                      value={fmtQcQty(selectedRollups.rejected)}
-                    />
-                    <OperatorMetricBadge
-                      className="px-1 py-px [&_span:first-child]:text-[9px] [&_span:last-child]:text-[12px]"
-                      label="Await QC"
-                      value={fmtQcQty(selectedRollups.pending)}
-                    />
-                  </div>
-                ) : null}
-              </OperatorTopBar>
-
-              <OperatorMainSplit
-                balancedWorkbench
-                lgGridClassName="lg:grid-cols-[minmax(0,0.88fr)_minmax(0,1.12fr)]"
-                panelContainerClassName="erp-op-inspect-zone flex min-h-0 flex-col overflow-x-visible overflow-y-visible lg:sticky lg:top-16 lg:z-[6] lg:max-h-[calc(100dvh-4.5rem)] lg:self-start lg:overflow-y-auto"
-                className="lg:max-h-[min(calc(100dvh-7.5rem),38rem)] lg:min-h-0"
-                panelClassName="!p-1 !pb-0 min-h-0 h-full"
-                queue={
-                  <div className="flex min-h-0 flex-col gap-px lg:h-full lg:min-h-0">
-                    <div className="flex flex-wrap items-baseline justify-between gap-0.5">
-                      <h3 className="text-[11px] font-semibold text-slate-600">
-                        {fromNoQtySo && focusSoIdValid ? "Current cycle work" : "Production QC queue"}
-                      </h3>
-                    </div>
+                  <div
+                    className="flex flex-col rounded-lg border border-slate-200 bg-white shadow-sm"
+                    data-testid="qc-inspect-selected-panel"
+                  >
                     <div
-                      className={cn(
-                        "min-h-0 flex-1 overflow-auto rounded-md border border-slate-200/60 bg-white",
-                        qcQueueRows.length > 8 ? "max-h-40 lg:max-h-none" : "",
-                      )}
+                      className="shrink-0 border-b border-slate-100 px-3 py-2"
+                      data-testid="qc-inspect-selected-header"
                     >
-                      <table className="w-full text-[11px] leading-none">
-                        <thead className="sticky top-0 z-[1] border-b border-slate-200 bg-slate-50">
-                          <tr className="text-left text-[10px] text-slate-600">
-                            <th className="px-1 py-px font-medium">Batch</th>
-                            <th className="px-1 py-px font-medium">Item</th>
-                            <th className="px-1 py-px font-medium">Status</th>
-                            <th className="px-1 py-px text-right font-medium">Produced</th>
-                            <th className="px-1 py-px text-right font-medium">Accepted</th>
-                            <th className="px-1 py-px text-right font-medium">Rejected</th>
-                            <th className="px-1 py-px text-right font-medium">Awaiting</th>
-                            <th className="w-7 px-0 py-px text-right font-medium">▶</th>
+                      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+                        <div className="min-w-0 flex-1">
+                          <h2 className="text-[14px] font-semibold text-slate-900">Inspect Selected Batch</h2>
+                          {selected && selectedRollups ? (
+                            <div
+                              className="mt-2 grid gap-x-4 gap-y-1 text-[13px] sm:grid-cols-2"
+                              data-testid="qc-selected-batch-summary"
+                            >
+                              <div>
+                                <span className="text-slate-500">Batch </span>
+                                <span className="font-mono font-semibold text-slate-900">
+                                  {displayProductionEntryNo(selected.id, selected.docNo)}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-slate-500">WO </span>
+                                <span className="font-semibold text-slate-900">
+                                  {displayWorkOrderNo(
+                                    Number(selected.workOrderLine?.workOrder?.id ?? 0),
+                                    selected.workOrderLine?.workOrder?.docNo ?? null,
+                                  )}
+                                </span>
+                                {focusSoIdValid && focusSo ? (
+                                  <>
+                                    <span className="text-slate-400"> · </span>
+                                    <span className="text-slate-500">SO </span>
+                                    <span className="font-semibold">
+                                      {displaySalesOrderNo(focusSo.id, focusSo.docNo ?? null)}
+                                    </span>
+                                  </>
+                                ) : null}
+                                {fromNoQtySo && safeCycleNoForRow(selected) != null ? (
+                                  <>
+                                    <span className="text-slate-400"> · </span>
+                                    <span className="text-slate-500">RS cycle </span>
+                                    <span className="font-semibold tabular-nums">{safeCycleNoForRow(selected)}</span>
+                                  </>
+                                ) : null}
+                              </div>
+                              <div className="sm:col-span-2">
+                                <span className="text-slate-500">Product </span>
+                                <span className="font-semibold text-slate-900">{safeItemNameForRow(selected)}</span>
+                                <span className="text-slate-400"> · </span>
+                                <span className="text-slate-500">Date </span>
+                                <span className="tabular-nums font-semibold">
+                                  {toYmdFromIso(safeIsoDate(selected)) || "—"}
+                                </span>
+                                {safeItemUnitForRow(selected) ? (
+                                  <>
+                                    <span className="text-slate-400"> · </span>
+                                    <span className="text-slate-500">Unit </span>
+                                    <span className="font-semibold">{safeItemUnitForRow(selected)}</span>
+                                  </>
+                                ) : null}
+                              </div>
+                              <div className="sm:col-span-2 flex flex-wrap gap-x-4 gap-y-0.5 text-[15px] font-semibold tabular-nums">
+                                <span>
+                                  Produced{" "}
+                                  <span className="text-slate-900">
+                                    {fmtQcQty(selectedRollups.produced, safeItemUnitForRow(selected))}
+                                  </span>
+                                </span>
+                                <span>
+                                  Accepted{" "}
+                                  <span className="text-emerald-700">
+                                    {fmtQcQty(selectedRollups.accepted, safeItemUnitForRow(selected))}
+                                  </span>
+                                </span>
+                                <span>
+                                  Rejected{" "}
+                                  <span className="text-red-700">
+                                    {fmtQcQty(selectedRollups.rejected, safeItemUnitForRow(selected))}
+                                  </span>
+                                </span>
+                                <span>
+                                  Awaiting{" "}
+                                  <span className="text-amber-800">
+                                    {fmtQcQty(selectedRollups.pending, safeItemUnitForRow(selected))}
+                                  </span>
+                                </span>
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="mt-1 text-[13px] text-slate-500">Select a batch from the Quality Queue.</p>
+                          )}
+                        </div>
+                        <div
+                          className="flex shrink-0 flex-col items-end gap-1.5"
+                          data-testid="qc-inspect-header-actions"
+                        >
+                          <p
+                            className={cn(
+                              "max-w-[min(100%,16rem)] text-right text-[12px] font-semibold tabular-nums",
+                              qcFormCanSubmit ? "text-emerald-800" : "text-amber-900",
+                            )}
+                            data-testid="qc-save-status"
+                          >
+                            {qcSaveInspectionStatus}
+                          </p>
+                          <Button
+                            type="button"
+                            variant="default"
+                            size="sm"
+                            data-testid="qc-save-btn"
+                            className="h-10 min-w-[10rem] whitespace-nowrap px-4 text-[14px] font-semibold shadow-md"
+                            onClick={onSubmit}
+                            disabled={saving || !qcFormCanSubmit}
+                            title={saving || !qcFormCanSubmit ? qcSaveInspectionStatus : undefined}
+                            {...(qcDemoHl ? { "data-demo-highlight": qcDemoHl } : {})}
+                          >
+                            {saving ? "Saving…" : "Save Inspection"}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-3 p-3" data-testid="qc-inspect-selected-body">
+                      {productionId > 0 &&
+                      draftCheckedTotal != null &&
+                      selectedRollups &&
+                      draftCheckedTotal > selectedRollups.pending + 1e-6 ? (
+                        <p className="text-[13px] font-medium text-amber-800">Total exceeds remaining QC quantity</p>
+                      ) : null}
+
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div className="erp-form-field min-w-0">
+                          <span className="text-[13px] font-semibold text-slate-700">Inspecting Now</span>
+                          <Input
+                            ref={checkedQtyRef}
+                            type="text"
+                            data-testid="qc-inspecting-input"
+                            inputMode="decimal"
+                            autoComplete="off"
+                            className={cn(
+                              "mt-1 h-11 tabular-nums text-[15px]",
+                              operatorInputClass,
+                              "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
+                            )}
+                            placeholder="Required"
+                            value={checkedQtyStr}
+                            onChange={(e) => setCheckedQtyStr(sanitizeQtyInputDraft(e.target.value))}
+                            onKeyDown={blockDecimalSpinnerKeys}
+                            onWheel={blockDecimalWheel}
+                            disabled={!productionId}
+                          />
+                          {productionId > 0 && !checkedQtyValid ? (
+                            <p className="mt-0.5 text-[12px] font-medium text-amber-800">Enter inspected quantity</p>
+                          ) : null}
+                        </div>
+                        <div className="erp-form-field min-w-0">
+                          <span className="text-[13px] font-medium text-slate-700">Accepted Qty</span>
+                          <Input
+                            type="text"
+                            inputMode="decimal"
+                            autoComplete="off"
+                            className={cn("mt-1 h-11 tabular-nums text-[15px] bg-slate-50", operatorInputClass)}
+                            value={
+                              checkedQtyValid && checkedParsed != null && rejectedNumForForm != null
+                                ? fmtQcQtyForInput(Math.max(0, checkedParsed - rejectedNumForForm))
+                                : ""
+                            }
+                            placeholder="Auto"
+                            readOnly
+                            disabled={!productionId}
+                          />
+                        </div>
+                        <div className="erp-form-field min-w-0">
+                          <span className="text-[13px] font-medium text-slate-700">Rejected Qty</span>
+                          <Input
+                            type="text"
+                            inputMode="decimal"
+                            autoComplete="off"
+                            data-testid="qc-rejected-input"
+                            className={cn(
+                              "mt-1 h-11 tabular-nums text-[15px]",
+                              operatorInputClass,
+                              "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
+                            )}
+                            placeholder=""
+                            value={rejectedQty}
+                            onChange={(e) => setRejectedQty(toNumberDraft(sanitizeQtyInputDraft(e.target.value)))}
+                            onKeyDown={blockDecimalSpinnerKeys}
+                            onWheel={blockDecimalWheel}
+                            disabled={!productionId}
+                          />
+                          {productionId > 0 && rejectedQty !== "" && rejectedNumForForm === null ? (
+                            <p className="mt-0.5 text-[12px] font-medium text-amber-800">Enter a valid rejected quantity.</p>
+                          ) : null}
+                          {productionId > 0 &&
+                          checkedQtyValid &&
+                          checkedParsed != null &&
+                          rejectedNumForForm != null &&
+                          rejectedNumForForm > checkedParsed + 1e-6 ? (
+                            <p className="mt-0.5 text-[12px] font-medium text-amber-800">
+                              Rejected qty cannot exceed inspected qty.
+                            </p>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          data-testid="qc-accept-full-btn"
+                          className="h-10 shrink-0 px-3 text-[13px]"
+                          disabled={saving || !selectedRollups || selectedRollups.pending <= 1e-6}
+                          onClick={() => {
+                            if (!selectedRollups) return;
+                            setCheckedQtyStr(fmtQcQtyForInput(selectedRollups.pending));
+                            setRejectedQty(0);
+                            setRejectedStockBucket(null);
+                          }}
+                        >
+                          Accept Full
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-10 shrink-0 px-3 text-[13px]"
+                          disabled={saving || !selectedRollups || selectedRollups.pending <= 1e-6}
+                          onClick={() => setCheckedQtyStr(fmtQcQtyForInput(selectedRollups?.pending ?? 0))}
+                        >
+                          Inspect Full Remaining
+                        </Button>
+                      </div>
+
+                      {productionId > 0 && rejectedNumForForm != null && rejectedNumForForm > 1e-6 ? (
+                        <div
+                          className="max-h-[min(16rem,36vh)] space-y-2 overflow-x-hidden overflow-y-auto rounded-md border border-dashed border-amber-200 bg-amber-50/40 p-2.5"
+                          aria-label="Rejection details"
+                          data-testid="qc-rejection-details"
+                        >
+                          <div className="erp-form-field min-w-0">
+                            <span className="text-[13px] font-semibold text-slate-700">Rejection reason</span>
+                            <Input
+                              className={cn("mt-1 h-10 text-[14px]", operatorInputClass)}
+                              value={reason}
+                              onChange={(e) => setReason(e.target.value)}
+                              placeholder="Required"
+                              disabled={!productionId}
+                              data-testid="qc-rejection-reason"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-baseline justify-between gap-1">
+                              <span className="text-[13px] font-medium text-slate-700">Disposition (Rework / Hold / Scrap)</span>
+                              <span className="text-[12px] text-slate-500">
+                                Total must equal{" "}
+                                <span className="font-semibold tabular-nums text-slate-700">
+                                  {fmtQcQty(rejectedNumForForm)}
+                                </span>
+                              </span>
+                            </div>
+                            <div className="grid gap-2 sm:grid-cols-3">
+                              <div className="erp-form-field min-w-0">
+                                <span className="text-[13px]">Rework Qty</span>
+                                <Input
+                                  type="text"
+                                  inputMode="decimal"
+                                  autoComplete="off"
+                                  className={cn("mt-1 h-10 tabular-nums text-[14px]", operatorInputClass)}
+                                  value={rejSplitRework}
+                                  onChange={(e) => {
+                                    setRejSplitRework(toNumberDraft(sanitizeQtyInputDraft(e.target.value)));
+                                    setRejectedStockBucket(null);
+                                  }}
+                                  onKeyDown={blockDecimalSpinnerKeys}
+                                  onWheel={blockDecimalWheel}
+                                  disabled={!productionId}
+                                />
+                              </div>
+                              <div className="erp-form-field min-w-0">
+                                <span className="text-[13px]">Hold Qty</span>
+                                <Input
+                                  type="text"
+                                  inputMode="decimal"
+                                  autoComplete="off"
+                                  className={cn("mt-1 h-10 tabular-nums text-[14px]", operatorInputClass)}
+                                  value={rejSplitHold}
+                                  onChange={(e) => {
+                                    setRejSplitHold(toNumberDraft(sanitizeQtyInputDraft(e.target.value)));
+                                    setRejectedStockBucket(null);
+                                  }}
+                                  onKeyDown={blockDecimalSpinnerKeys}
+                                  onWheel={blockDecimalWheel}
+                                  disabled={!productionId}
+                                />
+                              </div>
+                              <div className="erp-form-field min-w-0">
+                                <span className="text-[13px]">Scrap Qty</span>
+                                <Input
+                                  type="text"
+                                  inputMode="decimal"
+                                  autoComplete="off"
+                                  className={cn("mt-1 h-10 tabular-nums text-[14px]", operatorInputClass)}
+                                  value={rejSplitScrap}
+                                  onChange={(e) => {
+                                    setRejSplitScrap(toNumberDraft(sanitizeQtyInputDraft(e.target.value)));
+                                    setRejectedStockBucket(null);
+                                  }}
+                                  onKeyDown={blockDecimalSpinnerKeys}
+                                  onWheel={blockDecimalWheel}
+                                  disabled={!productionId}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                          {Number(rejSplitScrap || 0) > 1e-6 ? (
+                            <label className="flex cursor-pointer items-center gap-2 text-[13px] text-slate-700">
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 rounded border-slate-300"
+                                checked={scrapReusable}
+                                onChange={(e) => setScrapReusable(e.target.checked)}
+                                disabled={!productionId}
+                              />
+                              Scrap reusable
+                            </label>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {productionId > 0 && qcInlineValidationMsg ? (
+                        <div
+                          className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[13px] font-medium text-amber-900"
+                          data-testid="qc-inline-validation"
+                        >
+                          {qcInlineValidationMsg}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+                {fromNoQtySo && focusSoIdValid && olderCycleHistoryRows.length > 0 ? (
+                  <details className="mt-2 rounded border border-slate-200 bg-slate-50 px-2.5 py-2">
+                    <summary className="cursor-pointer text-[13px] font-medium text-slate-700">
+                      Older history (other cycles) ({olderCycleHistoryRows.length})
+                    </summary>
+                    <div className="mt-2 overflow-x-auto">
+                      <table className="w-full min-w-[720px] text-[13px]">
+                        <thead>
+                          <tr className="border-b border-slate-200 text-left text-[12px] font-medium text-slate-600">
+                            <th className="py-1 pr-2">Batch</th>
+                            <th className="py-1 pr-2">Cycle</th>
+                            <th className="py-1 pr-2">Item</th>
+                            <th className="py-1 pr-2 text-right">Produced qty</th>
+                            <th className="py-1 pr-2 text-right">Accepted qty</th>
+                            <th className="py-1 pr-2 text-right">Rejected qty</th>
+                            <th className="py-1 text-right">{PRODUCTION_QA_TERMS.AWAITING_QA}</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {qcQueueRows.map(({ r, q, status }) => {
-                            const sel = productionId === r.id;
-                            const itemName = safeItemNameForRow(r) || "—";
+                          {olderCycleHistoryRows.slice(0, 40).map((r) => {
+                            const q = safeQcRollupsForRow(r);
+                            const cy = safeCycleIdForRow(r);
                             return (
-                              <tr
-                                key={r.id}
-                                className={cn(
-                                  "border-t border-slate-100",
-                                  operatorTableRowQcClass,
-                                  !sel && status === "AWAITING_QC" && "bg-amber-50/25",
-                                  sel && "bg-sky-50/80 ring-1 ring-inset ring-sky-200/80",
-                                )}
-                              >
-                                <td
-                                  className="max-w-[5rem] px-1 py-px align-middle text-[10px] tabular-nums text-slate-800"
-                                  title={`Batch #${r.id}`}
-                                >
-                                  <span className="line-clamp-2 leading-tight">
-                                    <span className="font-mono text-[9px] text-slate-500">#{r.id}</span>{" "}
-                                    {toYmdFromIso(safeIsoDate(r)) || "—"}
-                                  </span>
+                              <tr key={r.id} className={cn("border-t border-slate-100", operatorTableRowClass)}>
+                                <td className="py-1 pr-2 font-mono tabular-nums">
+                                  {displayProductionEntryNo(r.id, r.docNo)}
                                 </td>
-                                <td className="max-w-[8rem] truncate px-1 py-px align-middle" title={itemName}>
-                                  {itemName}
-                                </td>
-                                <td className="px-1 py-px align-middle">
-                                  <span
-                                    className={cn(
-                                      "inline-flex max-w-full truncate rounded px-0.5 py-px text-[9px] font-semibold leading-tight",
-                                      status === "AWAITING_QC"
-                                        ? "bg-amber-50 text-amber-800"
-                                        : status === "PARTIAL_QC"
-                                          ? "bg-sky-50 text-sky-800"
-                                          : "bg-emerald-50 text-emerald-800",
-                                    )}
-                                  >
-                                    {qcStatusLabel(status)}
-                                  </span>
-                                </td>
-                                <td className="px-1 py-px text-right align-middle tabular-nums">{fmtQcQty(q.produced)}</td>
-                                <td className="px-1 py-px text-right align-middle tabular-nums text-emerald-700">{fmtQcQty(q.accepted)}</td>
-                                <td className="px-1 py-px text-right align-middle tabular-nums text-red-700">{fmtQcQty(q.rejected)}</td>
-                                <td className="px-1 py-px text-right align-middle font-semibold tabular-nums text-amber-800">{fmtQcQty(q.pending)}</td>
-                                <td className="px-0 py-px text-right align-middle">
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-6 w-6 shrink-0 p-0 text-[11px]"
-                                    onClick={() => {
-                                      setProductionId(r.id);
-                                      patch({ [DRILL_QUERY.productionId]: String(r.id) });
-                                    }}
-                                    aria-label={`Select batch ${r.id}`}
-                                  >
-                                    ▶
-                                  </Button>
-                                </td>
+                                <td className="py-1 pr-2 tabular-nums">{safeCycleNoForRow(r) ?? cy ?? "—"}</td>
+                                <td className="py-1 pr-2">{safeItemNameForRow(r) || "—"}</td>
+                                <td className="py-1 pr-2 text-right tabular-nums">{fmtQcQty(q.produced)}</td>
+                                <td className="py-1 pr-2 text-right tabular-nums text-emerald-700">{fmtQcQty(q.accepted)}</td>
+                                <td className="py-1 pr-2 text-right tabular-nums text-red-700">{fmtQcQty(q.rejected)}</td>
+                                <td className="py-1 text-right tabular-nums">{fmtQcQty(q.pending)}</td>
                               </tr>
                             );
                           })}
                         </tbody>
                       </table>
                     </div>
-                    {fromNoQtySo && focusSoIdValid && olderCycleHistoryRows.length > 0 ? (
-                      <details className="rounded border border-slate-200 bg-slate-50 px-2.5 py-2">
-                        <summary className="cursor-pointer text-[12px] font-medium text-slate-700">
-                          Older history (other cycles) ({olderCycleHistoryRows.length})
-                        </summary>
-                        <div className="mt-2 overflow-x-auto">
-                          <table className="w-full min-w-[720px] text-[12px]">
-                            <thead>
-                              <tr className="border-b border-slate-200 text-left text-[11px] font-medium text-slate-600">
-                                <th className="py-1 pr-2">Batch</th>
-                                <th className="py-1 pr-2">Cycle</th>
-                                <th className="py-1 pr-2">Item</th>
-                                <th className="py-1 pr-2 text-right">Produced qty</th>
-                                <th className="py-1 pr-2 text-right">Accepted qty</th>
-                                <th className="py-1 pr-2 text-right">Rejected qty</th>
-                                <th className="py-1 text-right">{PRODUCTION_QA_TERMS.AWAITING_QA}</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {olderCycleHistoryRows.slice(0, 40).map((r) => {
-                                const q = safeQcRollupsForRow(r);
-                                const cy = safeCycleIdForRow(r);
-                                return (
-                                  <tr key={r.id} className={cn("border-t border-slate-100", operatorTableRowClass)}>
-                                    <td className="py-1 pr-2 tabular-nums">#{r.id}</td>
-                                    <td className="py-1 pr-2 tabular-nums">{safeCycleNoForRow(r) ?? cy ?? "—"}</td>
-                                    <td className="py-1 pr-2">{safeItemNameForRow(r) || "—"}</td>
-                                    <td className="py-1 pr-2 text-right tabular-nums">{fmtQcQty(q.produced)}</td>
-                                    <td className="py-1 pr-2 text-right tabular-nums text-emerald-700">{fmtQcQty(q.accepted)}</td>
-                                    <td className="py-1 pr-2 text-right tabular-nums text-red-700">{fmtQcQty(q.rejected)}</td>
-                                    <td className="py-1 text-right tabular-nums">{fmtQcQty(q.pending)}</td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                        {olderCycleHistoryRows.length > 40 ? (
-                          <div className="mt-2 text-[11px] text-slate-600">Showing 40 of {olderCycleHistoryRows.length}.</div>
-                        ) : null}
-                      </details>
+                    {olderCycleHistoryRows.length > 40 ? (
+                      <div className="mt-2 text-[12px] text-slate-600">Showing 40 of {olderCycleHistoryRows.length}.</div>
                     ) : null}
-                  </div>
-                }
-                panel={
-                  <div className="flex h-full min-h-0 w-full flex-col">
-                    <div className="flex min-h-0 flex-1 flex-col">
-                      <div className="shrink-0 space-y-1">
-                        {selected && selectedRollups ? (
-                          <div
-                            className="truncate text-[10px] leading-tight text-slate-700"
-                            title={`${safeItemNameForRow(selected)} · Awaiting ${fmtQcQty(selectedRollups.pending)} · Produced ${fmtQcQty(selectedRollups.produced)}`}
-                          >
-                            <span className="font-semibold text-slate-900">{safeItemNameForRow(selected)}</span>
-                            <span className="text-slate-500"> · Awaiting </span>
-                            <span className="font-semibold tabular-nums text-amber-800">{fmtQcQty(selectedRollups.pending)}</span>
-                            <span className="text-slate-500"> · Produced </span>
-                            <span className="tabular-nums text-slate-800">{fmtQcQty(selectedRollups.produced)}</span>
-                          </div>
-                        ) : (
-                          <div className="text-[10px] text-slate-500">Select a batch from the queue.</div>
-                        )}
-                        {productionId > 0 &&
-                        draftCheckedTotal != null &&
-                        selectedRollups &&
-                        draftCheckedTotal > selectedRollups.pending + 1e-6 ? (
-                          <p className="text-[10px] font-medium text-amber-800">Total exceeds remaining QC quantity</p>
-                        ) : null}
-                        <div className="erp-op-action-focus space-y-2">
-                        <div className="grid grid-cols-3 gap-2">
-                          <div className="erp-form-field min-w-0 [&_span]:leading-none">
-                            <span className="text-[12px] font-semibold text-slate-700">Inspecting now</span>
-                            <Input
-                              ref={checkedQtyRef}
-                              type="text"
-                              data-testid="qc-inspecting-input"
-                              inputMode="decimal"
-                              autoComplete="off"
-                              className={cn("mt-0.5 tabular-nums text-sm", operatorInputClass)}
-                              placeholder="Required"
-                              value={checkedQtyStr}
-                              onChange={(e) => setCheckedQtyStr(sanitizeQtyInputDraft(e.target.value))}
-                              disabled={!productionId}
-                            />
-                            {productionId > 0 && !checkedQtyValid ? (
-                              <p className="mt-0.5 text-[11px] font-medium text-amber-800">Enter inspected quantity</p>
-                            ) : null}
-                          </div>
-                          <div className="erp-form-field min-w-0 [&_span]:leading-none">
-                            <span className="text-[12px] font-medium text-slate-600">Rejected qty</span>
-                            <Input
-                              type="text"
-                              inputMode="decimal"
-                              autoComplete="off"
-                              className={cn("mt-0.5 tabular-nums text-sm", operatorInputClass)}
-                              placeholder=""
-                              value={rejectedQty}
-                              onChange={(e) => setRejectedQty(toNumberDraft(sanitizeQtyInputDraft(e.target.value)))}
-                              disabled={!productionId}
-                            />
-                            {productionId > 0 && rejectedQty !== "" && rejectedNumForForm === null ? (
-                              <p className="mt-0.5 text-[11px] font-medium text-amber-800">Enter a valid rejected quantity.</p>
-                            ) : null}
-                          </div>
-                          <div className="erp-form-field min-w-0 [&_span]:leading-none">
-                            <span className="text-[12px] font-medium text-slate-600">Accepted qty</span>
-                            <Input
-                              type="text"
-                              inputMode="decimal"
-                              autoComplete="off"
-                              className={cn("mt-0.5 tabular-nums text-sm bg-slate-50", operatorInputClass)}
-                              value={
-                                checkedQtyValid && checkedParsed != null && rejectedNumForForm != null
-                                  ? fmtQcQtyForInput(Math.max(0, checkedParsed - rejectedNumForForm))
-                                  : ""
-                              }
-                              placeholder="Auto"
-                              readOnly
-                              disabled={!productionId}
-                            />
-                            {productionId > 0 &&
-                            checkedQtyValid &&
-                            checkedParsed != null &&
-                            rejectedNumForForm != null &&
-                            rejectedNumForForm > checkedParsed + 1e-6 ? (
-                              <p className="mt-0.5 text-[11px] font-medium text-amber-800">Rejected qty cannot exceed inspected qty.</p>
-                            ) : null}
-                          </div>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-1">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            data-testid="qc-accept-full-btn"
-                            className="h-8 shrink-0 px-2 text-[11px]"
-                            disabled={saving || !selectedRollups || selectedRollups.pending <= 1e-6}
-                            onClick={() => {
-                              if (!selectedRollups) return;
-                              setCheckedQtyStr(fmtQcQtyForInput(selectedRollups.pending));
-                              setRejectedQty(0);
-                              setRejectedStockBucket(null);
-                            }}
-                          >
-                            Accept Full
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-8 shrink-0 px-2 text-[11px]"
-                            disabled={saving || !selectedRollups || selectedRollups.pending <= 1e-6}
-                            onClick={() => setCheckedQtyStr(fmtQcQtyForInput(selectedRollups?.pending ?? 0))}
-                          >
-                            Inspect Full Remaining
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="default"
-                            size="sm"
-                            data-testid="qc-save-btn"
-                            className="h-8 min-w-[6.5rem] shrink-0 px-3 text-[13px] font-semibold shadow-md"
-                            onClick={onSubmit}
-                            disabled={saving || !qcFormCanSubmit}
-                            {...(qcDemoHl ? { "data-demo-highlight": qcDemoHl } : {})}
-                          >
-                            {saving ? "Saving…" : "Save QC"}
-                          </Button>
-                        </div>
-
-                        {productionId > 0 && rejectedNumForForm != null && rejectedNumForForm > 1e-6 ? (
-                          <div className="space-y-1 border-t border-dashed border-slate-200/70 pt-2" aria-label="Rejected qty split">
-                            <div className="flex flex-wrap items-baseline justify-between gap-1">
-                              <span className="text-[12px] font-medium text-slate-600">Rejected qty split</span>
-                              <span className="text-[11px] text-slate-500">
-                                Total must equal{" "}
-                                <span className="font-semibold tabular-nums text-slate-700">{fmtQcQty(rejectedNumForForm)}</span>
-                              </span>
-                            </div>
-                            <div className="grid gap-2 sm:grid-cols-3">
-                              <div className="erp-form-field min-w-0">
-                                <span className="erp-form-label text-[12px]">Rework Qty</span>
-                                <Input
-                                  type="text"
-                                  inputMode="decimal"
-                                  autoComplete="off"
-                                  className={cn("tabular-nums text-sm", operatorInputClass)}
-                                  value={rejSplitRework}
-                                  onChange={(e) => {
-                                    setRejSplitRework(toNumberDraft(sanitizeQtyInputDraft(e.target.value)));
-                                    setRejectedStockBucket(null);
-                                  }}
-                                  disabled={!productionId}
-                                />
-                              </div>
-                              <div className="erp-form-field min-w-0">
-                                <span className="erp-form-label text-[12px]">Hold Qty</span>
-                                <Input
-                                  type="text"
-                                  inputMode="decimal"
-                                  autoComplete="off"
-                                  className={cn("tabular-nums text-sm", operatorInputClass)}
-                                  value={rejSplitHold}
-                                  onChange={(e) => {
-                                    setRejSplitHold(toNumberDraft(sanitizeQtyInputDraft(e.target.value)));
-                                    setRejectedStockBucket(null);
-                                  }}
-                                  disabled={!productionId}
-                                />
-                              </div>
-                              <div className="erp-form-field min-w-0">
-                                <span className="erp-form-label text-[12px]">Scrap Qty</span>
-                                <Input
-                                  type="text"
-                                  inputMode="decimal"
-                                  autoComplete="off"
-                                  className={cn("tabular-nums text-sm", operatorInputClass)}
-                                  value={rejSplitScrap}
-                                  onChange={(e) => {
-                                    setRejSplitScrap(toNumberDraft(sanitizeQtyInputDraft(e.target.value)));
-                                    setRejectedStockBucket(null);
-                                  }}
-                                  disabled={!productionId}
-                                />
-                              </div>
-                            </div>
-                            <div className="text-[11px] text-slate-600">
-                              Split total:{" "}
-                              <span className="font-semibold tabular-nums">
-                                {fmtQcQty(
-                                  Math.max(0, Number(rejSplitRework || 0)) +
-                                    Math.max(0, Number(rejSplitHold || 0)) +
-                                    Math.max(0, Number(rejSplitScrap || 0)),
-                                )}
-                              </span>
-                            </div>
-                          </div>
-                        ) : null}
-
-                        </div>
-                        <div className="flex flex-wrap items-end gap-1 border-t border-dashed border-slate-200/60 pt-1">
-                          <div className="erp-form-field min-w-[8rem] max-w-[min(100%,18rem)] flex-1 [&_span]:leading-none">
-                            <span className="text-[10px] font-medium text-slate-600">Reason</span>
-                            <Input
-                              className={cn("mt-px text-[13px]", operatorInputClass)}
-                              value={reason}
-                              onChange={(e) => setReason(e.target.value)}
-                              placeholder="Optional"
-                              disabled={!productionId}
-                            />
-                          </div>
-                          <label className="mb-px flex min-h-0 cursor-pointer items-center gap-1 text-[10px] text-slate-700">
-                            <input
-                              type="checkbox"
-                              className="h-3 w-3 rounded border-slate-300"
-                              checked={scrapReusable}
-                              onChange={(e) => setScrapReusable(e.target.checked)}
-                              disabled={!productionId}
-                            />
-                            Scrap reusable
-                          </label>
-                        </div>
-                      </div>
-
-                      <div className="mt-1 min-h-0 flex-1 space-y-1 overflow-y-auto overflow-x-visible overscroll-contain border-t border-dashed border-slate-200/80 py-1 pr-0.5">
-                        {productionId > 0 && qcInlineValidationMsg ? (
-                          <div className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-900">
-                            {qcInlineValidationMsg}
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div className="pointer-events-none sticky bottom-0 z-[1] -mx-0.5 mt-1 shrink-0 bg-gradient-to-t from-white via-white to-transparent pb-0.5 pt-2 lg:hidden">
-                        <div className="pointer-events-auto border-t border-emerald-200/90 bg-emerald-50/95 px-0.5 pt-1 shadow-[0_-4px_12px_-2px_rgba(16,185,129,0.15)]">
-                          <Button
-                            type="button"
-                            variant="default"
-                            size="sm"
-                            className="h-9 w-full border border-emerald-700/30 bg-emerald-600 text-[12px] font-semibold text-white shadow-md hover:bg-emerald-700"
-                            onClick={onSubmit}
-                            disabled={saving || !qcFormCanSubmit}
-                            data-testid="qc-save-btn-sticky"
-                          >
-                            {saving ? "Saving…" : "Save QC"}
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                }
-              />
+                  </details>
+                ) : null}
               </div>
             </div>
           )}
@@ -3652,12 +3574,9 @@ export function QcEntryPage() {
                     </div>
                     <div className="erp-form-field">
                       <span className="erp-form-label">Rejected qty</span>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="any"
+                      <DecimalInput
                         value={recheckRejectedQty}
-                        onChange={(e) => setRecheckRejectedQty(toNumberDraft(e.target.value))}
+                        onValueChange={setRecheckRejectedQty}
                       />
                       {Number(recheckRejectedQty) > Number(selectedRecheckDisp.remainingQty) + 1e-6 ? (
                         <p className="mt-0.5 text-[11px] font-medium text-amber-800">Rejected qty cannot exceed remaining qty.</p>
@@ -3825,11 +3744,11 @@ export function QcEntryPage() {
                 <div className="erp-form-row-2">
                   <div className="erp-form-field">
                     <span className="erp-form-label">Checked qty</span>
-                    <Input type="number" min={0} step="any" value={adjCheckedQty} onChange={(e) => setAdjCheckedQty(toNumberDraft(e.target.value))} />
+                    <DecimalInput value={adjCheckedQty} onValueChange={setAdjCheckedQty} />
                   </div>
                   <div className="erp-form-field">
                     <span className="erp-form-label">Rejected qty</span>
-                    <Input type="number" min={0} step="any" value={adjRejectedQty} onChange={(e) => setAdjRejectedQty(toNumberDraft(e.target.value))} />
+                    <DecimalInput value={adjRejectedQty} onValueChange={setAdjRejectedQty} />
                   </div>
                 </div>
                 <div className="erp-form-field">
@@ -3942,22 +3861,16 @@ export function QcEntryPage() {
                   <div className="erp-form-row-2">
                     <div className="erp-form-field">
                       <span className="erp-form-label">Checked qty</span>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="any"
+                      <DecimalInput
                         value={reworkCheckedQty}
-                        onChange={(e) => setReworkCheckedQty(toNumberDraft(e.target.value))}
+                        onValueChange={setReworkCheckedQty}
                       />
                     </div>
                     <div className="erp-form-field">
                       <span className="erp-form-label">Rejected qty</span>
-                      <Input
-                        type="number"
-                        min={0}
-                        step="any"
+                      <DecimalInput
                         value={reworkRejectedQty}
-                        onChange={(e) => setReworkRejectedQty(toNumberDraft(e.target.value))}
+                        onValueChange={setReworkRejectedQty}
                       />
                     </div>
                   </div>

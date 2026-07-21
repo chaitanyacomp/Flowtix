@@ -3,6 +3,7 @@ import { Link, useLocation, useParams, useSearchParams } from "react-router-dom"
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { apiFetch } from "../services/api";
 import { getApiUrl } from "../services/api";
 import { computeLineTaxSplit, sumBillLines } from "../lib/purchaseBillCalc";
@@ -1111,36 +1112,40 @@ export function PurchaseBillEditPage() {
                           <td className="text-right tabular-nums text-slate-500">—</td>
                           <td className="text-right tabular-nums text-slate-800">{formatQty3(received)}</td>
                           <td className="text-right">
-                            <Input
+                            <DecimalInput
                               ref={(el) => {
                                 qtyRefs.current[idx] = el;
                               }}
                               className="h-8 w-[5.5rem] text-right tabular-nums"
-                              type="number"
-                              step="any"
-                              min={0}
+                              normalizeOnBlur={false}
                               disabled={editLocked}
                               value={Number.isFinite(qty) ? String(qty) : ""}
                               onBlur={() => setTouched(ln.id, "qty")}
                               onKeyDown={(e) => onQtyKeyDown(idx, e)}
-                              onChange={(e) => setQty(ln.id, Number(e.target.value))}
+                              onValueChange={(raw) => {
+                                const trimmed = raw.trim();
+                                const parsed = trimmed === "" ? Number.NaN : Number(trimmed);
+                                setQty(ln.id, trimmed === "" || !Number.isFinite(parsed) ? Number.NaN : parsed);
+                              }}
                               onFocus={(e) => e.target.select()}
                             />
                             {showQtyErr ? <div className="text-[10px] text-red-700">Must be &gt; 0</div> : null}
                           </td>
                           <td className="text-right">
-                            <Input
+                            <DecimalInput
                               ref={(el) => {
                                 rateRefs.current[idx] = el;
                               }}
                               className="h-8 w-[5.5rem] text-right tabular-nums"
-                              type="number"
-                              step="any"
-                              min={0}
+                              normalizeOnBlur={false}
                               disabled={editLocked}
                               value={Number.isFinite(rate) ? String(rate) : ""}
                               onBlur={() => setTouched(ln.id, "rate")}
-                              onChange={(e) => setRate(ln.id, Number(e.target.value))}
+                              onValueChange={(raw) => {
+                                const trimmed = raw.trim();
+                                const parsed = trimmed === "" ? Number.NaN : Number(trimmed);
+                                setRate(ln.id, trimmed === "" || !Number.isFinite(parsed) ? Number.NaN : parsed);
+                              }}
                               onFocus={(e) => e.target.select()}
                               onKeyDown={(e) => onRateKeyDown(idx, e)}
                             />
@@ -1278,12 +1283,9 @@ export function PurchaseBillEditPage() {
                       </label>
                       <label className="grid gap-1 text-xs font-medium text-slate-600">
                         Amount
-                        <Input
-                          type="number"
-                          min={0}
-                          step="0.01"
+                        <DecimalInput
                           value={pvAmount}
-                          onChange={(e) => setPvAmount(e.target.value)}
+                          onValueChange={setPvAmount}
                           disabled={pvSaving}
                         />
                       </label>

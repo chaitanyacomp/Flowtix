@@ -118,6 +118,8 @@ describe("computeStoreDashboardKpiMetrics", () => {
     expect(kpis.readyForWo).toBe(1);
     expect(kpis.materialIssuePending).toBe(3);
     expect(kpis.rmccCases).toBe(4);
+    expect(kpis.grnPending).toBeGreaterThanOrEqual(0);
+    expect(kpis.awaitProcurementOrGrn).toBe(kpis.awaitProcurement + kpis.grnPending);
     expect(kpis.awaitProcurement).toBeGreaterThanOrEqual(1);
   });
 });

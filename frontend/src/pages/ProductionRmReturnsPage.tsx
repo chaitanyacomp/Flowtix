@@ -8,6 +8,7 @@ import { RmWastageModal } from "../components/erp/RmWastageModal";
 import { ApiRequestError, apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { PageContainer, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue, ErpPageContentGate } from "../components/erp/foundation";
 import { useStablePageLoad } from "../hooks/useStablePageLoad";
@@ -764,16 +765,12 @@ export function ProductionRmReturnsPage() {
                   <span className="text-[11px] text-slate-500">Returnable {fmtQty(ln.returnableQty, ln.unit)}</span>
                   <label className="grid gap-0.5 text-[11px]">
                     <span className="font-medium text-slate-600">Qty to return</span>
-                  <Input
-                    type="number"
-                    step="any"
-                    min={0}
-                    max={ln.returnableQty}
+                  <DecimalInput
                     placeholder="0"
                     value={ln.returnQty}
-                    onChange={(e) =>
+                    onValueChange={(next) =>
                       setDraftLines((prev) =>
-                        prev.map((d) => (d.key === ln.key ? { ...d, returnQty: e.target.value } : d)),
+                        prev.map((d) => (d.key === ln.key ? { ...d, returnQty: next } : d)),
                       )
                     }
                     className="h-8 w-28 text-[13px]"

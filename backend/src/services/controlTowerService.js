@@ -25,6 +25,7 @@ const { getAccountsDashboard } = require("./accountsDashboardService");
 const { getEligibleDispatches } = require("./salesBillService");
 const { buildOperationsExceptionReportPayload } = require("./operationsExceptionReport");
 const { getNoQtyRecoveryControlTowerSlice } = require("./noQtyRecoveryAnalyticsService");
+const { buildLiveFactorySnapshot } = require("./liveFactorySnapshotService");
 
 const PANEL_NUM_EPS = QUEUE_EPS;
 
@@ -40,6 +41,12 @@ function buildEmptyPanelMetricsData() {
       rmShortageCount: 0,
       rmReadyCount: 0,
       productionPendingCount: 0,
+      readyToStartCount: 0,
+      productionRunningCount: 0,
+      productionPausedCount: 0,
+      productionBlockedCount: 0,
+      awaitingReportCount: 0,
+      pendingQcCount: 0,
       qaPendingCount: 0,
       dispatchPendingLineCount: 0,
       dispatchPendingQty: 0,
@@ -109,6 +116,12 @@ function validatePanelMetricsShape(data) {
     "rmShortageCount",
     "rmReadyCount",
     "productionPendingCount",
+    "readyToStartCount",
+    "productionRunningCount",
+    "productionPausedCount",
+    "productionBlockedCount",
+    "awaitingReportCount",
+    "pendingQcCount",
     "qaPendingCount",
     "dispatchPendingLineCount",
     "dispatchPendingQty",
@@ -143,13 +156,38 @@ function countDispatchPendingFromBacklog(rows) {
   return { lineCount, qty };
 }
 
-function countProductionPendingFromQueue(rows) {
-  let count = 0;
+function countProductionStatesFromQueue(rows) {
+  let readyToStart = 0;
+  let running = 0;
+  let paused = 0;
   for (const r of rows || []) {
-    if (String(r.nextAction ?? "") === "ON_HOLD") continue;
-    if (String(r.nextAction ?? "") === "PRODUCTION_PENDING") count += 1;
+    const next = String(r.nextAction ?? "");
+    const workState = String(r.productionWorkState ?? "").toUpperCase();
+    if (next === "ON_HOLD" || workState === "PAUSED_PRODUCTION") {
+      paused += 1;
+      continue;
+    }
+    if (workState === "READY_TO_START") {
+      readyToStart += 1;
+      continue;
+    }
+    if (workState === "CONTINUE_PRODUCTION") {
+      running += 1;
+      continue;
+    }
+    if (next === "PRODUCTION_PENDING") {
+      const produced = n(r.producedQty);
+      if (produced > PANEL_NUM_EPS) running += 1;
+      else readyToStart += 1;
+    }
   }
-  return count;
+  return { readyToStart, running, paused };
+}
+
+function countProductionPendingFromQueue(rows) {
+  const { readyToStart, running } = countProductionStatesFromQueue(rows);
+  // Legacy field: total production-queue actionable (ready + running), not "Running" alone.
+  return readyToStart + running;
 }
 
 function countRmReady(allocationRows, storeIssueRows, readyForWoCreationCount) {
@@ -229,6 +267,9 @@ async function getControlTowerPanelMetrics(db = prisma, opts = {}) {
   const dispatchPending = countDispatchPendingFromBacklog(dispatchBacklog);
   const exceptionSummary = operationsExceptions?.summary ?? {};
 
+  const liveFactory = buildLiveFactorySnapshot(productionQueue);
+  const lfCounts = liveFactory.counts;
+
   data.liveFactoryPanel = {
     rmShortageCount: rmRiskCritical + woRmShortage,
     rmReadyCount: countRmReady(
@@ -236,12 +277,18 @@ async function getControlTowerPanelMetrics(db = prisma, opts = {}) {
       storeIssuePending,
       (woPrepareQueues?.readyForWoCreation || []).length,
     ),
-    productionPendingCount: countProductionPendingFromQueue(productionQueue),
+    productionPendingCount: lfCounts.readyToStart + lfCounts.running,
+    readyToStartCount: lfCounts.readyToStart,
+    productionRunningCount: lfCounts.running,
+    productionPausedCount: lfCounts.paused,
+    productionBlockedCount: lfCounts.blocked,
+    awaitingReportCount: lfCounts.awaitingReport,
+    pendingQcCount: lfCounts.pendingQc,
     qaPendingCount: n(qcCounts?.productionQcPendingCount),
     dispatchPendingLineCount: dispatchPending.lineCount,
     dispatchPendingQty: Math.round(dispatchPending.qty * 1000) / 1000,
     activeSalesOrders,
-    activeWorkOrders,
+    activeWorkOrders: Math.max(activeWorkOrders, lfCounts.activeWorkOrders),
     billingReadyCount: null,
     billingPendingCount: null,
     exportPendingCount: null,
@@ -258,7 +305,8 @@ async function getControlTowerPanelMetrics(db = prisma, opts = {}) {
 
   data.criticalAlerts = {
     rmCriticalCount: n(rmStockCriticalCount) + rmRiskCritical,
-    blockedWorkOrders: rmRiskCritical,
+    // Authoritative production blocked WOs — never Ready-to-Start / READY_TO_RELEASE rows.
+    blockedWorkOrders: lfCounts.blocked,
     systemExceptions: sumExceptionSummary(exceptionSummary),
     alertTotal: 0,
   };

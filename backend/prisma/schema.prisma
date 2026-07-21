@@ -667,6 +667,11 @@ model Supplier {
   stateCode String?  @db.VarChar(2)
   /// Structured state reference (GST code mapping). Nullable for backward compatibility.
   stateId   Int?
+  /// Exact Tally ledger NAME (may differ from ERP display/mailing name).
+  tallyName String?  @db.VarChar(255)
+  /// Tally GUID / Master ID when present on import.
+  tallyGuid String?  @db.VarChar(64)
+  tallyImportedAt DateTime?
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -683,6 +688,8 @@ model Supplier {
   @@index([stateCode])
   @@index([gst])
   @@index([isActive])
+  @@index([tallyName])
+  @@index([tallyGuid])
 }
 
 model SupplierLocation {
@@ -726,6 +733,11 @@ model Customer {
   state     String?  @db.VarChar(128)
   /// Structured state reference (GST code mapping). Nullable for backward compatibility.
   stateId   Int?
+  /// Exact Tally ledger NAME (may differ from ERP display/mailing name).
+  tallyName String?  @db.VarChar(255)
+  /// Tally GUID / Master ID when present on import.
+  tallyGuid String?  @db.VarChar(64)
+  tallyImportedAt DateTime?
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -743,6 +755,8 @@ model Customer {
   @@index([stateId])
   @@index([gst])
   @@index([isActive])
+  @@index([tallyName])
+  @@index([tallyGuid])
 }
 
 model CustomerDeliveryAddress {
@@ -815,6 +829,11 @@ model Item {
   updatedAt                         DateTime @updatedAt
   /// Inactive masters remain queryable for history but cannot be selected for new transactions.
   isActive                          Boolean  @default(true)
+  /// Exact Tally STOCKITEM NAME (may differ from editable ERP itemName).
+  tallyName                         String?  @db.VarChar(255)
+  /// Tally GUID / Master ID when present on import.
+  tallyGuid                         String?  @db.VarChar(64)
+  tallyImportedAt                   DateTime?
 
   unitRef Unit? @relation(fields: [unitId], references: [id], onDelete: SetNull)
 
@@ -864,6 +883,8 @@ model Item {
   @@index([itemType])
   @@index([isActive])
   @@index([unitId])
+  @@index([tallyName])
+  @@index([tallyGuid])
 }
 
 model Unit {
@@ -871,6 +892,11 @@ model Unit {
   unitName  String   @db.VarChar(64)
   /// Optional short code for Tally / exports (kept simple).
   unitCode  String?  @db.VarChar(16)
+  /// Exact Tally UNIT NAME when imported.
+  tallyName String?  @db.VarChar(64)
+  /// Tally GUID / Master ID when present on import.
+  tallyGuid String?  @db.VarChar(64)
+  tallyImportedAt DateTime?
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -881,6 +907,8 @@ model Unit {
   @@unique([unitName])
   @@unique([unitCode])
   @@index([isActive])
+  @@index([tallyName])
+  @@index([tallyGuid])
 }
 
 model Bom {
@@ -1143,6 +1171,9 @@ model AppSetting {
   companyStateId                    Int?
   /// Company GSTIN (nullable; no strict validation in demo mode).
   companyGstin                      String? @db.VarChar(15)
+  /// Exact Tally ledger name for seller-charged Sales Bill transportation / freight.
+  /// When null/empty, export falls back to env TALLY_TRANSPORTATION_LEDGER.
+  tallyTransportationLedger         String? @db.VarChar(160)
 
   /// ===== Company Profile (document branding only) =====
   /// All fields below are purely presentational — they drive Quotation /

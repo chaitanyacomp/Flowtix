@@ -5,6 +5,7 @@ import { apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
 import { Button } from "../components/ui/button";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { Badge } from "../components/ui/badge";
 import { PageContainer, StickyWorkspaceHead } from "../components/PageHeader";
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../components/erp/foundation";
@@ -388,16 +389,12 @@ export function RmStockPlanningPage() {
                         {qtyLocked ? (
                           <span className="text-[11px] font-medium text-slate-600">—</span>
                         ) : (
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.001"
+                          <DecimalInput
                             value={orderQty}
-                            onChange={(e) => {
-                              const value = e.target.value;
+                            onValueChange={(value) => {
                               setQtyByItemId((prev) => ({ ...prev, [row.itemId]: value }));
                             }}
-                            className="h-8 w-28 rounded-md border border-slate-200 bg-white px-2 text-right text-xs tabular-nums shadow-sm focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                            className="h-8 w-28 text-right text-xs tabular-nums"
                           />
                         )}
                       </td>

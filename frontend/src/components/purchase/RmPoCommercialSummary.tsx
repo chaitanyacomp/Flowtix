@@ -114,25 +114,33 @@ export function RmPoCommercialPreview({
   stateCode,
   stateName,
   gstMode,
+  compact = false,
 }: {
   label?: string | null;
   gstin?: string | null;
   stateCode?: string | null;
   stateName?: string | null;
   gstMode?: string | null;
+  /** Inline chip row for Create RM PO header (no large empty box). */
+  compact?: boolean;
 }) {
   if (!label) return null;
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50/80 px-2.5 py-2 text-xs text-slate-700">
-      <span>
-        <span className="font-medium text-slate-800">{label}</span>
-        {(stateCode || stateName) && (
-          <span className="ml-2 rounded bg-white px-1.5 py-0.5 font-mono text-[11px]">{stateLine(stateCode, stateName)}</span>
-        )}
-        {gstin ? (
-          <span className="ml-2 rounded bg-white px-1.5 py-0.5 font-mono text-[11px]">{gstin}</span>
-        ) : null}
-      </span>
+    <div
+      className={
+        compact
+          ? "flex flex-wrap items-center gap-1.5 text-xs text-slate-700"
+          : "mt-2 flex flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50/80 px-2.5 py-2 text-xs text-slate-700"
+      }
+      data-testid="rm-po-commercial-preview"
+    >
+      <span className="font-medium text-slate-800">{label}</span>
+      {(stateCode || stateName) && (
+        <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px]">
+          {stateLine(stateCode, stateName)}
+        </span>
+      )}
+      {gstin ? <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px]">{gstin}</span> : null}
       <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${gstModeChipClass(gstMode)}`}>
         {gstModeLabel(gstMode)}
       </span>

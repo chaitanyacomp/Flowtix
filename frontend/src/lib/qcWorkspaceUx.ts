@@ -16,11 +16,16 @@ export type QualityQueueRowKind =
 export type QualityQueueRow = {
   id: string;
   kind: QualityQueueRowKind;
+  /** Primary line — batch/PE id + item (or disposition kind). */
   label: string;
   subtitle: string;
   qtyLabel: string;
   anchor: string;
   productionId?: number;
+  productionDocNo?: string | null;
+  batchDate?: string | null;
+  workOrderLabel?: string | null;
+  statusLabel?: string | null;
   dispositionId?: number;
   customerReturnId?: number;
 };
@@ -73,9 +78,14 @@ export function qcCompletionPostActionHash(outcome: QcCompletionOutcome): string
 
 export type QualityQueuePendingQcInput = {
   productionId: number;
+  /** Authoritative production entry document number when present. */
+  productionDocNo?: string | null;
   itemName: string;
   workOrderLabel: string;
+  batchDate?: string | null;
   pendingQty: number;
+  unit?: string | null;
+  statusLabel?: string | null;
 };
 
 export type QcProductionFifoInput = {
@@ -173,20 +183,37 @@ export function buildQualityQueueRows(input: {
   /** FG item UOM when rows share one unit; per-row unit overrides via fmtQty. */
   unit?: string | null;
   fmtQty?: (n: number) => string;
+  /** Formats production entry id → PE-… display. */
+  formatProductionEntryNo?: (id: number, docNo?: string | null) => string;
 }): QualityQueueRow[] {
   const fmt = input.fmtQty ?? ((n: number) => formatQcQuantity(n, input.unit));
+  const formatPe =
+    input.formatProductionEntryNo ??
+    ((id: number, docNo?: string | null) => {
+      const d = String(docNo ?? "").trim();
+      return d || `PE-${String(id).padStart(6, "0")}`;
+    });
   const rows: QualityQueueRow[] = [];
+  const seenPendingPe = new Set<number>();
 
   for (const p of input.pendingQc) {
     if (p.pendingQty <= EPS) continue;
+    if (seenPendingPe.has(p.productionId)) continue;
+    seenPendingPe.add(p.productionId);
+    const peLabel = formatPe(p.productionId, p.productionDocNo);
+    const awaiting = `Awaiting ${fmt(p.pendingQty)}${p.unit ? ` ${p.unit}` : ""}`;
     rows.push({
       id: `pending-qc-${p.productionId}`,
       kind: "PENDING_QC",
-      label: queueKindLabel("PENDING_QC"),
-      subtitle: `${p.itemName} · ${p.workOrderLabel}`,
+      label: `${peLabel}  ·  ${p.itemName}`,
+      subtitle: `${p.workOrderLabel}  ·  ${awaiting}`,
       qtyLabel: fmt(p.pendingQty),
       anchor: "#qc-production-pending",
       productionId: p.productionId,
+      productionDocNo: p.productionDocNo ?? null,
+      batchDate: p.batchDate ?? null,
+      workOrderLabel: p.workOrderLabel,
+      statusLabel: p.statusLabel ?? PRODUCTION_QA_TERMS.PENDING_QC,
     });
   }
 
@@ -207,6 +234,8 @@ export function buildQualityQueueRows(input: {
       qtyLabel: fmt(d.qty),
       anchor,
       dispositionId: d.id,
+      workOrderLabel: d.workOrderLabel,
+      statusLabel: queueKindLabel(kind),
     });
   }
 
@@ -220,6 +249,7 @@ export function buildQualityQueueRows(input: {
       qtyLabel: fmt(c.qty),
       anchor: "#qc-customer-returns",
       customerReturnId: c.id,
+      statusLabel: queueKindLabel("CUSTOMER_RETURN"),
     });
   }
 
@@ -306,4 +336,33 @@ export function buildQcWorkspaceBreadcrumb(params: {
     { label: PRODUCTION_QA_TERMS.WORKSPACE_TITLE },
   );
   return crumbs;
+}
+
+/**
+ * Compact readiness copy beside Save Inspection (presentation only).
+ * Does not alter QC validation rules — callers still gate submit with canSubmit.
+ */
+export function resolveQcSaveInspectionStatus(input: {
+  hasSelection: boolean;
+  awaitingQty: number;
+  canSubmit: boolean;
+  inspectingQty: number | null;
+  checkedQtyValid: boolean;
+  rejectedQty: number | null;
+  reasonTrimmed: string;
+  inlineValidationMsg: string | null;
+  readyQtyLabel: string;
+}): string {
+  if (!input.hasSelection || !(input.awaitingQty > EPS)) return "Nothing to save";
+  if (!input.checkedQtyValid || input.inspectingQty == null || !(input.inspectingQty > EPS)) {
+    return "Enter a valid inspection quantity";
+  }
+  if (input.rejectedQty != null && input.rejectedQty > EPS && !input.reasonTrimmed) {
+    return "Rejected quantity requires a reason";
+  }
+  if (input.canSubmit) {
+    return `${input.readyQtyLabel} ready to save`;
+  }
+  if (input.inlineValidationMsg?.trim()) return input.inlineValidationMsg.trim();
+  return "Enter a valid inspection quantity";
 }

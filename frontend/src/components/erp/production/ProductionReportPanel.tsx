@@ -10,6 +10,7 @@ import {
   type ProductionReportPanelStatus,
 } from "../../../lib/productionWorkspaceCompactUx";
 import { Button } from "../../ui/button";
+import { DecimalInput } from "../../ui/DecimalInput";
 import { ProductionReportWastageDetails } from "./ProductionReportWastageDetails";
 import {
   type WastageDetailDraft,
@@ -466,7 +467,7 @@ export function ProductionReportPanel({
                   {confirmed ? (
                     fmtQty(confirmedLine?.rmReturnQty ?? 0)
                   ) : (
-                    <input
+                    <DecimalInput
                       className={cn(
                         "rounded border border-slate-200 px-1 text-right",
                         isPremiumCompact
@@ -475,11 +476,8 @@ export function ProductionReportPanel({
                             ? "h-7 w-full max-w-[4rem] text-[11px]"
                             : "w-20 py-0.5",
                       )}
-                      type="number"
-                      min="0"
-                      step="0.001"
                       value={input?.rmReturnQty ?? ""}
-                      onChange={(e) => updateLineInput(ln.itemId, "rmReturnQty", e.target.value)}
+                      onValueChange={(next) => updateLineInput(ln.itemId, "rmReturnQty", next)}
                     />
                   )}
                 </td>
@@ -576,10 +574,11 @@ export function ProductionReportPanel({
     </button>
   );
 
-  const footerStatusText = confirmed
+  /** Compact readiness beside header Confirm — pending balance / ready / exact validation reason. */
+  const headerReadinessText = confirmed
     ? "Report confirmed"
     : confirmBlockedByUnexplained
-      ? `Unexplained balance ${fmtQty(Math.abs(rmTotals.unexplained))} ${rmTotals.unit}`
+      ? `Balance ${fmtQty(Math.abs(rmTotals.unexplained))} ${rmTotals.unit}`
       : confirmBlockedByWastage
         ? wastageFooterFeedback?.message ?? "Classify wastage before close"
         : `Balance ${fmtQty(rmTotals.unexplained)} ${rmTotals.unit} · Ready to close`;
@@ -588,23 +587,23 @@ export function ProductionReportPanel({
     <div
       className={cn(
         "shrink-0",
-        isPremiumCompact ? "w-auto" : isPremiumCompact || compact ? "w-full" : "space-y-1 sm:max-w-[16rem]",
+        compact ? "w-auto" : "space-y-1 sm:max-w-[16rem]",
       )}
     >
-      {!isPremiumCompact && !compact && confirmHelperText ? (
+      {!compact && confirmHelperText ? (
         <p className="text-[10px] leading-snug text-slate-600">{confirmHelperText}</p>
       ) : null}
       <Button
         type="button"
         size={isPremiumCompact ? "default" : "sm"}
         className={cn(
-          isPremiumCompact
+          compact
             ? "h-9 whitespace-nowrap px-4 text-[13px] font-semibold"
-            : "w-full",
-          !isPremiumCompact && compact ? "h-9 text-[12px] font-semibold" : !isPremiumCompact ? "text-[12px]" : "",
+            : "w-full text-[12px]",
         )}
         onClick={handleConfirm}
         disabled={saving || confirmBlocked}
+        title={saving || confirmBlocked ? headerReadinessText : undefined}
         data-testid="confirm-report-close-wo-btn"
       >
         {saving ? "Working…" : confirmButtonLabel ?? "Confirm Report"}
@@ -623,7 +622,7 @@ export function ProductionReportPanel({
         : "—";
   const reportStatusLabel = confirmed ? "Confirmed" : "Report Pending";
 
-  /** Compact/premium: true 3-zone containment — header+strip / middle / pinned action footer. */
+  /** Compact/premium: header hosts Confirm; middle scrolls wastage — no bottom duplicate action. */
   if (compact) {
     return (
       <div
@@ -635,29 +634,50 @@ export function ProductionReportPanel({
         aria-label="Production report and RM consumption"
         data-testid="production-report-panel"
       >
-        {/* ZONE 1 — fixed header + compact summary strip */}
+        {/* ZONE 1 — fixed header: title + readiness + Confirm (top-right) + summary strip */}
         <div className="shrink-0 border-b border-slate-100 bg-slate-50/90 px-2.5 py-1.5" data-testid="production-report-header">
-          <div className="flex items-center justify-between gap-2">
-            <div
-              className={cn(
-                "font-semibold text-slate-900",
-                isPremiumCompact ? "text-[13px]" : "text-[12px]",
-              )}
-            >
-              Production Report
-            </div>
-            {!isPremiumCompact ? (
-              <span
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <div
                 className={cn(
-                  "rounded border px-2 py-0.5 text-[10px] font-semibold",
-                  confirmed
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                    : "border-amber-200 bg-amber-50 text-amber-800",
+                  "font-semibold text-slate-900",
+                  isPremiumCompact ? "text-[13px]" : "text-[12px]",
                 )}
               >
-                {confirmed ? "Confirmed" : "Mandatory"}
-              </span>
-            ) : null}
+                Production Report
+              </div>
+              {!isPremiumCompact ? (
+                <span
+                  className={cn(
+                    "rounded border px-2 py-0.5 text-[10px] font-semibold",
+                    confirmed
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                      : "border-amber-200 bg-amber-50 text-amber-800",
+                  )}
+                >
+                  {confirmed ? "Confirmed" : "Mandatory"}
+                </span>
+              ) : null}
+            </div>
+            <div
+              className="flex min-w-0 flex-wrap items-center justify-end gap-2"
+              data-testid="production-report-header-actions"
+            >
+              <p
+                className={cn(
+                  "max-w-[min(100%,22rem)] text-right text-[12px] font-semibold tabular-nums",
+                  confirmed || !confirmBlocked
+                    ? "text-emerald-800"
+                    : confirmBlockedByUnexplained
+                      ? "text-rose-800"
+                      : "text-amber-900",
+                )}
+                data-testid="production-report-header-status"
+              >
+                {headerReadinessText}
+              </p>
+              {confirmButton}
+            </div>
           </div>
           {report?.hasApprovedProduction ? (
             <dl
@@ -734,13 +754,13 @@ export function ProductionReportPanel({
               </div>
             ) : null}
 
-            {/* ZONE 2 — middle: bounded wastage; remarks compact above footer */}
+            {/* ZONE 2 — middle: wastage scrolls internally; remarks stay with body */}
             <div
               className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden px-2.5 py-1.5"
               data-testid="production-report-scroll-body"
             >
               {showWastage ? (
-                <div className="shrink-0">
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                   <ProductionReportWastageDetails
                     wastageTypes={report.wastageTypes ?? []}
                     rows={wastageRows}
@@ -749,8 +769,8 @@ export function ProductionReportPanel({
                     readOnly={confirmed}
                     compact={compact}
                     hideInlineValidation={!confirmed}
-                    scrollableRows={false}
-                    fillAvailableHeight={false}
+                    scrollableRows
+                    fillAvailableHeight
                     onChange={(rows) => {
                       setLocalDirty(true);
                       setWastageRows(rows);
@@ -771,41 +791,6 @@ export function ProductionReportPanel({
               ) : null}
 
               <div className="shrink-0">{remarksField}</div>
-            </div>
-
-            {/* ZONE 3 — pinned footer: reconciliation status + Confirm */}
-            <div
-              className="shrink-0 border-t border-slate-200 bg-white px-2.5 py-2 shadow-[0_-4px_12px_-2px_rgba(15,23,42,0.08)]"
-              data-testid="production-report-sticky-footer"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p
-                  className={cn(
-                    "min-w-0 flex-1 text-[12px] font-semibold tabular-nums",
-                    confirmed || !confirmBlocked
-                      ? "text-emerald-800"
-                      : confirmBlockedByUnexplained
-                        ? "text-rose-800"
-                        : "text-amber-900",
-                  )}
-                  data-testid="production-report-footer-status"
-                >
-                  {footerStatusText}
-                </p>
-                {wastageFooterFeedback && confirmBlockedByWastage && !confirmBlockedByUnexplained ? (
-                  <p
-                    className={cn(
-                      "w-full rounded border px-2 py-1 font-medium sm:hidden",
-                      isPremiumCompact ? "text-[11px]" : "text-[11px]",
-                      wastageFooterFeedback.tone,
-                    )}
-                    data-testid="production-wastage-validation"
-                  >
-                    {wastageFooterFeedback.message}
-                  </p>
-                ) : null}
-                {confirmButton}
-              </div>
             </div>
           </>
         )}

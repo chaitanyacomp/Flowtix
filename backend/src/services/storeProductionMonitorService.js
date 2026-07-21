@@ -233,6 +233,14 @@ async function getStoreProductionMonitorPayload() {
     readOnly: true,
     activeRows,
     completedTodayRows,
+    liveFactoryCounts: (() => {
+      try {
+        const { buildLiveFactorySnapshot } = require("./liveFactorySnapshotService");
+        return buildLiveFactorySnapshot(activeRaw).counts;
+      } catch {
+        return null;
+      }
+    })(),
     generatedAt: new Date().toISOString(),
   };
 }

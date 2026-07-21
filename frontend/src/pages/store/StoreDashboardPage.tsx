@@ -99,10 +99,8 @@ export function StoreDashboardPage() {
     enabled: isDashboardRoute,
   });
 
-  const { deskProps: pendingActionsDeskProps, storePendingRsActions, initialLoading: pendingInitialLoading, refreshing: pendingRefreshing } =
-    useDashboardPendingActionsDesk({
-      filterStorePendingRs: true,
-    });
+  const { deskProps: pendingActionsDeskProps, initialLoading: pendingInitialLoading, refreshing: pendingRefreshing } =
+    useDashboardPendingActionsDesk();
 
   const fetchEnabled = isDashboardRoute && !demo.enabled;
 
@@ -393,7 +391,6 @@ export function StoreDashboardPage() {
       console.debug("[store-dashboard] continuation derived", {
         openNoQtyContinuationRows: openNoQtyContinuationRows.length,
         visibleOpenNoQtyContinuationRows: visibleOpenNoQtyContinuationRows.length,
-        pendingRsRows: storePendingRsActions.length,
         hasNoQtyContinuationInActionRequired,
       });
     }
@@ -401,7 +398,6 @@ export function StoreDashboardPage() {
     demo.enabled,
     openNoQtyContinuationRows.length,
     visibleOpenNoQtyContinuationRows.length,
-    storePendingRsActions.length,
     hasNoQtyContinuationInActionRequired,
   ]);
 
@@ -451,7 +447,6 @@ export function StoreDashboardPage() {
       fgStockTotal={0}
       dispatchBacklogCount={actionableBacklog.length}
       pendingActions={pendingActionsDeskProps}
-      pendingRsActions={storePendingRsActions}
       noQtyContinuationRows={visibleOpenNoQtyContinuationRows}
       noQtyFlowBySo={noQtyFlowBySo}
       noQtyContinuationTruncated={noQtyContinuationTruncated}

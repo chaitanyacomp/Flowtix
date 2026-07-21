@@ -6,6 +6,7 @@ const {
   firstDirectText,
   findFirstTextByTags,
   masterDisplayName,
+  masterGuid,
   asArray,
 } = require("./tallyXmlListHelpers");
 
@@ -257,6 +258,7 @@ function mapStockItemToItem(stockRaw, keywordOpts = {}) {
 
   return {
     tallyName: name,
+    tallyGuid: masterGuid(s),
     itemName: name,
     baseUnit: baseUnit || "",
     hsnCode: hsnCodeRaw,
@@ -271,7 +273,7 @@ function mapStockItemToItem(stockRaw, keywordOpts = {}) {
 
 /**
  * @param {unknown} unitRaw
- * @returns {null | { tallyName: string; unitName: string; unitCode: string | null }}
+ * @returns {null | { tallyName: string; tallyGuid: string | null; unitName: string; unitCode: string | null }}
  */
 function mapTallyUnitMaster(unitRaw) {
   if (!unitRaw || typeof unitRaw !== "object") return null;
@@ -281,6 +283,7 @@ function mapTallyUnitMaster(unitRaw) {
   const unitCode = firstDirectText(u, ["SYMBOL", "GSTREPUOM", "UQC"]) || null;
   return {
     tallyName: unitName,
+    tallyGuid: masterGuid(u),
     unitName,
     unitCode: unitCode || null,
   };

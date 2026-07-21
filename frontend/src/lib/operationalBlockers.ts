@@ -1,6 +1,5 @@
 import type { ProcurementPendingRow } from "../components/erp/ProcurementPendingDashboardCard";
 import type { WoPrepareDashboardQueues } from "../components/erp/WoPrepareOperationalQueuesCard";
-import { productionWorkspaceHref } from "./materialWorkflowLinks";
 import { buildMaterialIssueDeepLink } from "./manufacturingNavigationContinuity";
 import { GUIDED_WORKFLOW_CTA } from "./rmGuidedWorkflow";
 import { buildRmControlCenterHref } from "./woProcurementContinuity";
@@ -90,6 +89,10 @@ function setDedupedAction(
  * Merges procurement-pending + WO-prepare queues into one deduped list.
  * One work order (or SO before WO) = one primary action.
  * Priority: Ready for WO > Store issue > Allocation > Procurement monitoring.
+ *
+ * @param options.audience When `"admin"`, omit Store/Production execution actions
+ *   (Release to Production, Issue RM, Create WO, Ready for Production). Admin Attention
+ *   comes from the Pending Actions inbox instead.
  */
 export function buildOperationalSoActions(
   procurement: ProcurementPendingRow[] | null | undefined,
@@ -107,7 +110,13 @@ export function buildOperationalSoActions(
     nextActionKey?: string;
     orderType?: string | null;
   }> | null,
+  options?: { audience?: "admin" | "default" },
 ): OperationalSoAction[] {
+  const audience = options?.audience === "admin" ? "admin" : "default";
+  if (audience === "admin") {
+    // Admin desk must not surface Store/Production execution CTAs as blockers.
+    return [];
+  }
   const q = queues ?? { rmShortageBlocking: [], purchaseGrnPending: [], readyForWoCreation: [] };
   const readySoIds = new Set(q.readyForWoCreation.map((r) => r.salesOrderId));
   const byKey = new Map<string, OperationalSoAction & { priority: number }>();
@@ -117,6 +126,15 @@ export function buildOperationalSoActions(
     if (soId > 0 && readySoIds.has(soId)) continue;
     const woId = Number(row.workOrderId ?? 0);
     if (woId <= 0 && row.operationalKey !== "RM_RECEIVED" && row.nextActionKey !== "CREATE_WO") continue;
+    // Obsolete Admin path: RM-ready WOs waiting for Production start are not Admin blockers.
+    // Keep Release CTA only for Store dashboards that still use production-release handoff.
+    if (
+      row.operationalKey === "AWAITING_RELEASE" ||
+      row.nextActionKey === "RELEASE_TO_PRODUCTION" ||
+      row.operationalKey === "READY_FOR_PRODUCTION"
+    ) {
+      continue;
+    }
     const rowKey = actionDedupeKey({
       workOrderId: woId > 0 ? woId : undefined,
       salesOrderId: soId,
@@ -126,34 +144,20 @@ export function buildOperationalSoActions(
     const stageLabel =
       row.operationalKey === "RM_RECEIVED"
         ? "RM received in Store"
-        : row.operationalKey === "AWAITING_RELEASE"
-          ? "Awaiting release to production"
-          : row.operationalKey === "READY_FOR_ISSUE"
-            ? "Ready for issue"
-            : row.operationalKey === "PARTIALLY_ALLOCATED"
-              ? "Partially allocated"
-              : "Waiting RM";
+        : row.operationalKey === "READY_FOR_ISSUE"
+          ? "Ready for issue"
+          : row.operationalKey === "PARTIALLY_ALLOCATED"
+            ? "Partially allocated"
+            : "Waiting RM";
     const issueHref = buildMaterialIssueDeepLink({ workOrderId: woId, returnTo: "dashboard", salesOrderId: soId > 0 ? soId : null });
-    const releaseHref =
-      woId > 0
-        ? `/production-release?workOrderId=${encodeURIComponent(String(woId))}${soId > 0 ? `&salesOrderId=${encodeURIComponent(String(soId))}` : ""}&returnTo=dashboard`
-        : "/production-release";
-    const productionHref = productionWorkspaceHref(woId, undefined, {
-      salesOrderId: soId > 0 ? soId : undefined,
-      orderType: row.orderType,
-    });
     const actionLabel =
       row.operationalKey === "READY_FOR_ISSUE"
         ? "Issue RM to Production"
-        : row.operationalKey === "AWAITING_RELEASE" || row.nextActionKey === "RELEASE_TO_PRODUCTION"
-          ? "Release to Production"
-          : row.operationalKey === "RM_RECEIVED" || row.nextActionKey === "CREATE_WO"
-            ? "Create Work Order"
-            : row.operationalKey === "READY_FOR_PRODUCTION"
-              ? "Open Production Workspace"
-              : row.operationalKey === "PARTIALLY_ALLOCATED"
-                ? "Review Allocation"
-                : "Open RM Control Center";
+        : row.operationalKey === "RM_RECEIVED" || row.nextActionKey === "CREATE_WO"
+          ? "Create Work Order"
+          : row.operationalKey === "PARTIALLY_ALLOCATED"
+            ? "Review Allocation"
+            : "Open RM Control Center";
     const action: OperationalSoAction = {
       key: rowKey,
       salesOrderId: soId,
@@ -166,18 +170,14 @@ export function buildOperationalSoActions(
       actionTo:
         row.operationalKey === "READY_FOR_ISSUE"
           ? issueHref
-          : row.operationalKey === "AWAITING_RELEASE" || row.nextActionKey === "RELEASE_TO_PRODUCTION"
-            ? releaseHref
-            : row.operationalKey === "RM_RECEIVED" || row.nextActionKey === "CREATE_WO"
-              ? woPreparePrepareHref(soId)
-              : row.operationalKey === "READY_FOR_PRODUCTION"
-                ? productionHref
-                : buildRmControlCenterHref({
-                    workOrderId: woId,
-                    salesOrderId: soId > 0 ? soId : undefined,
-                    materialRequirementId: row.materialRequirementId ?? undefined,
-                    returnTo: "dashboard",
-                  }),
+          : row.operationalKey === "RM_RECEIVED" || row.nextActionKey === "CREATE_WO"
+            ? woPreparePrepareHref(soId)
+            : buildRmControlCenterHref({
+                workOrderId: woId,
+                salesOrderId: soId > 0 ? soId : undefined,
+                materialRequirementId: row.materialRequirementId ?? undefined,
+                returnTo: "dashboard",
+              }),
       variant: row.operationalKey === "RM_RECEIVED" ? "ready" : "blocker",
     };
     const priority =

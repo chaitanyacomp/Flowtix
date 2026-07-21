@@ -142,6 +142,8 @@ export function loginPathWithReturn(pathWithSearch: string): string {
 export type ResolvePostLoginOptions = {
   /** When set, clamp role-gated paths the user cannot open to the role landing page. */
   role?: string | null;
+  /** Authorized landing returned by the login API. */
+  landingPath?: string | null;
 };
 
 /**
@@ -168,5 +170,6 @@ export function resolvePostLoginDestination(
   const fromSession = consumePostLoginReturnPath();
   const sessionPick = pick(fromSession);
   if (sessionPick) return sessionPick;
-  return ROLE_LANDING_PATH;
+  const landing = pick(options?.landingPath ? String(options.landingPath).trim() : null);
+  return landing ?? ROLE_LANDING_PATH;
 }

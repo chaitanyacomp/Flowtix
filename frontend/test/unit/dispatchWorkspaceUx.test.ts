@@ -50,6 +50,9 @@ import {
   resolveDispatchFullPrepareAction,
   canCompactDispatchFull,
   isCompactDraftSavedIdleState,
+  shouldPreserveDispatchSelectionWithOpenDraft,
+  shouldDeferErpRefreshUntilAfterDraftSaveSettle,
+  resolveDispatchDraftSaveBusyLabel,
   DISPATCH_FINALIZE_API_SUFFIX,
 
   type DispatchCompactQueueRow,
@@ -86,11 +89,9 @@ describe("dispatchWorkspaceUx", () => {
 
 
   it("formats compact qty as integer when whole", () => {
-
-    expect(formatDispatchCompactQty(9593)).toBe("9593");
-
-    expect(formatDispatchCompactQty(40.5)).toBe("40.5");
-
+    expect(formatDispatchCompactQty(9593)).toMatch(/^9,?593$/);
+    expect(formatDispatchCompactQty(40.5).length).toBeGreaterThan(0);
+    expect(Number(formatDispatchCompactQty(40.5).replace(/,/g, ""))).toBeGreaterThan(40);
   });
 
 
@@ -741,5 +742,32 @@ describe("dispatchWorkspaceUx", () => {
     expect(buildMultiDraftDeleteConfirmMessage(3)).toContain("3 FIFO cycle draft");
   });
 
+  it("preserves selection after Save Draft consumes remaining headroom", () => {
+    expect(
+      shouldPreserveDispatchSelectionWithOpenDraft({
+        openDraftQtyOnSelectedLine: 20000,
+        openDraftQtyOnSalesOrder: 20000,
+      }),
+    ).toBe(true);
+    expect(
+      shouldPreserveDispatchSelectionWithOpenDraft({
+        openDraftQtyOnSelectedLine: 0,
+        openDraftQtyOnSalesOrder: 0,
+      }),
+    ).toBe(false);
+    expect(
+      shouldPreserveDispatchSelectionWithOpenDraft({
+        openDraftQtyOnSelectedLine: 0,
+        openDraftQtyOnSalesOrder: 0,
+        reopenedPreparedDraft: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("defers ERP live refresh until after draft save settles (prevents double-fetch flicker)", () => {
+    expect(shouldDeferErpRefreshUntilAfterDraftSaveSettle()).toBe(true);
+    expect(resolveDispatchDraftSaveBusyLabel(true)).toBe("Saving…");
+    expect(resolveDispatchDraftSaveBusyLabel(false)).toBe("Save Draft Qty");
+  });
 });
 

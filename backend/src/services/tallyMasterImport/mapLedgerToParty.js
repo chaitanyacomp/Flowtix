@@ -6,6 +6,7 @@ const {
   joinAddressList,
   findFirstTextByTags,
   masterDisplayName,
+  masterGuid,
 } = require("./tallyXmlListHelpers");
 
 /**
@@ -49,6 +50,7 @@ function collectGstinCandidates(ledger) {
   const gstTags = [
     "GSTIN",
     "PARTYGSTIN",
+    "LEDGERGSTIN",
     "GSTREGISTRATIONNUMBER",
     "GSTREGISTRATIONNO",
     "GSTNUMBER",
@@ -269,6 +271,7 @@ function composeRegisteredOfficeAddress(m) {
  * @param {"CUSTOMER" | "SUPPLIER"} kind
  * @returns {null | {
  *   tallyName: string;
+ *   tallyGuid: string | null;
  *   parentGroup: string;
  *   name: string;
  *   gst: string | null;
@@ -300,6 +303,7 @@ function mapLedgerToParty(ledgerRaw, kind) {
 
   return {
     tallyName,
+    tallyGuid: masterGuid(ledger),
     parentGroup,
     name,
     gst: gstRaw || null,

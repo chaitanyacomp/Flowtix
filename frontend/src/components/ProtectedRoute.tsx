@@ -37,7 +37,9 @@ export function ProtectedRoute({ allowedRoles, children }: ProtectedRouteProps) 
     return <Navigate to={loginPathWithReturn(returnTo)} replace />;
   }
   if (!allowedRoles.includes(auth.user.role)) {
-    return <Navigate to={ROLE_LANDING_PATH} replace />;
+    const fallback = auth.user.landingPath || ROLE_LANDING_PATH;
+    if (location.pathname === fallback) return <Navigate to={ROLE_LANDING_PATH} replace />;
+    return <Navigate to={fallback} replace />;
   }
   return <>{children}</>;
 }

@@ -41,7 +41,7 @@ describe("operationalStatusFromProductionRow — REGULAR", () => {
       row({ status: "HOLD", holdReason: "CUSTOMER_HOLD", producedQty: 40, balanceQty: 60, nextAction: "ON_HOLD" }),
     );
     expect(s.label).toBe("On Hold - Customer hold");
-    expect(s.tone).toBe("partial");
+    expect(s.tone).toBe("paused");
   });
 
   it("labels CLOSED_WITH_SHORTFALL as terminal", () => {
@@ -138,7 +138,7 @@ describe("operationalStatusFromProductionRow — NO_QTY", () => {
     });
     const s = operationalStatusFromProductionRow(r, [r]);
     expect(s.label).toBe("On Hold - Management hold");
-    expect(s.tone).toBe("partial");
+    expect(s.tone).toBe("paused");
   });
 
   it("uses QC Pending for NO_QTY and Green Level rows awaiting QC only when no remaining balance", () => {

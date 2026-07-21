@@ -212,11 +212,14 @@ export type MaterialIssueTargetResolveResult =
   | { ok: true; pmr: PendingPmrSummary; bucket: MaterialIssueBucket }
   | {
       ok: false;
-      reason: "NOT_FOUND" | "WRONG_BUCKET" | "UNAUTHORIZED";
+      reason: "NOT_FOUND" | "WRONG_BUCKET" | "UNAUTHORIZED" | "STALE_ALLOWANCE";
       message: string;
       actualBucket?: MaterialIssueBucket | null;
       pmr?: PendingPmrSummary | null;
     };
+
+const STALE_ALLOWANCE_MESSAGE =
+  "This allowance request is no longer pending because the material issue has already been completed.";
 
 /** Resolve WO/PMR against the requested bucket after queue data is loaded. */
 export function resolveMaterialIssueDeepLinkTarget(input: {
@@ -224,6 +227,8 @@ export function resolveMaterialIssueDeepLinkTarget(input: {
   workOrderId?: number | null;
   pmrId?: number | null;
   pmrs: PendingPmrSummary[];
+  /** When deep-link came from an allowance Pending Action / rejected bucket. */
+  fromAllowanceAction?: boolean;
 }): MaterialIssueTargetResolveResult {
   const pmrId = Number(input.pmrId ?? 0);
   const woId = Number(input.workOrderId ?? 0);
@@ -235,10 +240,17 @@ export function resolveMaterialIssueDeepLinkTarget(input: {
     pmr = forWo.sort((a, b) => b.id - a.id)[0];
   }
   if (!pmr) {
+    const fromAllowance =
+      input.fromAllowanceAction === true ||
+      input.requestedBucket === "rejected" ||
+      input.requestedBucket === "approved" ||
+      input.requestedBucket === "approvalPending";
     return {
       ok: false,
-      reason: "NOT_FOUND",
-      message: "That work order or material request is no longer available for Material Issue.",
+      reason: fromAllowance ? "STALE_ALLOWANCE" : "NOT_FOUND",
+      message: fromAllowance
+        ? STALE_ALLOWANCE_MESSAGE
+        : "That work order or material request is no longer available for Material Issue.",
       actualBucket: null,
       pmr: null,
     };

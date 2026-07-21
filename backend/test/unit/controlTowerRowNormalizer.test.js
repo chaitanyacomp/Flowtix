@@ -129,24 +129,22 @@ describe("controlTowerRowNormalizer", () => {
     assert.equal(row.metadata.purchaseNextOwnerHint, "Open purchase plan");
   });
 
-  it("normalizeRmRiskRow: READY_TO_RELEASE_WO -> WO_RELEASE_READY owned by Production once the WO is released", () => {
-    // Authoritative ownership (materialAvailabilityWorkspaceService, pendingActionsService,
-    // rmProcurementStageSignals, controlTowerRowNormalizer): READY_TO_RELEASE_WO is STORE-owned
-    // ("Release to Production") until the WO is released, then PRODUCTION owns it (start production).
+  it("normalizeRmRiskRow: READY_TO_RELEASE_WO -> READY_TO_START owned by Production", () => {
     const row = normalizeRmRiskRow({
       workOrderId: 10,
       itemId: 3,
       status: "LOW_BUFFER",
       queueType: "READY_TO_RELEASE_WO",
-      recommendedAction: "Start production",
+      recommendedAction: "Release to Production",
       procurementCompletedForCase: true,
       workOrderReleased: true,
     });
-    assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.WO_RELEASE_READY);
+    assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.READY_TO_START);
     assert.equal(row.currentOwner, VISIBLE_OWNERS.PRODUCTION);
+    assert.equal(row.nextAction, "Ready to Start");
   });
 
-  it("normalizeRmRiskRow: READY_TO_RELEASE_WO stays STORE-owned until the WO is released", () => {
+  it("normalizeRmRiskRow: READY_TO_RELEASE_WO is Production-owned Ready to Start even when not released", () => {
     const row = normalizeRmRiskRow({
       workOrderId: 10,
       itemId: 3,
@@ -156,8 +154,9 @@ describe("controlTowerRowNormalizer", () => {
       procurementCompletedForCase: true,
       workOrderReleased: false,
     });
-    assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.WO_RELEASE_READY);
-    assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
+    assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.READY_TO_START);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.PRODUCTION);
+    assert.equal(row.nextAction, "Ready to Start");
   });
 
   it("normalizeRmRiskRow: WAITING_PURCHASE_ACTION is PURCHASE-owned before PR exists", () => {

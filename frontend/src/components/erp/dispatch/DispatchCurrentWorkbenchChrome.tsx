@@ -43,6 +43,8 @@ export type DispatchCurrentWorkbenchChromeProps = {
   discardDisabled?: boolean;
   onDiscard?: () => void;
   discardLabel?: string;
+  /** Compact Dispatch Qty + Save/Clear — lives in the KPI strip (top-right). */
+  headerActions?: React.ReactNode;
   className?: string;
   children?: React.ReactNode;
 };
@@ -92,6 +94,7 @@ export function DispatchCurrentWorkbenchChrome({
   discardDisabled,
   onDiscard,
   discardLabel = "Discard Draft",
+  headerActions,
   className,
   children,
 }: DispatchCurrentWorkbenchChromeProps) {
@@ -123,6 +126,14 @@ export function DispatchCurrentWorkbenchChrome({
             )}
           </div>
         </div>
+        {headerActions ? (
+          <div
+            className="ml-auto flex min-w-0 flex-[1.4] basis-[16rem] flex-col items-stretch justify-end sm:items-end"
+            data-testid="dispatch-current-header-actions"
+          >
+            {headerActions}
+          </div>
+        ) : null}
       </div>
 
       {children}

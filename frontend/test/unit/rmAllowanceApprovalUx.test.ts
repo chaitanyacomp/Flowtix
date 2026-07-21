@@ -184,12 +184,21 @@ describe("rmAllowanceApprovalUx — line hydration", () => {
     expect(untouched.issueQty).toBe("43");
     expect(untouched.allowanceApprovalStatus).toBe("REJECTED");
 
-    const touched = hydrateIssueLinesWithAllowanceApprovals(
+    // Issue Now-only edits keep REJECTED (operator may still revise & resubmit).
+    const issueOnlyTouched = hydrateIssueLinesWithAllowanceApprovals(
+      [{ pmrLineId: 10, plannedAllowanceQty: "3", issueQty: "5", issueQtyTouched: true }],
+      approvals,
+    )[0];
+    expect(issueOnlyTouched.issueQty).toBe("5");
+    expect(issueOnlyTouched.allowanceApprovalStatus).toBe("REJECTED");
+
+    // Add Qty change invalidates the rejected snapshot — never treat as a fresh rejection.
+    const addQtyRevised = hydrateIssueLinesWithAllowanceApprovals(
       [{ pmrLineId: 10, plannedAllowanceQty: "1", issueQty: "5", issueQtyTouched: true }],
       approvals,
     )[0];
-    expect(touched.issueQty).toBe("5");
-    expect(touched.allowanceApprovalStatus).toBe("REJECTED");
+    expect(addQtyRevised.issueQty).toBe("5");
+    expect(addQtyRevised.allowanceApprovalStatus).toBe("NONE");
   });
 
   it("clears stale approval markers once no request remains for the line", () => {
@@ -210,5 +219,46 @@ describe("rmAllowanceApprovalUx — line hydration", () => {
     const line = { issueQty: "10", issueQtyTouched: false };
     const [hydrated] = hydrateIssueLinesWithAllowanceApprovals([line], []);
     expect(hydrated).toBe(line);
+  });
+
+  it("ignores SUPERSEDED approvals when picking latest for a line", () => {
+    const latest = pickLatestApprovalForPmrLine(
+      [
+        approval({ id: 2, status: "SUPERSEDED", pmrLineId: 1000 }),
+        approval({ id: 1, status: "REJECTED", pmrLineId: 1000 }),
+      ],
+      1000,
+    );
+    expect(latest?.id).toBe(1);
+    expect(latest?.status).toBe("REJECTED");
+  });
+
+  it("clears REJECTED band after operator revises Add Qty", () => {
+    const [hydrated] = hydrateIssueLinesWithAllowanceApprovals(
+      [
+        {
+          pmrLineId: 1000,
+          plannedAllowanceQty: "1",
+          issueQty: "31",
+          issueQtyTouched: true,
+          allowanceApprovalStatus: "REJECTED" as const,
+          allowanceApprovalId: 9,
+        },
+      ],
+      [approval({ id: 9, status: "REJECTED", addQty: 4, pmrLineId: 1000 })],
+    );
+    expect(hydrated.allowanceApprovalStatus).toBe("NONE");
+    expect(hydrated.allowanceApprovalId).toBeNull();
+  });
+
+  it("newer pending request supersedes older rejected in queue badge", () => {
+    const info = resolvePmrAllowanceQueueInfo(
+      [
+        approval({ id: 20, status: "PENDING_APPROVAL", productionMaterialRequestId: 100 }),
+        approval({ id: 10, status: "REJECTED", productionMaterialRequestId: 100 }),
+      ],
+      100,
+    );
+    expect(info.status).toBe("PENDING_APPROVAL");
   });
 });

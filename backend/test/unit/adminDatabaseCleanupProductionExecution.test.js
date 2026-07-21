@@ -28,7 +28,12 @@ describe("buildProductionReportCleanupSteps", () => {
     const steps = buildProductionReportCleanupSteps({});
     assert.deepEqual(
       steps.map((s) => s.table),
-      ["productionRmReturnPending", "productionWorkOrderReportLine", "productionWorkOrderReport"],
+      [
+        "productionRmReturnPending",
+        "productionWorkOrderReportWastageDetail",
+        "productionWorkOrderReportLine",
+        "productionWorkOrderReport",
+      ],
     );
   });
 });
@@ -126,6 +131,7 @@ describe("deleteProductionReportsForWorkOrders", () => {
   it("scopes report deletes to work orders", async () => {
     const deleted = [];
     const db = {
+      $queryRaw: async () => [{ ok: 1 }],
       productionWorkOrderReport: {
         findMany: async () => [{ id: 5 }],
         deleteMany: async (args) => {
@@ -139,6 +145,12 @@ describe("deleteProductionReportsForWorkOrders", () => {
           return { count: 1 };
         },
       },
+      productionWorkOrderReportWastageDetail: {
+        deleteMany: async (args) => {
+          deleted.push(["productionWorkOrderReportWastageDetail", args]);
+          return { count: 1 };
+        },
+      },
       productionWorkOrderReportLine: {
         deleteMany: async (args) => {
           deleted.push(["productionWorkOrderReportLine", args]);
@@ -149,6 +161,7 @@ describe("deleteProductionReportsForWorkOrders", () => {
     const counts = {};
     await deleteProductionReportsForWorkOrders(db, counts, { workOrderIds: [100] });
     assert.equal(counts.productionRmReturnPending, 1);
+    assert.equal(counts.productionWorkOrderReportWastageDetail, 1);
     assert.equal(counts.productionWorkOrderReportLine, 2);
     assert.equal(counts.productionWorkOrderReport, 1);
   });

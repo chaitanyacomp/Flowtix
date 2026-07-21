@@ -21,6 +21,7 @@ import { useUnsavedChangesGuard } from "../../hooks/useUnsavedChangesGuard";
 import { apiFetch } from "../../services/api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
+import { DecimalInput } from "../../components/ui/DecimalInput";
 import { useShortcutHints } from "../../hooks/useShortcutHints";
 import { FieldShortcutHint } from "../../components/ui/FieldShortcutHint";
 import { FIELD_HINT_GRID_NAV, FIELD_HINT_PO_SUPPLIER, FIELD_HINT_SAVE } from "../../lib/shortcutHintCopy";
@@ -975,22 +976,7 @@ export function RmPurchaseListPage() {
                   const showQtyErr = shouldShowErr(i, "qty") && !valid.qty;
                   const showRateErr = shouldShowErr(i, "rate") && !valid.rate;
 
-                  const poQtyBind = shortcutHints.bindField("poLineQty", {
-                    onChange: (e) => {
-                      const raw = (e.target as HTMLInputElement).value;
-                      const v = raw.trim() === "" ? Number.NaN : Number(raw);
-                      setPoLines((prev) =>
-                        prev.map((x, j) =>
-                          j === i
-                            ? {
-                                ...x,
-                                qty: v,
-                                amount: Number.isFinite(v) && Number.isFinite(x.rate) ? computeLineAmount(v, x.rate) : 0,
-                              }
-                            : x,
-                        ),
-                      );
-                    },
+                  const poQtyHints = shortcutHints.bindField("poLineQty", {
                     onBlur: () => setTouched(i, "qty"),
                     onFocus: (e) => (e.target as HTMLInputElement).select(),
                   });
@@ -1048,21 +1034,37 @@ export function RmPurchaseListPage() {
                             hint={shortcutHints.activeFieldHintText ?? ""}
                             placement="below-end"
                           >
-                            <Input
+                            <DecimalInput
                               ref={(el) => {
                                 poQtyInputRefs.current[i] = el;
                               }}
-                              type="number"
                               className="h-9"
                               value={Number.isFinite(l.qty) ? String(l.qty) : ""}
-                              min={0}
-                              step="any"
+                              normalizeOnBlur={false}
                               onKeyDown={(e) => {
                                 if (e.key !== "Enter" || e.ctrlKey || e.altKey || e.metaKey) return;
                                 e.preventDefault();
                                 poRateInputRefs.current[i]?.focus();
                               }}
-                              {...poQtyBind}
+                              onFocus={poQtyHints.onFocus}
+                              onBlur={poQtyHints.onBlur}
+                              onValueChange={(raw) => {
+                                const trimmed = raw.trim();
+                                const parsed = trimmed === "" ? Number.NaN : Number(trimmed);
+                                const v = trimmed === "" || !Number.isFinite(parsed) ? Number.NaN : parsed;
+                                setPoLines((prev) =>
+                                  prev.map((x, j) =>
+                                    j === i
+                                      ? {
+                                          ...x,
+                                          qty: v,
+                                          amount: Number.isFinite(v) && Number.isFinite(x.rate) ? computeLineAmount(v, x.rate) : 0,
+                                        }
+                                      : x,
+                                  ),
+                                );
+                                poQtyHints.onChange({ target: { value: raw } } as React.ChangeEvent<HTMLInputElement>);
+                              }}
                             />
                           </FieldShortcutHint>
                           <div className="text-[11px] font-normal text-slate-500">Enter received / ordered quantity</div>
@@ -1071,15 +1073,13 @@ export function RmPurchaseListPage() {
 
                         <label className="grid gap-1 text-xs font-medium text-slate-600">
                           Rate
-                          <Input
+                          <DecimalInput
                             ref={(el) => {
                               poRateInputRefs.current[i] = el;
                             }}
-                            type="number"
                             className="h-9"
                             value={Number.isFinite(l.rate) ? String(l.rate) : ""}
-                            min={0}
-                            step="any"
+                            normalizeOnBlur={false}
                             onBlur={() => setTouched(i, "rate")}
                             onFocus={(e) => e.target.select()}
                             onKeyDown={(e) => {
@@ -1087,9 +1087,10 @@ export function RmPurchaseListPage() {
                               e.preventDefault();
                               addLineFrom(i);
                             }}
-                            onChange={(e) => {
-                              const raw = (e.target as HTMLInputElement).value;
-                              const v = raw.trim() === "" ? Number.NaN : Number(raw);
+                            onValueChange={(raw) => {
+                              const trimmed = raw.trim();
+                              const parsed = trimmed === "" ? Number.NaN : Number(trimmed);
+                              const v = trimmed === "" || !Number.isFinite(parsed) ? Number.NaN : parsed;
                               setPoLines((prev) =>
                                 prev.map((x, j) =>
                                   j === i

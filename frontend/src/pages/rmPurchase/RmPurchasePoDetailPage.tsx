@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/ca
 import { apiFetch } from "../../services/api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
+import { DecimalInput } from "../../components/ui/DecimalInput";
 import { useAuth } from "../../hooks/useAuth";
 import { useToast } from "../../contexts/ToastContext";
 import { useUnsavedChangesGuard } from "../../hooks/useUnsavedChangesGuard";
@@ -819,11 +820,17 @@ export function RmPurchasePoDetailPage() {
   }
 
   const bindGrnQtyField = React.useCallback(
-    (rmPoLineId: number) =>
-      shortcutHints.bindField("grnQty", {
-        onChange: (e) => {
-          const raw = (e.target as HTMLInputElement).value;
-          const v = raw.trim() === "" ? Number.NaN : Number(raw);
+    (rmPoLineId: number) => {
+      const hints = shortcutHints.bindField("grnQty", {
+        onFocus: (e) => (e.target as HTMLInputElement).select(),
+      });
+      return {
+        onFocus: hints.onFocus,
+        onBlur: hints.onBlur,
+        onValueChange: (raw: string) => {
+          const trimmed = raw.trim();
+          const parsed = trimmed === "" ? Number.NaN : Number(trimmed);
+          const v = trimmed === "" || !Number.isFinite(parsed) ? Number.NaN : parsed;
           setGrnLines((prev) => {
             const n = [...prev];
             const ix = n.findIndex((x) => x.rmPoLineId === rmPoLineId);
@@ -832,9 +839,10 @@ export function RmPurchasePoDetailPage() {
             if (ix >= 0) n[ix] = { rmPoLineId, receivedQty: v, locationId: locId };
             return n;
           });
+          hints.onChange({ target: { value: raw } } as React.ChangeEvent<HTMLInputElement>);
         },
-        onFocus: (e) => (e.target as HTMLInputElement).select(),
-      }),
+      };
+    },
     [shortcutHints, grnLocationSuggestions, grnLocations],
   );
 
@@ -1383,22 +1391,7 @@ export function RmPurchasePoDetailPage() {
                   </thead>
                   <tbody>
                     {poLines.map((l, i) => {
-                      const poQtyBind = shortcutHints.bindField("poLineQty", {
-                        onChange: (e) => {
-                          const raw = (e.target as HTMLInputElement).value;
-                          const v = raw.trim() === "" ? Number.NaN : Number(raw);
-                          setPoLines((prev) =>
-                            prev.map((x, j) =>
-                              j === i
-                                ? {
-                                    ...x,
-                                    qty: v,
-                                    amount: Number.isFinite(v) && Number.isFinite(x.rate) ? computeLineAmount(v, x.rate) : 0,
-                                  }
-                                : x,
-                            ),
-                          );
-                        },
+                      const poQtyHints = shortcutHints.bindField("poLineQty", {
                         onFocus: (e) => (e.target as HTMLInputElement).select(),
                       });
                       const locked = lineItemLocked(po, l.id);
@@ -1437,30 +1430,45 @@ export function RmPurchasePoDetailPage() {
                             </select>
                           </td>
                           <td className="py-1 pr-2 align-top">
-                            <Input
+                            <DecimalInput
                               ref={(el) => {
                                 poQtyInputRefs.current[i] = el;
                               }}
-                              type="number"
                               className="h-9 w-24"
                               value={Number.isFinite(l.qty) ? String(l.qty) : ""}
-                              min={0}
-                              step="any"
+                              normalizeOnBlur={false}
                               onKeyDown={(e) => onPoLineQtyKeyDown(i, e)}
-                              {...poQtyBind}
+                              onFocus={poQtyHints.onFocus}
+                              onBlur={poQtyHints.onBlur}
+                              onValueChange={(raw) => {
+                                const trimmed = raw.trim();
+                                const parsed = trimmed === "" ? Number.NaN : Number(trimmed);
+                                const v = trimmed === "" || !Number.isFinite(parsed) ? Number.NaN : parsed;
+                                setPoLines((prev) =>
+                                  prev.map((x, j) =>
+                                    j === i
+                                      ? {
+                                          ...x,
+                                          qty: v,
+                                          amount: Number.isFinite(v) && Number.isFinite(x.rate) ? computeLineAmount(v, x.rate) : 0,
+                                        }
+                                      : x,
+                                  ),
+                                );
+                                poQtyHints.onChange({ target: { value: raw } } as React.ChangeEvent<HTMLInputElement>);
+                              }}
                             />
                           </td>
                           <td className="py-1 pr-2">
-                            <Input
-                              type="number"
+                            <DecimalInput
                               className="h-9 w-28"
                               value={Number.isFinite(l.rate) ? String(l.rate) : ""}
-                              min={0}
-                              step="any"
+                              normalizeOnBlur={false}
                               onFocus={(e) => e.target.select()}
-                              onChange={(e) => {
-                                const raw = (e.target as HTMLInputElement).value;
-                                const v = raw.trim() === "" ? Number.NaN : Number(raw);
+                              onValueChange={(raw) => {
+                                const trimmed = raw.trim();
+                                const parsed = trimmed === "" ? Number.NaN : Number(trimmed);
+                                const v = trimmed === "" || !Number.isFinite(parsed) ? Number.NaN : parsed;
                                 setPoLines((prev) =>
                                   prev.map((x, j) =>
                                     j === i

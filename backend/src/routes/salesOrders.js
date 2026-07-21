@@ -2382,20 +2382,54 @@ salesOrderRouter.get(
       }
 
       const snap = await getLatestNoQtyCloseSnapshot(prisma, soId);
-      const closedLines = (snap?.lines || []).map((ln) => ({
+      const closedLinesRaw = (snap?.lines || []).map((ln) => ({
         itemId: ln.itemId,
         closedShortageQty: Number(ln.closedShortageQty ?? 0),
         cycleIdAtClose: ln.cycleIdAtClose,
         cycleNoAtClose: ln.cycleNoAtClose,
       }));
 
-      const itemIds = [...new Set(closedLines.map((l) => Number(l.itemId)).filter((x) => x > 0))];
-      /** @type {{ itemId: number; usableQty: number }[]} */
+      const itemIds = [...new Set(closedLinesRaw.map((l) => Number(l.itemId)).filter((x) => x > 0))];
+      const itemRows =
+        itemIds.length > 0
+          ? await prisma.item.findMany({
+              where: { id: { in: itemIds } },
+              select: { id: true, itemName: true, unit: true },
+            })
+          : [];
+      /** @type {Map<number, { itemName: string | null; unit: string | null }>} */
+      const itemMeta = new Map(
+        itemRows.map((it) => [
+          Number(it.id),
+          {
+            itemName: it.itemName?.trim() ? String(it.itemName).trim() : null,
+            unit: it.unit?.trim() ? String(it.unit).trim() : null,
+          },
+        ]),
+      );
+      const closedLines = closedLinesRaw.map((ln) => {
+        const meta = itemMeta.get(Number(ln.itemId));
+        return {
+          ...ln,
+          itemName: meta?.itemName ?? null,
+          unit: meta?.unit ?? null,
+          identityResolved: Boolean(meta?.itemName),
+        };
+      });
+
+      /** @type {{ itemId: number; usableQty: number; itemName: string | null; unit: string | null; identityResolved: boolean }[]} */
       const usableByItem = [];
       for (const itemId of itemIds) {
         // eslint-disable-next-line no-await-in-loop
         const usableQty = await getUsableItemStockQty(itemId, prisma);
-        usableByItem.push({ itemId, usableQty: Math.round(usableQty * 1000) / 1000 });
+        const meta = itemMeta.get(itemId);
+        usableByItem.push({
+          itemId,
+          usableQty: Math.round(usableQty * 1000) / 1000,
+          itemName: meta?.itemName ?? null,
+          unit: meta?.unit ?? null,
+          identityResolved: Boolean(meta?.itemName),
+        });
       }
 
       const curCid = so.currentCycleId != null ? Number(so.currentCycleId) : null;

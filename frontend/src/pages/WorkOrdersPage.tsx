@@ -18,6 +18,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { ApiRequestError, apiFetch } from "../services/api";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { Badge } from "../components/ui/badge";
 import { useAuth } from "../hooks/useAuth";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
@@ -1971,15 +1972,11 @@ export function WorkOrdersPage() {
               <label className="erp-form-label text-xs" htmlFor="shortfall-buffer-pct">
                 Production buffer % (optional)
               </label>
-              <Input
+              <DecimalInput
                 id="shortfall-buffer-pct"
-                type="number"
-                min={0}
-                max={10}
-                step={0.5}
                 className="h-9 w-28 tabular-nums"
                 value={shortfallBufferPercentInput}
-                onChange={(e) => setShortfallBufferPercentInput(e.target.value)}
+                onValueChange={setShortfallBufferPercentInput}
               />
             </div>
           </div>

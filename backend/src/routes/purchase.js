@@ -1391,7 +1391,8 @@ purchaseRouter.post(
           .array(
             z.object({
               purchaseRequestLineId: z.number().int().positive(),
-              qty: z.number().positive(),
+              // 0 = exclude allocation; positive qty ordered. Filtered in service.
+              qty: z.number().nonnegative(),
               rate: z.number().positive(),
             }),
           )
@@ -1404,6 +1405,11 @@ purchaseRouter.post(
       });
       return res.status(201).json({ ...po, taxWarnings });
     } catch (e) {
+      if (e?.code === "RM_PO_RATE_MISMATCH" || e?.code === "RM_PO_NO_ELIGIBLE_LINES") {
+        return res.status(e.statusCode || 400).json({
+          error: { message: e.message, code: e.code, details: e.details ?? undefined },
+        });
+      }
       return next(e);
     }
   },

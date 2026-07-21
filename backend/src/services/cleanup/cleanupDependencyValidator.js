@@ -8,6 +8,8 @@
 const {
   CLEANUP_REGISTRY,
   PRESERVED_MASTER_MODELS,
+  FULL_DEMO_WIPED_MASTERS,
+  FULL_DEMO_PRESERVED_MODELS,
   getTransactionalRegistryEntries,
   findRegistryEntryByPrismaModel,
 } = require("./cleanupRegistry");
@@ -220,9 +222,88 @@ function describeCarryForwardPendingDependencyGraph(opts = {}) {
   });
 }
 
+/**
+ * Prisma models deleted by Full Demo Reset = all transactional rows + wiped masters.
+ * @returns {Set<string>}
+ */
+function getFullDemoDeletedPrismaModelSet() {
+  const set = new Set(FULL_DEMO_WIPED_MASTERS);
+  for (const e of getTransactionalRegistryEntries()) {
+    set.add(e.prismaModel);
+  }
+  // Full Demo also clears DocSequence when present (optional).
+  set.add("DocSequence");
+  set.add("IdempotencyRecord");
+  return set;
+}
+
+/**
+ * Ensure every Restrict FK into a Full-Demo-wiped parent has a child that is either
+ * also wiped or intentionally preserved. Catches new Item/Customer/… children that
+ * transaction-reset protection skips (because those parents are masters there).
+ *
+ * @param {{ schemaPath?: string, deletedModels?: Set<string>|string[], preservedModels?: Set<string>|string[] }} [opts]
+ */
+function validateFullDemoResetCoverage(opts = {}) {
+  const graph = loadPrismaSchemaGraph(opts.schemaPath);
+  const blocking = getBlockingRelations(graph.relations);
+  const deleted = new Set(opts.deletedModels ?? getFullDemoDeletedPrismaModelSet());
+  const preserved = new Set(opts.preservedModels ?? FULL_DEMO_PRESERVED_MODELS);
+
+  /** @type {CleanupValidationIssue[]} */
+  const missingModels = [];
+
+  for (const rel of blocking) {
+    if (!deleted.has(rel.toModel)) continue;
+    if (rel.fromModel === rel.toModel) continue;
+    if (preserved.has(rel.fromModel)) continue;
+    if (deleted.has(rel.fromModel)) continue;
+
+    missingModels.push({
+      code: "CLEANUP_REGISTRY_MISSING_MODEL",
+      message:
+        `FULL_DEMO_CLEANUP_MISSING_MODEL:\n` +
+        `${rel.fromModel}.${rel.fieldName} Restrict-references ${rel.toModel}, ` +
+        `but ${rel.fromModel} is neither wiped by Full Demo Reset nor listed in FULL_DEMO_PRESERVED_MODELS.`,
+      details: {
+        child: rel.fromModel,
+        parent: rel.toModel,
+        field: rel.fieldName,
+        fromFields: rel.fromFields,
+        onDelete: rel.onDelete,
+      },
+    });
+  }
+
+  return {
+    ok: missingModels.length === 0,
+    deletedModels: [...deleted].sort(),
+    preservedModels: [...preserved].sort(),
+    missingModels,
+    issues: missingModels,
+  };
+}
+
+/**
+ * Throw if Full Demo coverage is incomplete.
+ * @param {{ schemaPath?: string }} [opts]
+ */
+function assertFullDemoResetCoverageValid(opts = {}) {
+  const result = validateFullDemoResetCoverage(opts);
+  if (result.ok) return result;
+  const detail = result.issues.map((i) => i.message).join("\n\n");
+  const err = new Error(`Full Demo Reset coverage validation failed:\n\n${detail}`);
+  err.code = "FULL_DEMO_CLEANUP_INCOMPLETE";
+  err.issues = result.issues;
+  throw err;
+}
+
 module.exports = {
   TRANSACTION_ROOT_MODELS,
   validateCleanupRegistryAgainstSchema,
   assertCleanupRegistryValid,
+  validateFullDemoResetCoverage,
+  assertFullDemoResetCoverageValid,
+  getFullDemoDeletedPrismaModelSet,
   describeCarryForwardPendingDependencyGraph,
 };

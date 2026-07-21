@@ -38,8 +38,8 @@ describe("workOrderReadinessUx", () => {
         rmReadyForProduction: true,
         producedQty: 0,
         status: "PENDING",
-      }).label,
-    ).toBe("Ready for Production");
+      }),
+    ).toEqual({ label: "Ready to Start", tone: "ready", actionLabel: null });
   });
 
   it("prefers backend actionLabel over href inference", () => {

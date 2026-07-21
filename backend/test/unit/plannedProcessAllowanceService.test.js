@@ -203,6 +203,39 @@ test("server rejects manipulated calculated quantity / recommendation", () => {
   );
 });
 
+test("server derives allowance from Issue Now and rejects stale Add Qty", () => {
+  const result = validatePlannedProcessAllowance(
+    {
+      theoreticalBomQty: 22.8,
+      alreadyIssuedQty: 0,
+      issueQty: 25,
+      enteredAllowanceQty: 2.2,
+      allowanceReason: "Process setup allowance",
+    },
+    { role: "ADMIN" },
+  );
+  assert.equal(result.plannedAllowanceQty, 2.2);
+  assert.equal(result.plannedAllowancePct, 9.6491);
+  assert.equal(result.requiresAdminApproval, true);
+  assert.throws(
+    () => validatePlannedProcessAllowance(
+      { theoreticalBomQty: 22.8, issueQty: 25, enteredAllowanceQty: 1, allowanceReason: "stale" },
+      { role: "ADMIN" },
+    ),
+    { code: "PLANNED_ALLOWANCE_CALCULATION_MISMATCH" },
+  );
+});
+
+test("Issue Now below the remaining BOM is partial issue with zero allowance", () => {
+  const result = validatePlannedProcessAllowance(
+    { theoreticalBomQty: 22.8, issueQty: 20, enteredAllowanceQty: 0 },
+    { role: "STORE" },
+  );
+  assert.equal(result.plannedAllowanceQty, 0);
+  assert.equal(result.plannedAllowancePct, 0);
+  assert.equal(result.requiresAdminApproval, false);
+});
+
 test("included runner is recovered from theoretical and never added again", () => {
   assert.equal(recoverIncludedRunnerQty(27, 90, 10), 2.7);
   const planned = calculatePlannedProcessAllowance(27, 0);

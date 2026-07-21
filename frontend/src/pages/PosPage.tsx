@@ -3,14 +3,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { Badge } from "../components/ui/badge";
 import { useAuth } from "../hooks/useAuth";
-import { isValidNumberDraft, type NumberDraft, toNumberDraft } from "../lib/numberDraft";
 
 type Customer = { id: number; name: string };
 type Item = { id: number; itemName: string; itemType: "RM" | "FG" };
 type Supplier = { id: number; name: string };
-type PoLine = { itemId: number; qty: NumberDraft; rate: NumberDraft; discountPct: NumberDraft; gstPct: NumberDraft };
+type PoLine = { itemId: number; qty: string; rate: string; discountPct: string; gstPct: string };
 type PoRow = {
   id: number;
   poNumber: string;
@@ -23,7 +23,7 @@ type PoRow = {
   salesOrder?: { id: number } | null;
 };
 
-function lineTotal(qty: NumberDraft, rate: NumberDraft, discountPct: NumberDraft, gstPct: NumberDraft) {
+function lineTotal(qty: string, rate: string, discountPct: string, gstPct: string) {
   const q = Number(qty || 0);
   const r = Number(rate || 0);
   const d = Number(discountPct || 0);
@@ -47,7 +47,7 @@ export function PosPage() {
   const [poNumber, setPoNumber] = React.useState("");
   const [poDate, setPoDate] = React.useState(() => new Date().toISOString().slice(0, 10));
   const [requiredDate, setRequiredDate] = React.useState("");
-  const [lines, setLines] = React.useState<PoLine[]>([{ itemId: 0, qty: "", rate: "", discountPct: 0, gstPct: 18 }]);
+  const [lines, setLines] = React.useState<PoLine[]>([{ itemId: 0, qty: "", rate: "", discountPct: "0", gstPct: "18" }]);
   const [creating, setCreating] = React.useState(false);
 
   function normalizeDateInput(v: string): string {
@@ -77,7 +77,7 @@ export function PosPage() {
 
   function addRow() {
     const itemId = items[0]?.id ?? 0;
-    setLines((prev) => [...prev, { itemId, qty: "", rate: "", discountPct: 0, gstPct: 18 }]);
+    setLines((prev) => [...prev, { itemId, qty: "", rate: "", discountPct: "0", gstPct: "18" }]);
   }
 
   function removeRow(i: number) {
@@ -102,18 +102,23 @@ export function PosPage() {
       setError("Add at least one line.");
       return;
     }
-    const bad = lines.find(
-      (l) =>
+    const bad = lines.find((l) => {
+      const qty = Number(l.qty);
+      const rate = Number(l.rate);
+      const discountPct = Number(l.discountPct);
+      const gstPct = Number(l.gstPct);
+      return (
         !l.itemId ||
-        !isValidNumberDraft(l.qty) ||
-        l.qty <= 0 ||
-        !isValidNumberDraft(l.rate) ||
-        l.rate < 0 ||
-        !isValidNumberDraft(l.discountPct) ||
-        l.discountPct < 0 ||
-        !isValidNumberDraft(l.gstPct) ||
-        l.gstPct < 0,
-    );
+        !Number.isFinite(qty) ||
+        qty <= 0 ||
+        !Number.isFinite(rate) ||
+        rate < 0 ||
+        !Number.isFinite(discountPct) ||
+        discountPct < 0 ||
+        !Number.isFinite(gstPct) ||
+        gstPct < 0
+      );
+    });
     if (bad) {
       setError("Please complete all numeric fields (qty > 0, rate/discount/GST not negative).");
       return;
@@ -130,10 +135,10 @@ export function PosPage() {
           requiredDate: requiredDate.trim() ? requiredDate.trim() : null,
           lines: lines.map((l) => ({
             itemId: l.itemId,
-            qty: l.qty,
-            rate: l.rate,
-            discountPct: l.discountPct,
-            gstPct: l.gstPct,
+            qty: Number(l.qty),
+            rate: Number(l.rate),
+            discountPct: Number(l.discountPct),
+            gstPct: Number(l.gstPct),
           })),
         }),
       });
@@ -245,21 +250,20 @@ export function PosPage() {
                       </select>
                     </td>
                     <td className="p-1">
-                      <Input type="number" className="h-9" value={l.qty} onChange={(e) => updateLine(i, { qty: toNumberDraft(e.target.value) })} />
+                      <DecimalInput className="h-9" value={l.qty} onValueChange={(next) => updateLine(i, { qty: next })} />
                     </td>
                     <td className="p-1">
-                      <Input type="number" className="h-9" value={l.rate} onChange={(e) => updateLine(i, { rate: toNumberDraft(e.target.value) })} />
+                      <DecimalInput className="h-9" value={l.rate} onValueChange={(next) => updateLine(i, { rate: next })} />
                     </td>
                     <td className="p-1">
-                      <Input
-                        type="number"
+                      <DecimalInput
                         className="h-9"
                         value={l.discountPct}
-                        onChange={(e) => updateLine(i, { discountPct: toNumberDraft(e.target.value) })}
+                        onValueChange={(next) => updateLine(i, { discountPct: next })}
                       />
                     </td>
                     <td className="p-1">
-                      <Input type="number" className="h-9" value={l.gstPct} onChange={(e) => updateLine(i, { gstPct: toNumberDraft(e.target.value) })} />
+                      <DecimalInput className="h-9" value={l.gstPct} onValueChange={(next) => updateLine(i, { gstPct: next })} />
                     </td>
                     <td className="p-2 text-slate-800">{lineTotal(l.qty, l.rate, l.discountPct, l.gstPct).toFixed(2)}</td>
                     <td className="p-1">

@@ -10,8 +10,8 @@ import {
 
 describe("Production dashboard action vs status separation", () => {
   it("labels active production status as monitoring, not an action inbox", () => {
-    expect(ACTIVE_PRODUCTION_STATUS_TITLE).toBe("Active Production Status");
-    expect(ACTIVE_PRODUCTION_STATUS_HELPER).toMatch(/live status/i);
+    expect(ACTIVE_PRODUCTION_STATUS_TITLE).toBe("Current Production Monitor");
+    expect(ACTIVE_PRODUCTION_STATUS_HELPER).toMatch(/Ready to Start is not Running/i);
     expect(ACTIVE_PRODUCTION_STATUS_HELPER).not.toMatch(/pending action/i);
   });
 

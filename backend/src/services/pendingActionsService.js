@@ -29,6 +29,9 @@ const {
 const { buildProcurementPendingQueue, buildGrnPendingSection } = require("./procurementWorkspaceService");
 const { buildStoreIssuePendingDashboardRows, buildStoreProductionHandoffDashboardRows, buildMaterialAvailabilityWorkspace } = require("./materialAvailabilityWorkspaceService");
 const {
+  isRmAllowanceRequestActionableForStore,
+} = require("./rmAllowanceApprovalService");
+const {
   loadStoreProductionReleaseEligibilityByWorkOrder,
 } = require("./productionMaterialRequestService");
 const {
@@ -819,10 +822,27 @@ async function loadActiveRmAllowancePmrIds(db = prisma) {
   if (!db.rmAllowanceApprovalRequest?.findMany) return new Set();
   const rows = await db.rmAllowanceApprovalRequest.findMany({
     where: { status: { in: ["PENDING_APPROVAL", "APPROVED", "REJECTED"] } },
-    select: { productionMaterialRequestId: true },
+    include: {
+      productionMaterialRequest: { select: { id: true, status: true } },
+      pmrLine: { select: { id: true, requiredQty: true, issuedQty: true, waivedQty: true } },
+    },
+    orderBy: [{ requestedAt: "desc" }, { id: "desc" }],
     take: 500,
   });
-  return new Set(rows.map((r) => Number(r.productionMaterialRequestId)).filter((id) => id > 0));
+  // Latest request per PMR only — same collapse as Store allowance PAs.
+  const byPmr = new Map();
+  for (const row of rows) {
+    const pmrId = Number(row.productionMaterialRequestId);
+    if (!pmrId || byPmr.has(pmrId)) continue;
+    byPmr.set(pmrId, row);
+  }
+  const actionable = new Set();
+  for (const row of byPmr.values()) {
+    if (isRmAllowanceRequestActionableForStore(row)) {
+      actionable.add(Number(row.productionMaterialRequestId));
+    }
+  }
+  return actionable;
 }
 
 async function fetchStoreIssuePendingActions(db = prisma, opts = {}) {
@@ -874,6 +894,7 @@ async function fetchStoreIssuePendingActions(db = prisma, opts = {}) {
 /**
  * Store Pending Actions for RM allowance lifecycle (Material Issue buckets).
  * Deep-links Material Issue with canonical `bucket=` — no Admin approve authority.
+ * Only actionable requests: open PMR + remaining qty on the RM line.
  */
 async function fetchStoreRmAllowanceQueuePendingActions(db = prisma) {
   if (!db.rmAllowanceApprovalRequest?.findMany) return [];
@@ -881,67 +902,70 @@ async function fetchStoreRmAllowanceQueuePendingActions(db = prisma) {
     where: { status: { in: ["PENDING_APPROVAL", "APPROVED", "REJECTED"] } },
     include: {
       workOrder: { select: { id: true, docNo: true } },
-      productionMaterialRequest: { select: { id: true, docNo: true } },
+      productionMaterialRequest: { select: { id: true, docNo: true, status: true } },
+      pmrLine: { select: { id: true, requiredQty: true, issuedQty: true, waivedQty: true } },
       item: { select: { id: true, itemName: true, unit: true } },
     },
     orderBy: [{ requestedAt: "desc" }, { id: "desc" }],
     take: 200,
   });
-  // One actionable row per PMR (latest request wins).
+  // One actionable row per PMR (latest request wins, then eligibility gate).
   const byPmr = new Map();
   for (const row of rows) {
     const pmrId = Number(row.productionMaterialRequestId);
     if (!pmrId || byPmr.has(pmrId)) continue;
     byPmr.set(pmrId, row);
   }
-  return [...byPmr.values()].map((row) => {
-    const status = String(row.status);
-    let action = STORE_RM_ALLOWANCE_AWAITING_ACTION;
-    let bucket = "approvalPending";
-    let currentStatus = "PENDING_APPROVAL";
-    if (status === "APPROVED") {
-      action = STORE_RM_ALLOWANCE_APPROVED_ACTION;
-      bucket = "approved";
-      currentStatus = "APPROVED";
-    } else if (status === "REJECTED") {
-      action = STORE_RM_ALLOWANCE_REJECTED_ACTION;
-      bucket = "rejected";
-      currentStatus = "REJECTED";
-    }
-    const woNo = row.workOrder?.docNo ?? `WO-${row.workOrderId}`;
-    const pmrNo = row.productionMaterialRequest?.docNo ?? `PMR-${row.productionMaterialRequestId}`;
-    const params = new URLSearchParams({
-      bucket,
-      workOrderId: String(row.workOrderId),
-      pmrId: String(row.productionMaterialRequestId),
-      allowanceApprovalId: String(row.id),
-      returnTo: "pending-actions",
-      from: "pending-actions",
-    });
-    return {
-      id: `store-rm-allowance:${bucket}:${row.id}`,
-      type: `STORE_RM_ALLOWANCE_${currentStatus}`,
-      priority: status === "APPROVED" ? PENDING_PRIORITY.HIGH : PENDING_PRIORITY.MEDIUM,
-      action,
-      documentNo: `${woNo} · ${pmrNo} · ${row.item?.itemName ?? `Item #${row.itemId}`}`,
-      ownerRole: "STORE",
-      ageHours: ageHoursFromTimestamp(row.requestedAt),
-      href: `/material-issue?${params.toString()}`,
-      sourceModule: "MATERIAL_ISSUE",
-      currentStatus,
-      workOrderId: row.workOrderId,
-      itemId: row.itemId,
-      quantity: Number(row.issueQty),
-      unit: row.item?.unit ?? null,
-      metadata: {
-        materialIssueBucket: bucket,
-        allowanceApprovalId: row.id,
-        pmrId: row.productionMaterialRequestId,
-        pmrLineId: row.pmrLineId,
+  return [...byPmr.values()]
+    .filter((row) => isRmAllowanceRequestActionableForStore(row))
+    .map((row) => {
+      const status = String(row.status);
+      let action = STORE_RM_ALLOWANCE_AWAITING_ACTION;
+      let bucket = "approvalPending";
+      let currentStatus = "PENDING_APPROVAL";
+      if (status === "APPROVED") {
+        action = STORE_RM_ALLOWANCE_APPROVED_ACTION;
+        bucket = "approved";
+        currentStatus = "APPROVED";
+      } else if (status === "REJECTED") {
+        action = STORE_RM_ALLOWANCE_REJECTED_ACTION;
+        bucket = "rejected";
+        currentStatus = "REJECTED";
+      }
+      const woNo = row.workOrder?.docNo ?? `WO-${row.workOrderId}`;
+      const pmrNo = row.productionMaterialRequest?.docNo ?? `PMR-${row.productionMaterialRequestId}`;
+      const params = new URLSearchParams({
+        bucket,
+        workOrderId: String(row.workOrderId),
+        pmrId: String(row.productionMaterialRequestId),
+        allowanceApprovalId: String(row.id),
+        returnTo: "pending-actions",
+        from: "pending-actions",
+      });
+      return {
+        id: `store-rm-allowance:${bucket}:${row.id}`,
+        type: `STORE_RM_ALLOWANCE_${currentStatus}`,
+        priority: status === "APPROVED" ? PENDING_PRIORITY.HIGH : PENDING_PRIORITY.MEDIUM,
+        action,
+        documentNo: `${woNo} · ${pmrNo} · ${row.item?.itemName ?? `Item #${row.itemId}`}`,
+        ownerRole: "STORE",
+        ageHours: ageHoursFromTimestamp(row.requestedAt),
+        href: `/material-issue?${params.toString()}`,
+        sourceModule: "MATERIAL_ISSUE",
+        currentStatus,
         workOrderId: row.workOrderId,
-      },
-    };
-  });
+        itemId: row.itemId,
+        quantity: Number(row.issueQty),
+        unit: row.item?.unit ?? null,
+        metadata: {
+          materialIssueBucket: bucket,
+          allowanceApprovalId: row.id,
+          pmrId: row.productionMaterialRequestId,
+          pmrLineId: row.pmrLineId,
+          workOrderId: row.workOrderId,
+        },
+      };
+    });
 }
 
 function formatStoreDispatchPendingQty(qty) {
@@ -1721,8 +1745,14 @@ async function fetchStoreNoQtyCreateNextRsPendingActionsImpl(db = prisma) {
         ? `Create Cycle ${nextCycleNo} Requirement Sheet`
         : "Create Next Requirement Sheet";
 
+    const cycleKey =
+      ctx.targetCycleId != null && Number(ctx.targetCycleId) > 0
+        ? Number(ctx.targetCycleId)
+        : nextCycleNo != null && nextCycleNo > 0
+          ? nextCycleNo
+          : 0;
     actions.push({
-      id: `no-qty-create-next-rs:${soId}`,
+      id: `no-qty-create-next-rs:${soId}:${cycleKey}`,
       priority: PENDING_PRIORITY.MEDIUM,
       action: label,
       documentNo: so.docNo ?? null,
@@ -2209,6 +2239,63 @@ function preferLifecyclePendingAction(existing, candidate) {
   return ab <= aa ? candidate : existing;
 }
 
+function isStoreCreateRsPendingAction(action) {
+  const id = String(action?.id ?? "");
+  if (/^no-qty-create-next-rs:/.test(id)) return true;
+  return /Create Cycle \d+ Requirement Sheet|Create Next Requirement Sheet|^Create Requirement Sheet$/i.test(
+    String(action?.action ?? ""),
+  );
+}
+
+/** Authoritative SO + cycle identity for Create Cycle N Requirement Sheet rows. */
+function storeCreateRsIdentityKey(action) {
+  const meta = action?.metadata || {};
+  let soId = Number(meta.salesOrderId ?? 0);
+  if (!(soId > 0)) {
+    const fromId = String(action?.id ?? "").match(/^no-qty-create-next-rs:(\d+)/);
+    if (fromId) soId = Number(fromId[1]);
+  }
+  if (!(soId > 0)) {
+    soId = Number(extractSalesOrderIdFromPendingAction(action) || 0);
+  }
+  if (!(soId > 0)) return null;
+  const cycleId = Number(meta.cycleId ?? 0);
+  const cycleNo = Number(meta.cycleNo ?? 0);
+  if (cycleId > 0) return `so:${soId}:cycleId:${cycleId}`;
+  if (cycleNo > 0) return `so:${soId}:cycleNo:${cycleNo}`;
+  return `so:${soId}`;
+}
+
+function preferStoreCreateRsPendingAction(existing, candidate) {
+  const aAuth = /^no-qty-create-next-rs:/.test(String(existing?.id ?? ""));
+  const bAuth = /^no-qty-create-next-rs:/.test(String(candidate?.id ?? ""));
+  if (aAuth !== bAuth) return bAuth ? candidate : existing;
+  const aFull = /Requirement Sheet/i.test(String(existing?.action ?? ""));
+  const bFull = /Requirement Sheet/i.test(String(candidate?.action ?? ""));
+  if (aFull !== bFull) return bFull ? candidate : existing;
+  return existing;
+}
+
+/**
+ * Ensure Create Cycle N Requirement Sheet appears once per SO/cycle across
+ * supplemental Store emit + Control Tower normalized rows.
+ */
+function dedupeStoreNoQtyCreateRsBySoCycle(actions) {
+  const createRs = [];
+  const others = [];
+  for (const action of actions) {
+    if (isStoreCreateRsPendingAction(action)) createRs.push(action);
+    else others.push(action);
+  }
+  const byKey = new Map();
+  for (const action of createRs) {
+    const key = storeCreateRsIdentityKey(action) || String(action.id ?? action.action);
+    const prev = byKey.get(key);
+    byKey.set(key, prev ? preferStoreCreateRsPendingAction(prev, action) : action);
+  }
+  return [...others, ...byKey.values()];
+}
+
 function dedupeLifecyclePendingActions(actions) {
   const withoutKey = [];
   const byDispatch = new Map();
@@ -2395,7 +2482,7 @@ async function getStorePendingActions(ctx) {
   const createNextRsSoIds = new Set();
   const createNextRsDocNos = new Set();
   for (const a of storeNoQtyCreateRs) {
-    const m = String(a.id || "").match(/^no-qty-create-next-rs:(\d+)$/);
+    const m = String(a.id || "").match(/^no-qty-create-next-rs:(\d+)/);
     if (m) createNextRsSoIds.add(Number(m[1]));
     if (a.documentNo) createNextRsDocNos.add(String(a.documentNo));
   }
@@ -2415,7 +2502,7 @@ async function getStorePendingActions(ctx) {
       .filter((id) => id > 0),
   );
   const filteredCreateRs = storeNoQtyCreateRs.filter((action) => {
-    const match = String(action?.id ?? "").match(/^no-qty-create-next-rs:(\d+)$/);
+    const match = String(action?.id ?? "").match(/^no-qty-create-next-rs:(\d+)/);
     return !match || !currentCyclePlanningSoIds.has(Number(match[1]));
   });
 
@@ -2464,6 +2551,7 @@ async function getStorePendingActions(ctx) {
   merged = dedupePendingActionsByProcurementCase(merged);
   merged = dedupePendingActionsByWorkOrder(merged);
   merged = dedupeLifecyclePendingActions(merged);
+  merged = dedupeStoreNoQtyCreateRsBySoCycle(merged);
 
   const actions = sortPendingActions(merged);
   bucketMs.total = Date.now() - startedAt;
@@ -2750,6 +2838,10 @@ module.exports = {
   extractSalesOrderIdFromPendingAction,
   dedupeLifecyclePendingActions,
   preferLifecyclePendingAction,
+  dedupeStoreNoQtyCreateRsBySoCycle,
+  isStoreCreateRsPendingAction,
+  storeCreateRsIdentityKey,
+  preferStoreCreateRsPendingAction,
   buildStoreDispatchPendingActionLabel,
   isStoreDispatchLifecycleAction,
   formatStoreDispatchPendingQty,

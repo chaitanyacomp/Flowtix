@@ -35,7 +35,7 @@ test("exportSalesBillsToTallyBulk — rejects already-exported bill (idempotent 
 
   await assert.rejects(() => exportSalesBillsToTallyBulk(prisma, [9]), (err) => {
     assert.equal(err.statusCode, 400);
-    assert.match(String(err.message), /already been exported/i);
+    assert.match(String(err.message), /already been confirmed exported/i);
     return true;
   });
 });

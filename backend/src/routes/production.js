@@ -1966,7 +1966,7 @@ const rmConsumptionLineSchema = z.object({
 
 const approveProductionEntrySchema = z.object({
   consumptionLines: z.array(rmConsumptionLineSchema).optional(),
-  remainingDisposition: z.enum(["CONTINUE", "PAUSE", "END_WITH_SHORTAGE", "CLOSE_WITH_SHORTAGE"]).optional(),
+  remainingDisposition: z.enum(["PAUSE", "END_WITH_SHORTAGE", "CLOSE_WITH_SHORTAGE"]).optional(),
   pauseReason: z.enum(["MACHINE_BREAKDOWN", "WAITING_FOR_RM", "TOOL_MOULD_MAINTENANCE", "QUALITY_CONCERN", "EMERGENCY_PRIORITY_PRODUCTION", "POWER_UTILITY_FAILURE", "MANAGEMENT_HOLD", "OTHER"]).optional(),
   dispositionRemarks: z.string().max(2000).optional().nullable(),
 });
@@ -2030,7 +2030,7 @@ productionRouter.post(
           });
           const executionSummary = await computeExecutionSummary(tx, executionContext);
           if (executionSummary.remainderQty > 1e-6 && !body.remainingDisposition) {
-            const err = new Error("Choose Continue Production, Pause Production, or End Production with Shortage before finalizing this partial production entry.");
+            const err = new Error("Choose Pause Production or End Production with Shortage before finalizing this partial production entry.");
             err.statusCode = 409;
             err.code = "PRODUCTION_REMAINING_DISPOSITION_REQUIRED";
             err.details = { summary: executionSummary };
@@ -2060,7 +2060,11 @@ productionRouter.post(
             });
             remainingDispositionResult = { outcome: "AWAITING_PRODUCTION_REPORT", summary: executionSummary };
           } else if (executionSummary.remainderQty > 1e-6) {
-            remainingDispositionResult = { outcome: "CONTINUE", summary: executionSummary };
+            const err = new Error("Choose Pause Production or End Production with Shortage before finalizing this partial production entry.");
+            err.statusCode = 409;
+            err.code = "PRODUCTION_REMAINING_DISPOSITION_REQUIRED";
+            err.details = { summary: executionSummary };
+            throw err;
           } else {
             // Equal or extra production (WO balance 0): finalize ≠ close. Park for
             // mandatory Production Report / RM reconciliation before WO closure.

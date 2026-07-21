@@ -17,6 +17,8 @@ const {
   setGreenLevelHistoryMonths,
   getGreenLevelSource,
   setGreenLevelSource,
+  getTallyLedgerMappings,
+  setTallyTransportationLedger,
 } = require("../services/appSettings");
 
 const settingsRouter = express.Router();
@@ -208,6 +210,32 @@ settingsRouter.put("/company-state", requireAuth, requireRole(["ADMIN"]), async 
       companyGstin: body.companyGstin,
     });
     return res.json(details);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+/** Tally voucher ledger mappings (Sales Bill freight / transportation). */
+settingsRouter.get("/tally-ledgers", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+  try {
+    return res.json(await getTallyLedgerMappings());
+  } catch (e) {
+    return next(e);
+  }
+});
+
+settingsRouter.put("/tally-ledgers", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
+  try {
+    const body = z
+      .object({
+        tallyTransportationLedger: z.string().max(160).nullable().optional(),
+      })
+      .parse(req.body ?? {});
+    if (!("tallyTransportationLedger" in body)) {
+      return res.status(400).json({ error: { message: "tallyTransportationLedger is required." } });
+    }
+    const saved = await setTallyTransportationLedger(body.tallyTransportationLedger);
+    return res.json(saved);
   } catch (e) {
     return next(e);
   }

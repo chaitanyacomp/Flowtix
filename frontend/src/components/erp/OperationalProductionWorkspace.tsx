@@ -40,6 +40,10 @@ import {
   resolveProductionWorkbenchCardAction,
 } from "../../lib/productionWorkbenchCardNavigation";
 import { parseProductionWorkspaceFocusWo } from "../../lib/productionWorkspaceRouteContract";
+import {
+  applyProductionWorkspaceSectionToSearchParams,
+  resolveProductionWorkspaceSectionFromSearch,
+} from "../../lib/productionWorkspaceSectionNav";
 import { resumeProductionExecutionApi } from "../../lib/productionExecutionApi";
 import { resumeWorkOrderApi } from "../../lib/workOrderLifecycle";
 import { bumpErpRefresh } from "../../lib/erpRefresh";
@@ -139,21 +143,7 @@ function parseWorkspaceSection(
   raw: string | null,
   productionBucket: ProductionWorkspaceBucketFilter | null,
 ): ProductionWorkspaceSectionId {
-  if (
-    raw === "ready" ||
-    raw === "paused" ||
-    raw === "reportPending" ||
-    raw === "pendingQa" ||
-    raw === "awaitingStore" ||
-    raw === "recent"
-  ) {
-    return raw;
-  }
-  if (raw === "active") return "active";
-  // Pending Actions bucket must open the matching tab — never default Ready into Continue.
-  if (productionBucket === "readyToStart") return "ready";
-  if (productionBucket === "inProgress") return "active";
-  return "active";
+  return resolveProductionWorkspaceSectionFromSearch(raw, productionBucket);
 }
 
 function remainingQtyForCard(row: DashboardProductionStatusRow): number {
@@ -238,18 +228,17 @@ export function OperationalProductionWorkspace({
     if (!match) return;
     const currentSection = classifyProductionWorkspaceSection(match);
     if (!currentSection || currentSection === section) return;
-    const nextParams = new URLSearchParams(searchParams);
-    nextParams.set("pwSection", currentSection);
-    nextParams.set("pwFocus", String(focusWoId));
+    const nextParams = applyProductionWorkspaceSectionToSearchParams(searchParams, currentSection, {
+      pwFocus: focusWoId,
+      clearNotice: false,
+    });
     nextParams.set(
       "pwNotice",
       `Status changed — ${displayWorkOrderNo(match.workOrderId, match.workOrderNo)} is now under ${PRODUCTION_WORKSPACE_SECTION_LABELS[currentSection]}.`,
     );
-    if (productionBucket === "readyToStart" && currentSection !== "ready") nextParams.delete("productionBucket");
-    if (productionBucket === "inProgress" && currentSection !== "active") nextParams.delete("productionBucket");
     setSearchParams(nextParams, { replace: true });
     setStaleNotice(nextParams.get("pwNotice"));
-  }, [focusWoId, rows, sections.all, section, searchParams, setSearchParams, productionBucket]);
+  }, [focusWoId, rows, sections.all, section, searchParams, setSearchParams]);
 
   const sectionRows = React.useMemo(() => {
     let list: DashboardProductionStatusRow[] =
@@ -304,16 +293,11 @@ export function OperationalProductionWorkspace({
     setSearchParams(nextParams, { replace: true });
   }
 
-  function setSection(next: ProductionWorkspaceSectionId) {
-    const nextParams = new URLSearchParams(searchParams);
-    if (next === "active") {
-      // Keep explicit active when arriving from Continue bucket; otherwise omit for short URL.
-      if (productionBucket === "inProgress") nextParams.set("pwSection", "active");
-      else nextParams.delete("pwSection");
-    } else {
-      nextParams.set("pwSection", next);
-    }
-    nextParams.delete("pwNotice");
+  function setSection(next: ProductionWorkspaceSectionId, opts?: { pwFocus?: number | null }) {
+    const nextParams = applyProductionWorkspaceSectionToSearchParams(searchParams, next, {
+      pwFocus: opts?.pwFocus,
+      clearNotice: true,
+    });
     setSearchParams(nextParams, { replace: true });
     setStaleNotice(null);
     setPage(1);
@@ -338,8 +322,26 @@ export function OperationalProductionWorkspace({
       } else {
         await resumeWorkOrderApi(row.workOrderId);
       }
+      // Optimistic local move out of Paused so the stale-focus effect cannot snap back
+      // before the production-queue refresh lands.
+      setRows((prev) =>
+        (prev ?? []).map((r) =>
+          r.workOrderId === row.workOrderId
+            ? {
+                ...r,
+                status: "IN_PROGRESS",
+                productionExecutionStatus: "RUNNING",
+                productionWorkState: "CONTINUE_PRODUCTION",
+                nextAction: "PRODUCTION_PENDING",
+                pausedAt: null,
+                canAcceptProductionEntry: true,
+              }
+            : r,
+        ),
+      );
       bumpErpRefresh(["production", "dashboard", "pending-actions"]);
-      setSection("active");
+      // Canonical Continue bucket — must clear stale readyToStart so the tab actually activates.
+      setSection("active", { pwFocus: row.workOrderId });
     } catch (e) {
       setResumeError(e instanceof Error ? e.message : "Resume failed");
     } finally {

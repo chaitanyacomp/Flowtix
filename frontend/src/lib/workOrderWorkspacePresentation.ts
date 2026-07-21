@@ -106,11 +106,13 @@ const NO_QTY_COMPLETED = new Set(["Production Complete", "Completed"]);
 
 const TONE_RANK: Record<ProductionOperationalStatusTone, number> = {
   qc: 0,
-  dispatch: 1,
-  carryForward: 2,
-  running: 3,
-  partial: 4,
-  idle: 5,
+  paused: 1,
+  dispatch: 2,
+  carryForward: 3,
+  running: 4,
+  ready: 5,
+  partial: 6,
+  idle: 7,
   carriedForward: 9,
 };
 

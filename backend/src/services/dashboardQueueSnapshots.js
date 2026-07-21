@@ -1338,6 +1338,11 @@ async function getProductionQueueRowsUncached() {
 
   await attachRmReadinessToProductionQueueRows(prisma, rows);
 
+  const { classifyLiveFactoryBucket } = require("./liveFactorySnapshotService");
+  for (const row of rows) {
+    row.liveFactoryBucket = classifyLiveFactoryBucket(row);
+  }
+
   return rows;
 }
 

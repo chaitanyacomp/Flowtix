@@ -25,7 +25,7 @@ export type WorkOrderQueueReadinessSource = {
 
 export type WorkOrderOperationalPresentation = {
   label: string;
-  tone: "running" | "qc" | "partial" | "carryForward" | "carriedForward" | "dispatch" | "idle";
+  tone: "ready" | "running" | "paused" | "qc" | "partial" | "carryForward" | "carriedForward" | "dispatch" | "idle";
   contextHint?: string;
   /** Prefer backend actionLabel when present. */
   actionLabel: string | null;
@@ -88,7 +88,7 @@ export function mapQueueReadinessToOperationalPresentation(
     const hold = holdReasonLabel(row.holdReason);
     return {
       label: hold === "On hold" ? "On Hold" : `On Hold - ${hold}`,
-      tone: "partial",
+      tone: "paused",
       actionLabel: actionLabel ?? "Review Hold",
     };
   }
@@ -134,13 +134,16 @@ export function mapQueueReadinessToOperationalPresentation(
       };
     }
     if (produced <= EPS) {
+      if (woStatus === "PAUSED") {
+        return { label: "Paused", tone: "paused", actionLabel };
+      }
       if (row.rmReadyForProduction === true || upper(row.rmReadinessGate) === "READY_FOR_PRODUCTION") {
-        return { label: "Ready for Production", tone: "running", actionLabel };
+        return { label: "Ready to Start", tone: "ready", actionLabel };
       }
-      if (woStatus === "IN_PROGRESS" || woStatus === "PENDING" || woStatus === "PAUSED") {
-        return { label: "Ready for Production", tone: "running", actionLabel };
+      if (woStatus === "IN_PROGRESS" || woStatus === "PENDING") {
+        return { label: "Ready to Start", tone: "ready", actionLabel };
       }
-      return { label: "Waiting for Production", tone: "running", actionLabel };
+      return { label: "Waiting for Production", tone: "ready", actionLabel };
     }
     return { label: "In Production", tone: "running", actionLabel };
   }

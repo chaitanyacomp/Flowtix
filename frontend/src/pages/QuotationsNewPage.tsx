@@ -5,6 +5,7 @@ import { ERPBackNavigation } from "../components/PageHeader";
 import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { Badge } from "../components/ui/badge";
 import {
   CommercialWorkflowStrip,
@@ -22,6 +23,7 @@ import {
   previewNum,
   validateQuoteLinesForSave,
 } from "../lib/quotationLineDraft";
+import { formatInr } from "../lib/formatInr";
 
 type NoQtyCommercialDraft = {
   paymentTerms: string;
@@ -41,7 +43,7 @@ function emptyNoQtyCommercial(): NoQtyCommercialDraft {
   };
 }
 
-/** Single `terms` field on quotation � grouped labels for NO_QTY commercial UX only. */
+/** Single `terms` field on quotation — grouped labels for NO_QTY commercial UX only. */
 function buildNoQtyTermsPayload(c: NoQtyCommercialDraft): string | undefined {
   const blocks: string[] = [];
   const push = (heading: string, body: string) => {
@@ -65,16 +67,13 @@ const noQtyCommercialTextareaMedium =
 
 function contractStatusLabel(raw: string): string {
   const s = raw.trim();
-  if (!s) return "�";
+  if (!s) return "—";
   return s
     .split("_")
     .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
     .join(" ");
 }
 
-function formatInrAmount(n: number): string {
-  return n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
 
 type Item = { id: number; itemName: string };
 type Customer = { id: number; name: string };
@@ -328,7 +327,7 @@ export function QuotationsNewPage() {
       const n = previewNum(l.gstPct);
       if (Number.isFinite(n)) pcts.add(String(n));
     }
-    if (pcts.size === 0) return "�";
+    if (pcts.size === 0) return "—";
     if (pcts.size === 1) return `${[...pcts][0]}%`;
     return "Mixed";
   }, [quoteLines]);
@@ -408,7 +407,7 @@ export function QuotationsNewPage() {
   if (loading) {
     return (
       <div className="flex flex-col gap-3 p-1 text-sm text-slate-600" aria-busy="true">
-        Loading�
+        Loading…
       </div>
     );
   }
@@ -443,11 +442,11 @@ export function QuotationsNewPage() {
   const validationMessage = error
     ? error
     : isNoQty && !noQtyHasEnquiryLines
-      ? "No enquiry lines � update the enquiry first."
+      ? "No enquiry lines — update the enquiry first."
       : isNoQty && noQtyRatesIncomplete
         ? "Complete rate contracts for every item before saving."
         : isNoQty && noQtyRatesLoading
-          ? "Resolving rate contracts�"
+          ? "Resolving rate contracts…"
           : null;
   const saveDisabled = creating || !createEnquiryId || noQtySaveBlocked;
 
@@ -479,14 +478,14 @@ export function QuotationsNewPage() {
           <span>
             <span className="text-slate-500">Customer </span>
             <span className="font-semibold text-slate-900">
-              {selectedEnquiry?.customer.name ?? "�"}
+              {selectedEnquiry?.customer.name ?? "—"}
             </span>
           </span>
           <span className="text-slate-300">|</span>
           <span>
             <span className="text-slate-500">Enquiry </span>
             <span className="font-mono font-semibold text-slate-800">
-              #{selectedEnquiry?.id ?? "�"}
+              #{selectedEnquiry?.id ?? "—"}
             </span>
           </span>
           <span className="text-slate-300">|</span>
@@ -499,7 +498,7 @@ export function QuotationsNewPage() {
               <span className="text-slate-300">|</span>
               {noQtyRatesLoading ? (
                 <span className="text-slate-500" aria-live="polite">
-                  Resolving rates�
+                  Resolving rates…
                 </span>
               ) : noQtyRatesIncomplete ? (
                 <Badge variant="warning" className="text-[10px]">
@@ -523,7 +522,7 @@ export function QuotationsNewPage() {
               >
                 {feasibleEnquiries.map((e) => (
                   <option key={e.id} value={e.id}>
-                    #{e.id} � {e.customer.name}
+                    #{e.id} · {e.customer.name}
                   </option>
                 ))}
               </select>
@@ -539,7 +538,7 @@ export function QuotationsNewPage() {
             >
               {feasibleEnquiries.map((e) => (
                 <option key={e.id} value={e.id}>
-                  #{e.id} � {e.customer.name}
+                  #{e.id} · {e.customer.name}
                 </option>
               ))}
             </select>
@@ -556,7 +555,7 @@ export function QuotationsNewPage() {
               Items &amp; rates
             </span>
             <span className="text-[11px] text-slate-500">
-              {isNoQty ? "From enquiry � contract-linked � read-only" : `${quoteLines.length} line${quoteLines.length === 1 ? "" : "s"}`}
+              {isNoQty ? "From enquiry · contract-linked · read-only" : `${quoteLines.length} line${quoteLines.length === 1 ? "" : "s"}`}
             </span>
           </div>
 
@@ -607,7 +606,7 @@ export function QuotationsNewPage() {
               <div className="text-[12px] font-semibold text-slate-800">
                 Grand total{" "}
                 <span className="ml-1 tabular-nums text-slate-900">
-                  ?{formatInrAmount(sumPreview)}
+                  {formatInr(sumPreview)}
                 </span>
               </div>
             </div>
@@ -627,7 +626,7 @@ export function QuotationsNewPage() {
             </div>
             <div className="mt-0.5 text-[11px] text-slate-600">
               {isNoQty
-                ? "Rate contract-linked � qty managed later"
+                ? "Rate contract-linked · qty managed later"
                 : "Set payment / delivery and review totals"}
             </div>
           </div>
@@ -654,7 +653,7 @@ export function QuotationsNewPage() {
                 Next action
               </div>
               <div className="mt-0.5 text-[14px] font-semibold leading-snug text-blue-900">
-                {isNoQty ? "Save quotation" : "Save quotation"}
+                Save quotation
               </div>
               <div className="text-[11px] leading-snug text-slate-600">
                 {isNoQty
@@ -737,7 +736,7 @@ export function QuotationsNewPage() {
                           commercialConditions: e.target.value,
                         }))
                       }
-                      placeholder="Incoterms, price basis, escalation�"
+                      placeholder="Incoterms, price basis, escalation…"
                     />
                   </label>
                 </div>
@@ -785,7 +784,7 @@ export function QuotationsNewPage() {
               <span className="text-[12px] text-slate-500">
                 {isNoQty
                   ? "Ready to save commercial framework"
-                  : `Grand total ?${formatInrAmount(sumPreview)}`}
+                  : `Grand total ${formatInr(sumPreview)}`}
               </span>
             )}
           </div>
@@ -803,7 +802,7 @@ export function QuotationsNewPage() {
             onClick={() => void onCreateQuotation()}
             disabled={saveDisabled}
           >
-            {creating ? "Saving�" : "Save quotation ?"}
+            {creating ? "Saving…" : "Save quotation"}
           </Button>
         </div>
       </footer>
@@ -826,7 +825,7 @@ function NoQtyItemsView(props: {
   if (!lines.length) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-1.5 px-6 py-10 text-center">
-        <p className="text-[13px] text-amber-900">No enquiry lines � update the enquiry first.</p>
+        <p className="text-[13px] text-amber-900">No enquiry lines — update the enquiry first.</p>
       </div>
     );
   }
@@ -850,21 +849,21 @@ function NoQtyItemsView(props: {
             ? null
             : loading && !rateOk
               ? null
-              : (statusByLine[i] ?? "�");
+              : (statusByLine[i] ?? "—");
           return (
             <tr key={`${ln.itemId}-${i}`}>
               <td className="max-w-[14rem] truncate font-medium">{ln.item.itemName}</td>
               <td className="text-right tabular-nums">
                 {missing ? (
-                  <span className="text-amber-800">�</span>
+                  <span className="text-amber-800">—</span>
                 ) : loading && !rateOk ? (
-                  <span className="text-slate-400">�</span>
+                  <span className="text-slate-400">…</span>
                 ) : (
-                  <>?{formatInrAmount(previewNum(draft?.rate ?? "0"))}</>
+                  <>{formatInr(previewNum(draft?.rate ?? "0"))}</>
                 )}
               </td>
               <td className="text-right tabular-nums">
-                {missing ? "�" : loading && gstTxt === "" ? "�" : `${previewNum(gstTxt || "0")}%`}
+                {missing ? "—" : loading && gstTxt === "" ? "…" : `${previewNum(gstTxt || "0")}%`}
               </td>
               <td className="text-right">
                 {missing ? (
@@ -872,7 +871,7 @@ function NoQtyItemsView(props: {
                     Missing
                   </span>
                 ) : loading && !rateOk ? (
-                  <span className="text-slate-400">�</span>
+                  <span className="text-slate-400">…</span>
                 ) : (
                   <span className="text-[11px] font-medium text-slate-800">{statusDisp}</span>
                 )}
@@ -898,7 +897,7 @@ function QuotationDraftSummaryCards(props: {
       <div className="erp-kpi-segment !border-0 !bg-transparent px-2.5 py-1.5">
         <span className="erp-kpi-label">Rate contract</span>
         <span className={cn("erp-kpi-value text-[12px]", rcLinked ? "text-emerald-800" : "text-amber-800")}>
-          {isNoQty ? (rcLoading ? "�" : rcLinked ? "Linked" : "Missing") : "N/A"}
+          {isNoQty ? (rcLoading ? "…" : rcLinked ? "Linked" : "Missing") : "N/A"}
         </span>
       </div>
       <div className="erp-kpi-segment !border-0 !bg-transparent px-2.5 py-1.5">
@@ -997,41 +996,30 @@ function RegularItemsTable(props: {
               </label>
             </td>
             <td>
-              <Input
+              <DecimalInput
                 className="h-8 w-full min-w-0 text-right tabular-nums text-[13px]"
-                type="number"
-                step="any"
-                min={0}
-                inputMode="decimal"
                 value={l.qty}
-                onChange={(e) => {
-                  setLines((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)));
+                onValueChange={(next) => {
+                  setLines((p) => p.map((x, j) => (j === i ? { ...x, qty: next } : x)));
                 }}
               />
             </td>
             <td>
-              <Input
+              <DecimalInput
                 className="h-8 w-full min-w-0 text-right tabular-nums text-[13px]"
-                type="number"
-                step="any"
-                min={0}
-                inputMode="decimal"
                 value={l.isFree ? "0" : l.rate}
                 disabled={l.isFree}
-                onChange={(e) => {
-                  setLines((p) => p.map((x, j) => (j === i ? { ...x, rate: e.target.value } : x)));
+                onValueChange={(next) => {
+                  setLines((p) => p.map((x, j) => (j === i ? { ...x, rate: next } : x)));
                 }}
               />
             </td>
             <td>
-              <Input
+              <DecimalInput
                 className="h-8 w-full min-w-0 text-right tabular-nums text-[13px]"
-                type="number"
-                step="any"
-                inputMode="decimal"
                 value={l.gstPct}
-                onChange={(e) => {
-                  setLines((p) => p.map((x, j) => (j === i ? { ...x, gstPct: e.target.value } : x)));
+                onValueChange={(next) => {
+                  setLines((p) => p.map((x, j) => (j === i ? { ...x, gstPct: next } : x)));
                 }}
               />
             </td>

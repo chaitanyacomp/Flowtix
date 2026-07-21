@@ -111,11 +111,13 @@ function mapPrismaClientError(err) {
     return mapPrismaKnownRequest(err);
   }
   if (err instanceof Prisma.PrismaClientValidationError) {
-    // Never return Prisma internals / file paths / query text to the ERP UI (dev or prod).
-    // Full detail remains in server logs via errorHandler console.error.
+    // Prefer actionable message when callers already annotated the error.
+    const annotated = typeof err.message === "string" && /tally|identity|migration/i.test(err.message)
+      ? err.message
+      : "The request could not be processed.";
     return {
       status: 400,
-      message: "The request could not be processed.",
+      message: annotated,
       code: "VALIDATION",
     };
   }
@@ -150,6 +152,7 @@ function errorHandler(err, req, res, next) {
       error: {
         message: prismaMapped.message,
         code: prismaMapped.code,
+        ...(err.correlationId ? { correlationId: err.correlationId } : {}),
       },
     });
   }
@@ -167,6 +170,7 @@ function errorHandler(err, req, res, next) {
       error: {
         message: "A database configuration issue prevented this action. Please contact Admin.",
         code: "DATABASE_CONFIG",
+        ...(err.correlationId ? { correlationId: err.correlationId } : {}),
       },
     });
   }
@@ -176,6 +180,7 @@ function errorHandler(err, req, res, next) {
       error: {
         message: "Something went wrong. Please try again later.",
         code: "INTERNAL",
+        ...(err.correlationId ? { correlationId: err.correlationId } : {}),
       },
     });
   }
@@ -186,6 +191,10 @@ function errorHandler(err, req, res, next) {
   if (err.code && typeof err.code === "string") {
     errorPayload.code = err.code;
   }
+  if (err.correlationId) errorPayload.correlationId = err.correlationId;
+  if (err.field) errorPayload.field = err.field;
+  if (err.ledgerName) errorPayload.ledgerName = err.ledgerName;
+  if (err.reason) errorPayload.reason = err.reason;
   return res.status(status).json({ error: errorPayload });
 }
 

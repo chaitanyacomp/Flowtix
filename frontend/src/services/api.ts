@@ -147,7 +147,12 @@ export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise
 
   if (!res.ok) {
     const record = data && typeof data === "object" ? (data as Record<string, unknown>) : null;
-    const topCode = record && typeof record.code === "string" ? record.code : undefined;
+    const topCode =
+      record && typeof record.code === "string"
+        ? record.code
+        : record && typeof record.errorCode === "string"
+          ? record.errorCode
+          : undefined;
     const topMessage = record && typeof record.message === "string" ? record.message : null;
 
     const flatBiz =

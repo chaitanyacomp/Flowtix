@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 import { ErpModal } from "../erp/ErpModal";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { DecimalInput } from "../ui/DecimalInput";
 import { FieldShortcutHint } from "../ui/FieldShortcutHint";
 import {
   computeGrnBalanceAfterReceipt,
@@ -38,8 +39,9 @@ export type GrnPostReceiptModalProps = {
   onGrnQtyKeyDown: (rowIndex: number, e: React.KeyboardEvent<HTMLInputElement>) => void;
   onGrnLocationKeyDown: (rowIndex: number, e: React.KeyboardEvent<HTMLSelectElement>) => void;
   grnQtyBind: (rowIndex: number, rmPoLineId: number) => {
-    onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+    onValueChange: (next: string) => void;
     onFocus: (e: React.FocusEvent<HTMLInputElement>) => void;
+    onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
   };
   showGrnQtyShortcut: boolean;
   grnQtyShortcutHint: string;
@@ -254,16 +256,14 @@ export function GrnPostReceiptModal({
                           hint={grnQtyShortcutHint}
                           placement="below-end"
                         >
-                          <Input
+                          <DecimalInput
                             ref={(el) => {
                               grnQtyInputRefs.current[i] = el;
                             }}
-                            type="number"
                             className="ml-auto h-8 w-[6.5rem] text-right text-[12px] tabular-nums"
                             value={gl && Number.isFinite(gl.receivedQty) ? String(gl.receivedQty) : ""}
-                            min={0}
-                            step="any"
                             disabled={grning}
+                            normalizeOnBlur={false}
                             onKeyDown={(e) => onGrnQtyKeyDown(i, e)}
                             {...grnQtyBind(i, ln.id)}
                             aria-label={`Receive qty for ${ln.item?.itemName ?? "item"}`}

@@ -78,6 +78,28 @@ export function formatAllowanceInput(value: number, maxFractionDigits = 6): stri
   return value.toFixed(maxFractionDigits).replace(/\.?0+$/, "");
 }
 
+/** Derive Add Qty from an operator-authored Issue Now value. */
+export function deriveAllowanceFromIssueNow(input: {
+  issueQtyRaw: string;
+  theoreticalQty: number | string;
+  alreadyIssuedQty?: number | string;
+}): { valid: boolean; allowanceQty: number; applicableBomQty: number } {
+  const issueMicro = parseScaled(input.issueQtyRaw, 6);
+  const applicableBomQty = applicableBomRequirement(
+    input.theoreticalQty,
+    input.alreadyIssuedQty ?? 0,
+  );
+  const baseMicro = parseScaled(applicableBomQty, 6);
+  if (issueMicro == null || baseMicro == null || issueMicro < 0n) {
+    return { valid: false, allowanceQty: Number.NaN, applicableBomQty };
+  }
+  return {
+    valid: true,
+    allowanceQty: scaledToNumber(issueMicro > baseMicro ? issueMicro - baseMicro : 0n, QTY_SCALE),
+    applicableBomQty,
+  };
+}
+
 export function applicableBomRequirement(
   theoreticalQty: number | string,
   alreadyIssuedQty: number | string = 0,

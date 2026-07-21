@@ -5,6 +5,16 @@ import { cn } from "../lib/utils";
 
 export type BillExportLifecycle = "DRAFT" | "FINALIZED" | "CANCELLED";
 
+export type TallyMasterReferenceRow = {
+  type?: string;
+  erpValue?: string | null;
+  expectedTallyMaster?: string | null;
+  mappingStatus?: string;
+  exactError?: string | null;
+  action?: string | null;
+  xmlContext?: string | null;
+};
+
 export type BillExportStatusPanelProps = {
   lifecycle: BillExportLifecycle;
   isExported: boolean;
@@ -15,6 +25,24 @@ export type BillExportStatusPanelProps = {
   exportBlockedReason?: string | null;
   /** Last failed export attempt message (optional). */
   exportAttemptError?: string | null;
+  /** Structured Tally readiness from API (Sales Bill). */
+  tallyExportReadiness?: {
+    ready?: boolean;
+    status?: string;
+    label?: string;
+    masterReferences?: TallyMasterReferenceRow[] | null;
+    blockingMasterCount?: number;
+  } | null;
+  /** Deep-link to map transportation ledger when that mapping is missing. */
+  mapTransportationHref?: string | null;
+  onMapTransportation?: (() => void) | null;
+  onMapExistingMaster?: (() => void) | null;
+  onCreateMissingMaster?: (() => void) | null;
+  onRefreshAndValidate?: (() => void) | null;
+  onConfirmTallyImport?: (() => void) | null;
+  confirmingTallyImport?: boolean;
+  creatingMasters?: boolean;
+  refreshingReadiness?: boolean;
   /** Shown when bill was reset after a prior export (both bill types expose this when set). */
   exportResetAt?: string | null;
   isAdmin: boolean;
@@ -45,6 +73,16 @@ export function BillExportStatusPanel({
   exportedByName,
   exportBlockedReason,
   exportAttemptError,
+  tallyExportReadiness,
+  mapTransportationHref,
+  onMapTransportation,
+  onMapExistingMaster,
+  onCreateMissingMaster,
+  onRefreshAndValidate,
+  onConfirmTallyImport,
+  confirmingTallyImport = false,
+  creatingMasters = false,
+  refreshingReadiness = false,
   exportResetAt,
   isAdmin,
   exporting,
@@ -58,6 +96,18 @@ export function BillExportStatusPanel({
   const compact = density === "compact";
   const canExport = lifecycle === "FINALIZED" && (!isExported || allowReExport) && !exportBlockedReason;
   const showReset = lifecycle === "FINALIZED" && isExported && isAdmin;
+  const readinessLabel =
+    lifecycle === "FINALIZED" && !isExported && tallyExportReadiness?.label
+      ? tallyExportReadiness.label
+      : null;
+  const showMapTransportation =
+    Boolean(mapTransportationHref || onMapTransportation) &&
+    (tallyExportReadiness?.status === "MISSING_TRANSPORTATION_LEDGER_MAPPING" ||
+      (exportAttemptError != null && /Transportation Charges is not mapped/i.test(exportAttemptError)));
+  const masterRefs = Array.isArray(tallyExportReadiness?.masterReferences)
+    ? tallyExportReadiness.masterReferences
+    : [];
+  const showMasterTable = lifecycle === "FINALIZED" && !isExported && masterRefs.length > 0 && !compact;
 
   let statusLabel = "Not Exported";
   let exportBadge: { text: string; variant: "default" | "success" | "warning" | "rejected" | "info" } | null = null;
@@ -70,18 +120,18 @@ export function BillExportStatusPanel({
     statusLabel = "Not ready for export";
     help = "Finalize this bill before exporting.";
   } else if (lifecycle === "FINALIZED" && isExported) {
-    statusLabel = "XML downloaded";
-    exportBadge = { text: "XML downloaded", variant: "success" };
-    help =
-      "Tally XML was downloaded and this bill is marked exported in ERP. Confirm the voucher in Tally separately — download does not prove import success.";
+    statusLabel = "Confirmed in Tally";
+    exportBadge = { text: "Exported", variant: "success" };
+    help = "Tally import was confirmed for this bill. Re-download requires admin authorization.";
   } else if (lifecycle === "FINALIZED" && exportBlockedReason) {
     statusLabel = "Not Exported";
     exportBadge = { text: "Not Exported", variant: "warning" };
     help = exportBlockedReason;
   } else if (lifecycle === "FINALIZED") {
-    statusLabel = "Tally XML pending";
+    statusLabel = "Tally XML pending confirmation";
     exportBadge = { text: "Not exported", variant: "warning" };
-    help = "This bill is finalized. Download Tally XML when ready, then import the file in Tally.";
+    help =
+      "Download voucher XML, import it in Tally, then confirm only after Tally accepts the voucher. Download alone does not mark this bill exported.";
   }
 
   const billStatusPhrase = lifecycle === "FINALIZED" ? "Finalized" : lifecycle === "CANCELLED" ? "Cancelled" : "Draft";
@@ -103,7 +153,7 @@ export function BillExportStatusPanel({
               <>
                 {" "}
                 ·{" "}
-                <span className="tabular-nums">{isExported ? "XML downloaded" : "Not exported"}</span>
+                <span className="tabular-nums">{isExported ? "Confirmed in Tally" : "Not exported"}</span>
               </>
             ) : null}
           </p>
@@ -119,17 +169,26 @@ export function BillExportStatusPanel({
                   {exportBadge.text}
                 </Badge>
               ) : null}
+              {readinessLabel ? (
+                <Badge
+                  variant={tallyExportReadiness?.ready ? "success" : "warning"}
+                  className={cn("shrink-0", compact ? "text-[10px] leading-none" : "")}
+                  data-testid="tally-export-readiness-badge"
+                >
+                  {readinessLabel}
+                </Badge>
+              ) : null}
             </div>
             {help && !compact ? <p className="text-xs leading-relaxed text-slate-600">{help}</p> : null}
             {help && compact ? <p className="text-[10px] leading-snug text-slate-600">{help}</p> : null}
             {lifecycle === "FINALIZED" && isExported ? (
               <dl className={cn("grid gap-1 text-xs text-slate-600", compact ? "mt-1" : "mt-2")}>
                 <div className="flex flex-wrap gap-x-2">
-                  <dt className="font-medium text-slate-500">Exported on</dt>
+                  <dt className="font-medium text-slate-500">Confirmed on</dt>
                   <dd className="tabular-nums text-slate-800">{formatDateTime(exportedAt)}</dd>
                 </div>
                 <div className="flex flex-wrap gap-x-2">
-                  <dt className="font-medium text-slate-500">Exported by</dt>
+                  <dt className="font-medium text-slate-500">Confirmed by</dt>
                   <dd className="text-slate-800">{exportedByName?.trim() ? exportedByName : "—"}</dd>
                 </div>
               </dl>
@@ -140,21 +199,65 @@ export function BillExportStatusPanel({
             {exportAttemptError ? (
               <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-800">
                 <span className="font-semibold">Export Failed</span>
-                <span className="mt-0.5 block break-words">{exportAttemptError}</span>
+                <span className="mt-0.5 block whitespace-pre-wrap break-words">{exportAttemptError}</span>
+              </div>
+            ) : null}
+            {lifecycle === "FINALIZED" && !isExported && tallyExportReadiness && !tallyExportReadiness.ready && !exportAttemptError ? (
+              <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-950">
+                <span className="font-semibold">Tally export warning</span>
+                <span className="mt-0.5 block">
+                  Finalization is allowed, but Tally XML will stay blocked until mapping is completed ({readinessLabel}).
+                </span>
               </div>
             ) : null}
           </div>
           <div className={cn("flex shrink-0 flex-col items-stretch gap-2", compact ? "sm:items-stretch" : "sm:min-w-[11rem] sm:items-end")}>
+            {showMapTransportation ? (
+              mapTransportationHref ? (
+                <a
+                  href={mapTransportationHref}
+                  data-testid="map-transportation-ledger-btn"
+                  className={cn(
+                    "inline-flex h-9 items-center justify-center rounded-md border border-amber-400 bg-white px-3 text-sm font-medium text-amber-950 hover:bg-amber-50",
+                    compact && "h-8 text-xs",
+                  )}
+                >
+                  Map Transportation Ledger
+                </a>
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size={compact ? "sm" : "default"}
+                  data-testid="map-transportation-ledger-btn"
+                  onClick={() => onMapTransportation?.()}
+                >
+                  Map Transportation Ledger
+                </Button>
+              )
+            ) : null}
             {canExport ? (
               <Button
                 type="button"
                 data-testid="export-tally-btn"
                 size={compact ? "sm" : "default"}
                 variant={compact ? "outline" : "default"}
-                disabled={exporting}
+                disabled={exporting || tallyExportReadiness?.ready === false}
                 onClick={() => void onExport()}
               >
                 {exporting ? "Downloading…" : isExported ? "Re-download Tally XML" : "Download Tally XML"}
+              </Button>
+            ) : null}
+            {lifecycle === "FINALIZED" && !isExported && onConfirmTallyImport ? (
+              <Button
+                type="button"
+                data-testid="confirm-tally-import-btn"
+                size={compact ? "sm" : "default"}
+                variant="outline"
+                disabled={confirmingTallyImport || exporting}
+                onClick={() => void onConfirmTallyImport()}
+              >
+                {confirmingTallyImport ? "Confirming…" : "Confirm imported in Tally"}
               </Button>
             ) : null}
             {showReset ? (
@@ -171,6 +274,84 @@ export function BillExportStatusPanel({
             ) : null}
           </div>
         </div>
+
+        {showMasterTable ? (
+          <div className="mt-3 space-y-2" data-testid="tally-master-references">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-medium text-slate-800">Required Tally masters</p>
+              <div className="flex flex-wrap gap-1.5">
+                {onMapExistingMaster ? (
+                  <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => void onMapExistingMaster()}>
+                    Map Existing Master
+                  </Button>
+                ) : null}
+                {onCreateMissingMaster ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-[11px]"
+                    disabled={creatingMasters}
+                    data-testid="create-missing-master-btn"
+                    onClick={() => void onCreateMissingMaster()}
+                  >
+                    {creatingMasters ? "Building…" : "Create Missing Master in Tally"}
+                  </Button>
+                ) : null}
+                {onRefreshAndValidate ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-[11px]"
+                    disabled={refreshingReadiness}
+                    data-testid="refresh-validate-tally-btn"
+                    onClick={() => void onRefreshAndValidate()}
+                  >
+                    {refreshingReadiness ? "Refreshing…" : "Refresh and Validate"}
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+            <div className="overflow-x-auto rounded-md border border-slate-200">
+              <table className="min-w-full text-left text-[11px] text-slate-700">
+                <thead className="bg-slate-50 text-slate-500">
+                  <tr>
+                    <th className="px-2 py-1.5 font-medium">ERP value</th>
+                    <th className="px-2 py-1.5 font-medium">Expected Tally master</th>
+                    <th className="px-2 py-1.5 font-medium">Type</th>
+                    <th className="px-2 py-1.5 font-medium">Mapping status</th>
+                    <th className="px-2 py-1.5 font-medium">Exact error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {masterRefs.map((row, idx) => (
+                    <tr key={`${row.type}-${idx}`} className="border-t border-slate-100 align-top">
+                      <td className="px-2 py-1.5">{row.erpValue || "—"}</td>
+                      <td className="px-2 py-1.5 font-medium text-slate-900">{row.expectedTallyMaster || "—"}</td>
+                      <td className="px-2 py-1.5">{row.type || "—"}</td>
+                      <td className="px-2 py-1.5">
+                        <Badge
+                          variant={
+                            row.mappingStatus === "MISSING" || row.mappingStatus === "AMBIGUOUS"
+                              ? "warning"
+                              : row.mappingStatus === "MAPPED"
+                                ? "success"
+                                : "info"
+                          }
+                          className="text-[10px] leading-none"
+                        >
+                          {row.mappingStatus || "—"}
+                        </Badge>
+                      </td>
+                      <td className="max-w-[18rem] whitespace-pre-wrap px-2 py-1.5 text-slate-600">{row.exactError || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

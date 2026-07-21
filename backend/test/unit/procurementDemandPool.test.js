@@ -69,11 +69,19 @@ describe("procurementDemandPoolService", () => {
     assert.deepEqual(sourceTypesForDemandPool(PROCUREMENT_DEMAND_POOL.REGULAR_SO), ["SALES_ORDER"]);
   });
 
-  it("rejects mixed-pool procurement selections", () => {
+  it("rejects mixed-pool procurement selections for purchase request", () => {
     assert.throws(
       () => assertSingleDemandPoolFromSourceTypes(["SALES_ORDER", "MONTHLY_PLAN"], "purchase request"),
       (e) => e && e.code === MIXED_PROCUREMENT_DEMAND_POOL_CODE,
     );
+  });
+
+  it("allows mixed pools on commercial RM PO while PR create stays single-pool", () => {
+    const {
+      assertKnownDemandPoolsForCommercialRmPo,
+    } = require("../../src/services/procurementDemandPoolService");
+    const pools = assertKnownDemandPoolsForCommercialRmPo(["MONTHLY_PLAN", "STOCK_REPLENISHMENT"]);
+    assert.deepEqual(pools, ["MPRS", "STOCK_REPLENISHMENT"]);
   });
 
   it("rejects legacy-only pool selections", () => {

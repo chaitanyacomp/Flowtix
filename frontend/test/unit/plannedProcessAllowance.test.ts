@@ -3,11 +3,27 @@ import {
   applicableBomRequirement,
   assessIssueAgainstAllowance,
   calculatePlannedAllowance,
+  deriveAllowanceFromIssueNow,
   issueStatusPresentation,
   stockReadinessBadge,
 } from "../../src/lib/plannedProcessAllowance";
 
 describe("plannedProcessAllowance Add Qty (read-only %)", () => {
+  it("derives Add Qty bidirectionally from Issue Now using the remaining BOM", () => {
+    expect(deriveAllowanceFromIssueNow({ issueQtyRaw: "25", theoreticalQty: 22.8 })).toMatchObject({
+      valid: true,
+      allowanceQty: 2.2,
+      applicableBomQty: 22.8,
+    });
+    expect(deriveAllowanceFromIssueNow({ issueQtyRaw: "23.8", theoreticalQty: 22.8 }).allowanceQty).toBe(1);
+    expect(deriveAllowanceFromIssueNow({ issueQtyRaw: "20", theoreticalQty: 22.8 }).allowanceQty).toBe(0);
+  });
+
+  it("preserves temporary decimal drafts by deferring derivation until valid", () => {
+    expect(deriveAllowanceFromIssueNow({ issueQtyRaw: "", theoreticalQty: 22.8 }).valid).toBe(false);
+    expect(deriveAllowanceFromIssueNow({ issueQtyRaw: ".", theoreticalQty: 22.8 }).valid).toBe(false);
+    expect(deriveAllowanceFromIssueNow({ issueQtyRaw: "25.", theoreticalQty: 22.8 }).allowanceQty).toBe(2.2);
+  });
   it("zero Add Qty → Qty BOM and Issue Now equal applicable BOM", () => {
     const result = calculatePlannedAllowance({
       theoreticalQty: 27,

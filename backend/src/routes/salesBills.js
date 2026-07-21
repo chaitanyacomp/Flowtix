@@ -28,8 +28,13 @@ const {
   SALES_BILL_CANCEL_ROLES,
 } = require("../constants/erpRoles");
 const { mapSalesBillToTallyExportPayload } = require("../services/salesBillTallyExportPayload");
-const { buildSalesBillTallyXml } = require("../services/salesBillTallyXml");
+const { buildSalesBillTallyXml, buildSalesBillTallyMastersXml } = require("../services/salesBillTallyXml");
 const { exportSalesBillsToTallyBulk } = require("../services/salesBillTallyExportActions");
+const { assessSalesBillTallyExportReadiness } = require("../services/salesBillTallyExportReadiness");
+const {
+  loadCompanyStateForTallyExport,
+  logSalesBillExportFailureOnce,
+} = require("../services/salesBillTallyExportSupport");
 const { logActivity } = require("../services/activityLogService");
 const {
   ACTIVITY_MODULES,
@@ -45,14 +50,23 @@ const tallyExportBillInclude = {
   customer: { include: { stateRef: true } },
   dispatch: { include: { salesOrder: true } },
   lines: {
-    include: { item: { include: { unitRef: { select: { unitName: true } } } } },
+    include: {
+      item: {
+        include: {
+          unitRef: { select: { unitName: true, unitCode: true, tallyName: true, tallyGuid: true } },
+        },
+      },
+    },
     orderBy: { id: "asc" },
   },
 };
 
 const dateInput = z.union([z.string().min(1), z.number(), z.coerce.date()]);
 
-function friendly400(message) {
+function friendly400(message, extras = null) {
+  if (extras && typeof extras === "object") {
+    return { error: { message, ...extras } };
+  }
   return { error: { message } };
 }
 
@@ -114,7 +128,33 @@ function validateTallyExportEligibility({ bill, payload }) {
       return "Billing quantity must be based on dispatch.";
     }
   }
+
+  const readiness = assessSalesBillTallyExportReadiness(payload);
+  if (!readiness.ready && readiness.primaryIssue?.message) {
+    return readiness.primaryIssue.message;
+  }
   return null;
+}
+
+function tallyExportErrorExtras(payload, errMsg) {
+  const readiness = assessSalesBillTallyExportReadiness(payload);
+  const issue =
+    readiness.primaryIssue && readiness.primaryIssue.message === errMsg
+      ? readiness.primaryIssue
+      : readiness.issues.find((i) => i.message === errMsg) || null;
+  return {
+    code: issue?.code ?? null,
+    action: issue?.action ?? null,
+    tallyExportReadiness: {
+      ready: readiness.ready,
+      status: readiness.status,
+      label: readiness.label,
+      issues: readiness.issues,
+      primaryIssue: readiness.primaryIssue,
+      masterReferences: readiness.masterReferences,
+      blockingMasterCount: readiness.blockingMasterCount,
+    },
+  };
 }
 
 const RE_EXPORT_AUTH_REQUIRED_MESSAGE =
@@ -141,90 +181,79 @@ async function authorizeSalesBillReExportIfNeeded({ bill, adminPassword }) {
 async function exportSalesBillXmlResponse(req, res, { bill, adminPassword, dispatchId = null, viaDispatch = false }) {
   const { reExport, adminUserId } = await authorizeSalesBillReExportIfNeeded({ bill, adminPassword });
 
-  const companyState = await prisma.appSetting.findUnique({
-    where: { id: 1 },
-    select: {
-      companyGstin: true,
-      companyState: true,
-      companyStateRef: { select: { id: true, stateName: true, stateCode: true } },
-    },
-  });
+  const companyState = await loadCompanyStateForTallyExport(prisma);
 
   const payload = mapSalesBillToTallyExportPayload({ bill, companyState });
   const errMsg = validateTallyExportEligibility({ bill, payload });
   if (errMsg) {
-    const sbDoc = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);
-    await logActivity({
+    await logSalesBillExportFailureOnce({
       user: req.user,
-      module: ACTIVITY_MODULES.SALES_BILL,
-      entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
-      entityId: bill.id,
-      docNo: sbDoc,
-      action: ACTIVITY_ACTIONS.EXPORT_FAILED,
-      message: `Sales Bill ${sbDoc} Tally export failed`,
-      metadata: { error: String(errMsg).slice(0, 240), ...(dispatchId != null ? { dispatchId } : {}) },
+      bill,
+      errMsg,
+      dispatchId,
+      extras: { code: tallyExportErrorExtras(payload, errMsg).code },
     });
-    return res.status(400).json(friendly400(errMsg));
+    return res.status(400).json(friendly400(errMsg, tallyExportErrorExtras(payload, errMsg)));
   }
 
-  const xml = buildSalesBillTallyXml(payload);
+  let xml;
+  try {
+    xml = buildSalesBillTallyXml(payload);
+  } catch (buildErr) {
+    const msg = buildErr instanceof Error ? buildErr.message : "Tally XML generation failed.";
+    await logSalesBillExportFailureOnce({
+      user: req.user,
+      bill,
+      errMsg: msg,
+      dispatchId,
+      extras: { code: tallyExportErrorExtras(payload, msg).code },
+    });
+    return res.status(400).json(friendly400(msg, tallyExportErrorExtras(payload, msg)));
+  }
   const safeNo = String(bill.billNo || `SB-${bill.id}`).replace(/[^\w\-\.]+/g, "-");
   const filename = `sales-bill-${safeNo}.xml`;
 
-  let shouldLogExport = false;
-  if (reExport) {
-    await prisma.salesBill.update({
-      where: { id: bill.id },
-      data: { isExported: true, exportedAt: new Date(), exportedFileName: filename, exportedById: req.user?.userId ?? null },
-    });
-    shouldLogExport = true;
-  } else {
-    const flipResult = await prisma.salesBill.updateMany({
-      where: { id: bill.id, isExported: false },
-      data: { isExported: true, exportedAt: new Date(), exportedFileName: filename, exportedById: req.user?.userId ?? null },
-    });
-    shouldLogExport = flipResult.count === 1;
-  }
-
+  // Generating/downloading XML is not Tally acceptance — do not flip isExported here.
+  // Confirm via POST /:id/confirm-tally-export after a successful Tally import response.
   const sbDocOk = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);
-  if (shouldLogExport) {
-    await logActivity({
-      user: req.user,
-      module: ACTIVITY_MODULES.SALES_BILL,
-      entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
-      entityId: bill.id,
-      docNo: sbDocOk,
-      action: ACTIVITY_ACTIONS.EXPORTED,
-      message: `Sales Bill ${sbDocOk} ${reExport ? "re-exported" : "exported"} to Tally`,
-      metadata: {
-        fileName: filename,
-        dispatchIds: dispatchId != null ? [dispatchId] : bill.dispatchId != null ? [bill.dispatchId] : undefined,
-        reExport,
-        authorizedByAdminUserId: adminUserId,
+  await logActivity({
+    user: req.user,
+    module: ACTIVITY_MODULES.SALES_BILL,
+    entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
+    entityId: bill.id,
+    docNo: sbDocOk,
+    action: ACTIVITY_ACTIONS.EXPORTED,
+    message: `Sales Bill ${sbDocOk} Tally XML generated${reExport ? " (re-download)" : ""} — confirmation pending`,
+    metadata: {
+      fileName: filename,
+      dispatchIds: dispatchId != null ? [dispatchId] : bill.dispatchId != null ? [bill.dispatchId] : undefined,
+      reExport,
+      authorizedByAdminUserId: adminUserId,
+      exportLifecycle: "GENERATED",
+    },
+  });
+  if (req.user?.userId) {
+    await auditLog.write(prisma, {
+      action: auditLog.AuditAction.UPDATE,
+      entityType: auditLog.AuditEntityType.SETTINGS,
+      entityId: `SALES_BILL:${bill.id}`,
+      actorUserId: req.user.userId,
+      actorRole: req.user.role,
+      summary: `Sales bill ${bill.billNo || `SB-${bill.id}`} Tally XML generated${viaDispatch ? " (via dispatch)" : ""} — not marked exported until Tally confirmation`,
+      payload: {
+        module: "REPORTS",
+        actionLabel: reExport ? "RE_DOWNLOAD" : "GENERATE",
+        ref: { type: "TALLY_EXPORT", id: String(bill.id), no: filename },
+        snapshot: {
+          salesBillId: bill.id,
+          dispatchId: dispatchId ?? bill.dispatchId ?? null,
+          fileName: filename,
+          reExport,
+          authorizedByAdminUserId: adminUserId ?? null,
+          exportLifecycle: "GENERATED",
+        },
       },
     });
-    if (req.user?.userId) {
-      await auditLog.write(prisma, {
-        action: auditLog.AuditAction.UPDATE,
-        entityType: auditLog.AuditEntityType.SETTINGS,
-        entityId: `SALES_BILL:${bill.id}`,
-        actorUserId: req.user.userId,
-        actorRole: req.user.role,
-        summary: `Sales bill ${bill.billNo || `SB-${bill.id}`} ${reExport ? "re-exported" : "exported"} to Tally XML${viaDispatch ? " (via dispatch)" : ""}`,
-        payload: {
-          module: "REPORTS",
-          actionLabel: reExport ? "RE_EXPORT" : "EXPORT",
-          ref: { type: "TALLY_EXPORT", id: String(bill.id), no: filename },
-          snapshot: {
-            salesBillId: bill.id,
-            dispatchId: dispatchId ?? bill.dispatchId ?? null,
-            fileName: filename,
-            reExport,
-            authorizedByAdminUserId: adminUserId ?? null,
-          },
-        },
-      });
-    }
   }
 
   res.setHeader("Content-Type", "application/xml; charset=utf-8");
@@ -424,7 +453,10 @@ salesBillsRouter.get("/:id", requireAuth, requireRole(SALES_BILL_READ_ROLES), as
   try {
     const id = Number(req.params.id);
     const bill = await getSalesBillById(prisma, id);
-    return res.json(bill);
+    const companyState = await loadCompanyStateForTallyExport(prisma);
+    const payload = mapSalesBillToTallyExportPayload({ bill, companyState });
+    const tallyExportReadiness = assessSalesBillTallyExportReadiness(payload);
+    return res.json({ ...bill, tallyExportReadiness });
   } catch (e) {
     return next(e);
   }
@@ -548,7 +580,15 @@ salesBillsRouter.post("/:id/finalize", requireAuth, requireRole(SALES_BILL_WRITE
         },
       });
     }
-    return res.json(finalized);
+    return res.json({
+      ...finalized,
+      tallyExportReadiness: assessSalesBillTallyExportReadiness(
+        mapSalesBillToTallyExportPayload({
+          bill: finalized,
+          companyState: await loadCompanyStateForTallyExport(prisma),
+        }),
+      ),
+    });
   } catch (e) {
     return next(e);
   }
@@ -639,74 +679,169 @@ salesBillsRouter.get("/:id/export/tally.xml", requireAuth, requireRole(SALES_BIL
       return res.status(409).json(friendly400(RE_EXPORT_AUTH_REQUIRED_MESSAGE));
     }
 
-    const companyState = await prisma.appSetting.findUnique({
-      where: { id: 1 },
-      select: {
-        companyGstin: true,
-        companyState: true,
-        companyStateRef: { select: { id: true, stateName: true, stateCode: true } },
-      },
-    });
+    const companyState = await loadCompanyStateForTallyExport(prisma);
 
     const payload = mapSalesBillToTallyExportPayload({ bill, companyState });
     const errMsg = validateTallyExportEligibility({ bill, payload });
     if (errMsg) {
-      const sbDoc = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);
-      await logActivity({
+      await logSalesBillExportFailureOnce({
         user: req.user,
-        module: ACTIVITY_MODULES.SALES_BILL,
-        entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
-        entityId: bill.id,
-        docNo: sbDoc,
-        action: ACTIVITY_ACTIONS.EXPORT_FAILED,
-        message: `Sales Bill ${sbDoc} Tally export failed`,
-        metadata: { error: String(errMsg).slice(0, 240) },
+        bill,
+        errMsg,
+        extras: { code: tallyExportErrorExtras(payload, errMsg).code },
       });
-      return res.status(400).json(friendly400(errMsg));
+      return res.status(400).json(friendly400(errMsg, tallyExportErrorExtras(payload, errMsg)));
     }
 
-    const xml = buildSalesBillTallyXml(payload);
+    let xml;
+    try {
+      xml = buildSalesBillTallyXml(payload);
+    } catch (buildErr) {
+      const msg = buildErr instanceof Error ? buildErr.message : "Tally XML generation failed.";
+      await logSalesBillExportFailureOnce({
+        user: req.user,
+        bill,
+        errMsg: msg,
+        extras: { code: tallyExportErrorExtras(payload, msg).code },
+      });
+      return res.status(400).json(friendly400(msg, tallyExportErrorExtras(payload, msg)));
+    }
     const safeNo = String(bill.billNo || `SB-${bill.id}`).replace(/[^\w\-\.]+/g, "-");
     const filename = `sales-bill-${safeNo}.xml`;
 
-    // Atomic flip: only the first successful exporter logs EXPORTED (avoids duplicate rows on double-submit or racing paths).
-    const flipResult = await prisma.salesBill.updateMany({
-      where: { id: bill.id, isExported: false },
-      data: { isExported: true, exportedAt: new Date(), exportedFileName: filename, exportedById: req.user?.userId ?? null },
-    });
+    // Download generates voucher XML only — does not mark the bill exported.
     const sbDocOk = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);
-    if (flipResult.count === 1) {
-      await logActivity({
-        user: req.user,
-        module: ACTIVITY_MODULES.SALES_BILL,
-        entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
-        entityId: bill.id,
-        docNo: sbDocOk,
-        action: ACTIVITY_ACTIONS.EXPORTED,
-        message: `Sales Bill ${sbDocOk} exported to Tally`,
-        metadata: { fileName: filename, dispatchIds: bill.dispatchId != null ? [bill.dispatchId] : undefined },
-      });
-      if (req.user?.userId) {
-        await auditLog.write(prisma, {
-          action: auditLog.AuditAction.UPDATE,
-          entityType: auditLog.AuditEntityType.SETTINGS,
-          entityId: `SALES_BILL:${bill.id}`,
-          actorUserId: req.user.userId,
-          actorRole: req.user.role,
-          summary: `Sales bill ${bill.billNo || `SB-${bill.id}`} exported to Tally XML`,
-          payload: {
-            module: "REPORTS",
-            actionLabel: "EXPORT",
-            ref: { type: "TALLY_EXPORT", id: String(bill.id), no: filename },
-            snapshot: { salesBillId: bill.id, dispatchId: bill.dispatchId ?? null, fileName: filename },
-          },
-        });
-      }
-    }
+    await logActivity({
+      user: req.user,
+      module: ACTIVITY_MODULES.SALES_BILL,
+      entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
+      entityId: bill.id,
+      docNo: sbDocOk,
+      action: ACTIVITY_ACTIONS.EXPORTED,
+      message: `Sales Bill ${sbDocOk} Tally XML generated — confirmation pending`,
+      metadata: { fileName: filename, dispatchIds: bill.dispatchId != null ? [bill.dispatchId] : undefined, exportLifecycle: "GENERATED" },
+    });
 
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename=\"${filename}\"`);
     return res.status(200).send(xml);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+salesBillsRouter.post("/:id/export/tally-masters.xml", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid sales bill id"));
+
+    const bill = await prisma.salesBill.findUnique({
+      where: { id },
+      include: tallyExportBillInclude,
+    });
+    if (!bill) return res.status(404).json(friendly400("Sales bill not found"));
+    if (bill.status !== "FINALIZED") return res.status(400).json(friendly400("Only finalized Sales Bills can export masters."));
+
+    const companyState = await loadCompanyStateForTallyExport(prisma);
+    const payload = mapSalesBillToTallyExportPayload({ bill, companyState });
+    let xml;
+    try {
+      xml = buildSalesBillTallyMastersXml(payload);
+    } catch (buildErr) {
+      const msg = buildErr instanceof Error ? buildErr.message : "Tally masters XML generation failed.";
+      return res.status(400).json(friendly400(msg, tallyExportErrorExtras(payload, msg)));
+    }
+    const safeNo = String(bill.billNo || `SB-${bill.id}`).replace(/[^\w\-\.]+/g, "-");
+    const filename = `sales-bill-${safeNo}-masters.xml`;
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename=\"${filename}\"`);
+    return res.status(200).send(xml);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+salesBillsRouter.post("/:id/confirm-tally-export", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid sales bill id"));
+    const bill = await prisma.salesBill.findUnique({ where: { id } });
+    if (!bill) return res.status(404).json(friendly400("Sales bill not found"));
+    if (bill.status !== "FINALIZED") return res.status(400).json(friendly400("Only finalized Sales Bills can be confirmed."));
+    if (bill.isExported) return res.json(bill);
+
+    const filename = bill.exportedFileName || `sales-bill-${String(bill.billNo || `SB-${bill.id}`).replace(/[^\w\-\.]+/g, "-")}.xml`;
+    const updated = await prisma.salesBill.update({
+      where: { id: bill.id },
+      data: {
+        isExported: true,
+        exportedAt: new Date(),
+        exportedFileName: filename,
+        exportedById: req.user?.userId ?? null,
+      },
+    });
+    const sbDocOk = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);
+    await logActivity({
+      user: req.user,
+      module: ACTIVITY_MODULES.SALES_BILL,
+      entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
+      entityId: bill.id,
+      docNo: sbDocOk,
+      action: ACTIVITY_ACTIONS.EXPORTED,
+      message: `Sales Bill ${sbDocOk} confirmed exported in Tally`,
+      metadata: { fileName: filename, exportLifecycle: "ACCEPTED" },
+    });
+    return res.json(updated);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+const mapMasterBody = z.object({
+  type: z.enum(["CUSTOMER", "ITEM", "UNIT", "SUPPLIER"]),
+  erpId: z.number().int().positive(),
+  tallyName: z.string().trim().min(1).max(255),
+  tallyGuid: z.string().trim().max(64).optional().nullable(),
+});
+
+salesBillsRouter.post("/:id/tally-master-map", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid sales bill id"));
+    const parsed = mapMasterBody.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json(friendly400("Invalid master mapping payload."));
+
+    const bill = await prisma.salesBill.findUnique({
+      where: { id },
+      include: { lines: { select: { itemId: true } }, customerId: true },
+    });
+    if (!bill) return res.status(404).json(friendly400("Sales bill not found"));
+
+    const { type, erpId, tallyName, tallyGuid } = parsed.data;
+    const identity = {
+      tallyName,
+      tallyGuid: tallyGuid?.trim() || null,
+      tallyImportedAt: new Date(),
+    };
+
+    if (type === "CUSTOMER") {
+      if (bill.customerId !== erpId) return res.status(400).json(friendly400("Customer is not on this Sales Bill."));
+      await prisma.customer.update({ where: { id: erpId }, data: identity });
+    } else if (type === "ITEM") {
+      const onBill = bill.lines.some((l) => l.itemId === erpId);
+      if (!onBill) return res.status(400).json(friendly400("Item is not on this Sales Bill."));
+      await prisma.item.update({ where: { id: erpId }, data: identity });
+    } else if (type === "UNIT") {
+      await prisma.unit.update({ where: { id: erpId }, data: identity });
+    } else if (type === "SUPPLIER") {
+      await prisma.supplier.update({ where: { id: erpId }, data: identity });
+    }
+
+    const refreshed = await getSalesBillById(prisma, id);
+    const companyState = await loadCompanyStateForTallyExport(prisma);
+    const payload = mapSalesBillToTallyExportPayload({ bill: refreshed, companyState });
+    const tallyExportReadiness = assessSalesBillTallyExportReadiness(payload);
+    return res.json({ ...refreshed, tallyExportReadiness });
   } catch (e) {
     return next(e);
   }
@@ -749,20 +884,19 @@ salesBillsRouter.get("/:id/download/tally.xml", requireAuth, requireRole(SALES_B
     if (!bill) return res.status(404).json(friendly400("Sales bill not found"));
     if (!bill.isExported) return res.status(400).json(friendly400("This sales bill is not exported yet."));
 
-    const companyState = await prisma.appSetting.findUnique({
-      where: { id: 1 },
-      select: {
-        companyGstin: true,
-        companyState: true,
-        companyStateRef: { select: { id: true, stateName: true, stateCode: true } },
-      },
-    });
+    const companyState = await loadCompanyStateForTallyExport(prisma);
 
     const payload = mapSalesBillToTallyExportPayload({ bill, companyState });
     const errMsg = validateTallyExportEligibility({ bill, payload });
-    if (errMsg) return res.status(400).json(friendly400(errMsg));
+    if (errMsg) return res.status(400).json(friendly400(errMsg, tallyExportErrorExtras(payload, errMsg)));
 
-    const xml = buildSalesBillTallyXml(payload);
+    let xml;
+    try {
+      xml = buildSalesBillTallyXml(payload);
+    } catch (buildErr) {
+      const msg = buildErr instanceof Error ? buildErr.message : "Tally XML generation failed.";
+      return res.status(400).json(friendly400(msg, tallyExportErrorExtras(payload, msg)));
+    }
     const filename =
       (typeof bill.exportedFileName === "string" && bill.exportedFileName.trim() ? bill.exportedFileName.trim() : null) ??
       `sales-bill-${String(bill.billNo || `SB-${bill.id}`).replace(/[^\w\-\.]+/g, "-")}.xml`;
@@ -838,82 +972,12 @@ salesBillsRouter.post("/:dispatchId/export-tally", requireAuth, requireRole(SALE
       include: tallyExportBillInclude,
     });
     if (!fullBill) return res.status(404).json(friendly400("Sales bill not found"));
-    if (fullBill.isExported) {
-      return exportSalesBillXmlResponse(req, res, {
-        bill: fullBill,
-        adminPassword: body.adminPassword,
-        dispatchId,
-        viaDispatch: true,
-      });
-    }
-
-    const companyState = await prisma.appSetting.findUnique({
-      where: { id: 1 },
-      select: {
-        companyGstin: true,
-        companyState: true,
-        companyStateRef: { select: { id: true, stateName: true, stateCode: true } },
-      },
+    return exportSalesBillXmlResponse(req, res, {
+      bill: fullBill,
+      adminPassword: body.adminPassword,
+      dispatchId,
+      viaDispatch: true,
     });
-
-    const payload = mapSalesBillToTallyExportPayload({ bill: fullBill, companyState });
-    const errMsg = validateTallyExportEligibility({ bill: fullBill, payload });
-    if (errMsg) {
-      const sbDoc = displaySalesBillNo(fullBill.id, fullBill.billNo, fullBill.docNo);
-      await logActivity({
-        user: req.user,
-        module: ACTIVITY_MODULES.SALES_BILL,
-        entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
-        entityId: fullBill.id,
-        docNo: sbDoc,
-        action: ACTIVITY_ACTIONS.EXPORT_FAILED,
-        message: `Sales Bill ${sbDoc} Tally export failed`,
-        metadata: { error: String(errMsg).slice(0, 240), dispatchId },
-      });
-      return res.status(400).json(friendly400(errMsg));
-    }
-
-    const xml = buildSalesBillTallyXml(payload);
-    const safeNo = String(fullBill.billNo || `SB-${fullBill.id}`).replace(/[^\w\-\.]+/g, "-");
-    const filename = `sales-bill-${safeNo}.xml`;
-
-    const flipResult = await prisma.salesBill.updateMany({
-      where: { id: fullBill.id, isExported: false },
-      data: { isExported: true, exportedAt: new Date(), exportedFileName: filename, exportedById: req.user?.userId ?? null },
-    });
-    const sbDocOk2 = displaySalesBillNo(fullBill.id, fullBill.billNo, fullBill.docNo);
-    if (flipResult.count === 1) {
-      await logActivity({
-        user: req.user,
-        module: ACTIVITY_MODULES.SALES_BILL,
-        entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
-        entityId: fullBill.id,
-        docNo: sbDocOk2,
-        action: ACTIVITY_ACTIONS.EXPORTED,
-        message: `Sales Bill ${sbDocOk2} exported to Tally`,
-        metadata: { fileName: filename, dispatchIds: [dispatchId] },
-      });
-      if (req.user?.userId) {
-        await auditLog.write(prisma, {
-          action: auditLog.AuditAction.UPDATE,
-          entityType: auditLog.AuditEntityType.SETTINGS,
-          entityId: `SALES_BILL:${fullBill.id}`,
-          actorUserId: req.user.userId,
-          actorRole: req.user.role,
-          summary: `Sales bill ${fullBill.billNo || `SB-${fullBill.id}`} exported to Tally XML (via dispatch)`,
-          payload: {
-            module: "REPORTS",
-            actionLabel: "EXPORT",
-            ref: { type: "TALLY_EXPORT", id: String(fullBill.id), no: filename },
-            snapshot: { salesBillId: fullBill.id, dispatchId, fileName: filename },
-          },
-        });
-      }
-    }
-
-    res.setHeader("Content-Type", "application/xml; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename=\"${filename}\"`);
-    return res.status(200).send(xml);
   } catch (e) {
     return next(e);
   }

@@ -92,8 +92,25 @@ function validatePlannedProcessAllowance(input, actor = {}) {
     throw allowanceError("Allowance input source must be QUANTITY.", "PLANNED_ALLOWANCE_SOURCE_INVALID");
   }
 
-  const extraQty = input.enteredAllowanceQty ?? input.plannedAllowanceQty ?? 0;
   const alreadyIssued = d(input.alreadyIssuedQty ?? 0);
+  const applicable = d(applicableBomRequirement(input.theoreticalBomQty, alreadyIssued));
+  const submittedExtraQty = input.enteredAllowanceQty ?? input.plannedAllowanceQty;
+  const issueQty = input.issueQty == null ? null : d(input.issueQty);
+  if (issueQty != null && (!issueQty.isFinite() || issueQty.isNegative())) {
+    throw allowanceError("Issue Now must be zero or positive.", "PLANNED_ALLOWANCE_ISSUE_INVALID");
+  }
+  const derivedExtraQty = issueQty == null ? null : Decimal.max(0, issueQty.minus(applicable));
+  if (derivedExtraQty != null && submittedExtraQty != null) {
+    const supplied = d(submittedExtraQty);
+    if (!supplied.isFinite() || supplied.minus(derivedExtraQty).abs().gt(CALC_TOLERANCE)) {
+      throw allowanceError(
+        "Submitted Add Qty does not match Issue Now and the current remaining BOM quantity.",
+        "PLANNED_ALLOWANCE_CALCULATION_MISMATCH",
+        409,
+      );
+    }
+  }
+  const extraQty = derivedExtraQty ?? submittedExtraQty ?? 0;
   const result = calculatePlannedProcessAllowance(input.theoreticalBomQty, extraQty, alreadyIssued);
   const issueDefault = defaultIssueNowQty(input.theoreticalBomQty, extraQty, alreadyIssued);
 

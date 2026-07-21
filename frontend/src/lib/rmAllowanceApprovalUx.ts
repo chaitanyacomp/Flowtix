@@ -9,7 +9,8 @@ export type RmAllowanceApprovalStatus =
   | "APPROVED"
   | "REJECTED"
   | "SUPERSEDED"
-  | "ISSUED";
+  | "ISSUED"
+  | "CANCELLED";
 
 /** Mirrors backend `serializeRequest` (rmAllowanceApprovalService.js). */
 export type RmAllowanceApprovalRequest = {
@@ -45,12 +46,18 @@ export type RmAllowanceApprovalRequest = {
 /** Queue-level status shown on WO cards; "NONE" = no active/relevant request. */
 export type PmrAllowanceQueueStatus = "NONE" | "PENDING_APPROVAL" | "APPROVED" | "REJECTED";
 
+const ACTIONABLE_APPROVAL_STATUSES = new Set<RmAllowanceApprovalStatus>([
+  "PENDING_APPROVAL",
+  "APPROVED",
+  "REJECTED",
+]);
+
 export type PmrAllowanceQueueInfo = {
   status: PmrAllowanceQueueStatus;
   approval: RmAllowanceApprovalRequest | null;
 };
 
-/** Latest (highest id) fetched request for a PMR line — REJECTED history is superseded by any newer request. */
+/** Latest actionable (PENDING/APPROVED/REJECTED) request for a PMR line — ignores SUPERSEDED/ISSUED. */
 export function pickLatestApprovalForPmrLine(
   approvals: RmAllowanceApprovalRequest[],
   pmrLineId: number,
@@ -58,6 +65,7 @@ export function pickLatestApprovalForPmrLine(
   let best: RmAllowanceApprovalRequest | null = null;
   for (const a of approvals) {
     if (a.pmrLineId !== pmrLineId) continue;
+    if (!ACTIONABLE_APPROVAL_STATUSES.has(a.status)) continue;
     if (!best || a.id > best.id) best = a;
   }
   return best;
@@ -239,6 +247,16 @@ export function hydrateIssueLineWithAllowanceApproval<T extends HydratableIssueL
     next.plannedAllowanceQty = formatAllowanceInput(latest.addQty);
     next.issueQty = formatAllowanceInput(latest.issueQty);
     next.allowanceReason = latest.storeReason ?? line.allowanceReason;
+  } else if (latest.status === "REJECTED" && line.issueQtyTouched) {
+    // Operator revised quantities after rejection — do not keep a false REJECTED band
+    // when the draft no longer matches the rejected snapshot (fresh approval may be needed).
+    const draftAdd = String(line.plannedAllowanceQty ?? "").trim();
+    const rejectedAdd = formatAllowanceInput(latest.addQty);
+    if (draftAdd !== "" && draftAdd !== rejectedAdd) {
+      next.allowanceApprovalId = null;
+      next.allowanceApprovalStatus = "NONE";
+      next.allowanceApprovalRejectionReason = null;
+    }
   }
   return next;
 }

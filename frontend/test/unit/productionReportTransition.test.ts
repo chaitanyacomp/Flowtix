@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   isProductionReportCloseDecision,
+  productionStageLabelForReportPending,
   shouldClearProductionReportTransition,
   shouldForceProductionReportTransition,
+  shouldHideContinueWhileProductionReportPending,
   shouldIgnoreClearedExecutionSummaryDuringReportTransition,
 } from "../../src/lib/productionReportTransition";
 
@@ -11,7 +13,7 @@ describe("productionReportTransition", () => {
     expect(
       isProductionReportCloseDecision({ remainingAfterEntry: 150, disposition: "END_WITH_SHORTAGE" }),
     ).toBe(true);
-    expect(isProductionReportCloseDecision({ remainingAfterEntry: 0, disposition: "CONTINUE" })).toBe(true);
+    expect(isProductionReportCloseDecision({ remainingAfterEntry: 0, disposition: "PAUSE" })).toBe(true);
     expect(
       isProductionReportCloseDecision({ remainingAfterEntry: 150, disposition: "CONTINUE" }),
     ).toBe(false);
@@ -69,5 +71,61 @@ describe("productionReportTransition", () => {
         summary: null,
       }),
     ).toBe(false);
+  });
+
+  it("hides Continue while mandatory Production Report is pending or open", () => {
+    expect(
+      shouldHideContinueWhileProductionReportPending({
+        executionStatus: "SHORTFALL_PENDING",
+      }),
+    ).toBe(true);
+    expect(
+      shouldHideContinueWhileProductionReportPending({
+        executionStatus: "REPORT_PENDING",
+      }),
+    ).toBe(true);
+    expect(
+      shouldHideContinueWhileProductionReportPending({
+        showCompactClosureLayout: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHideContinueWhileProductionReportPending({
+        showProductionReport: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHideContinueWhileProductionReportPending({
+        forceProductionReportTransition: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHideContinueWhileProductionReportPending({
+        pendingShortfallDecision: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHideContinueWhileProductionReportPending({
+        executionStatus: "RUNNING",
+      }),
+    ).toBe(false);
+    expect(
+      shouldHideContinueWhileProductionReportPending({
+        executionStatus: "BLOCKED",
+      }),
+    ).toBe(false);
+    expect(
+      shouldHideContinueWhileProductionReportPending({
+        executionStatus: "COMPLETED",
+      }),
+    ).toBe(false);
+  });
+
+  it("maps report-pending stage labels without Continue wording", () => {
+    expect(productionStageLabelForReportPending({ executionStatus: "SHORTFALL_PENDING" })).toBe(
+      "Report pending",
+    );
+    expect(productionStageLabelForReportPending({ executionStatus: "COMPLETED" })).toBe("Complete");
+    expect(productionStageLabelForReportPending({ executionStatus: "CLOSED" })).toBe("Complete");
   });
 });

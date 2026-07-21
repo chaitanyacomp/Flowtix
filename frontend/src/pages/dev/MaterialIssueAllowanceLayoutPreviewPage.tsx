@@ -1,8 +1,8 @@
 /**
- * DEV-only visual QA page for Material Issue RM card layout.
+ * DEV-only visual QA page for Material Issue RM table layout.
  * Route: /dev/material-issue-allowance-layout
  */
-import { MaterialIssueAllowanceRow } from "../../components/erp/MaterialIssueAllowanceRow";
+import { MaterialIssueRmTable } from "../../components/erp/MaterialIssueRmTable";
 import { PageContainer } from "../../components/PageHeader";
 
 const samples = [
@@ -89,7 +89,7 @@ const samples = [
     allowanceReason: "Recycled regrind absorbs extra moisture",
     issueQty: "64.2",
     disabled: false,
-    approvalStatus: "PENDING_APPROVAL",
+    approvalStatus: "PENDING_APPROVAL" as const,
   },
   {
     key: "approved",
@@ -104,7 +104,7 @@ const samples = [
     allowanceReason: "Extruder purge loss on colour change",
     issueQty: "48",
     disabled: false,
-    approvalStatus: "APPROVED",
+    approvalStatus: "APPROVED" as const,
   },
   {
     key: "rejected",
@@ -119,32 +119,27 @@ const samples = [
     allowanceReason: "Line startup scrap",
     issueQty: "33.5",
     disabled: false,
-    approvalStatus: "REJECTED",
+    approvalStatus: "REJECTED" as const,
     approvalRejectionReason: "Reason too generic — resubmit with the specific machine/shift context.",
   },
-] as const;
+];
 
 export function MaterialIssueAllowanceLayoutPreviewPage() {
   return (
     <PageContainer>
       <div className="mb-3 space-y-1">
-        <h1 className="text-base font-semibold text-slate-900">Material Issue — RM card layout preview</h1>
+        <h1 className="text-base font-semibold text-slate-900">Material Issue — RM table layout preview</h1>
         <p className="text-sm text-slate-600">
-          DEV visual check: Qty (BOM) = applicable remaining · Add Qty → Allowance % · Issue Now · statuses.
+          DEV visual check: compact RM table with BOM, allowance, issue now and status badges.
         </p>
       </div>
-      <div className="min-w-0 space-y-2" data-testid="material-issue-compact-grid">
-        {samples.map((row) => (
-          <MaterialIssueAllowanceRow
-            key={row.key}
-            row={{ ...row }}
-            actorRole="STORE"
-            onExtraQtyChange={() => undefined}
-            onIssueQtyChange={() => undefined}
-            onReasonChange={() => undefined}
-          />
-        ))}
-      </div>
+      <MaterialIssueRmTable
+        rows={samples}
+        actorRole="STORE"
+        onExtraQtyChange={() => undefined}
+        onIssueQtyChange={() => undefined}
+        onReasonChange={() => undefined}
+      />
     </PageContainer>
   );
 }

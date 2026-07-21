@@ -18,8 +18,14 @@ const {
   assertRmRequisitionCanCreatePurchaseRequest,
   assertRmRequisitionPurchaseVisible,
 } = require("./rmRequisitionLifecycle");
-const { assertSingleDemandPoolFromSourceTypes } = require("./procurementDemandPoolService");
+const {
+  assertSingleDemandPoolFromSourceTypes,
+  assertKnownDemandPoolsForCommercialRmPo,
+  resolveDemandPoolForSourceType,
+  demandPoolLabel,
+} = require("./procurementDemandPoolService");
 const { assertActorMayCreatePurchaseRequest } = require("./procurementPurchaseRequestOwnership");
+const { consolidateRmPoAllocations } = require("./rmPoLineConsolidation");
 
 const OPEN_PURCHASE_REQUEST_STATUSES = ["PENDING_PURCHASE", "PARTIALLY_ORDERED"];
 const SUPPLIER_PO_NUMBER_REQUIRED = "Supplier PO Number is required.";
@@ -136,16 +142,63 @@ function purchaseRequestStatusLabel(status) {
 }
 
 function sourceRefForPurchaseRequestSource(mr) {
-  if (!mr) return "â€”";
+  if (!mr) return "—";
   if (mr.sourceType === "STOCK_REPLENISHMENT") return "Stock Replenishment";
+  if (mr.sourceType === "MONTHLY_PLAN") {
+    const plan = mr.monthlyProductionPlan;
+    if (plan?.periodKey) {
+      const seq = plan.planSequenceNo != null ? ` · Plan ${plan.planSequenceNo}` : "";
+      return `${plan.periodKey}${seq}`;
+    }
+    return mr.docNo || "Monthly Plan";
+  }
   return (
     mr.salesOrder?.docNo ??
     (mr.salesOrderId ? `SO-${mr.salesOrderId}` : null) ??
     mr.quotation?.quotationNo ??
     (mr.quotationId ? `QT-${mr.quotationId}` : null) ??
     mr.docNo ??
-    "â€”"
+    "—"
   );
+}
+
+function primarySourceMetaFromPrLine(ln) {
+  const links = ln.sourceLinks || [];
+  /** @type {string[]} */
+  const sourceTypes = [];
+  /** @type {string[]} */
+  const pools = [];
+  let referenceLabel = "—";
+  for (const lk of links) {
+    const mr = lk.materialRequirementLine?.materialRequirement;
+    const st = mr?.sourceType;
+    if (st) sourceTypes.push(st);
+    const pool = resolveDemandPoolForSourceType(st);
+    if (pool) pools.push(pool);
+    if (referenceLabel === "—" && mr) {
+      referenceLabel = sourceRefForPurchaseRequestSource(mr);
+    }
+  }
+  const uniquePools = [...new Set(pools)];
+  const uniqueTypes = [...new Set(sourceTypes)];
+  const demandPool = uniquePools[0] || null;
+  return {
+    sourceTypes: uniqueTypes,
+    demandPool,
+    demandPoolLabel: demandPool ? demandPoolLabel(demandPool) : null,
+    referenceLabel,
+    sources: links.map((lk) => {
+      const mr = lk.materialRequirementLine?.materialRequirement;
+      return {
+        materialRequirementLineId: lk.materialRequirementLineId,
+        requirementDocNo: mr?.docNo ?? null,
+        sourceType: mr?.sourceType ?? null,
+        demandPool: resolveDemandPoolForSourceType(mr?.sourceType),
+        sourceRef: sourceRefForPurchaseRequestSource(mr),
+        allocatedQty: qtyToNumber(lk.allocatedQty),
+      };
+    }),
+  };
 }
 
 /** Qty still on open (not fully ordered) purchase requests for an MR line. */
@@ -425,6 +478,7 @@ function mapPendingRequestRow(pr) {
       const pending = linePendingPoQty(ln);
       const excessOrderedQty = lineExcessOrderedQty(ln);
       const canOrder = canOrderPurchaseRequestLine(pr, ln);
+      const sourceMeta = primarySourceMetaFromPrLine(ln);
       return {
         id: ln.id,
         purchaseRequestId: ln.purchaseRequestId,
@@ -443,22 +497,11 @@ function mapPendingRequestRow(pr) {
           : pending <= QUEUE_EPS
             ? "PO already created for this line"
             : purchaseRequestOrderingBlockReason(pr)?.message ?? "Not open for ordering",
-        sources: (ln.sourceLinks || []).map((lk) => {
-          const mr = lk.materialRequirementLine?.materialRequirement;
-          const sourceRef =
-            mr?.salesOrder?.docNo ??
-            (mr?.salesOrderId ? `SO-${mr.salesOrderId}` : null) ??
-            mr?.quotation?.quotationNo ??
-            (mr?.quotationId ? `QT-${mr.quotationId}` : null) ??
-            mr?.docNo ??
-            "—";
-          return {
-            materialRequirementLineId: lk.materialRequirementLineId,
-            requirementDocNo: mr?.docNo ?? null,
-            sourceRef: sourceRefForPurchaseRequestSource(mr),
-            allocatedQty: qtyToNumber(lk.allocatedQty),
-          };
-        }),
+        demandPool: sourceMeta.demandPool,
+        demandPoolLabel: sourceMeta.demandPoolLabel,
+        referenceLabel: sourceMeta.referenceLabel,
+        sourceTypes: sourceMeta.sourceTypes,
+        sources: sourceMeta.sources,
       };
     }),
   };
@@ -480,6 +523,9 @@ async function listPendingPurchaseRequests(db = prisma) {
                     include: {
                       quotation: { select: { quotationNo: true } },
                       salesOrder: { select: { docNo: true } },
+                      monthlyProductionPlan: {
+                        select: { id: true, periodKey: true, planSequenceNo: true, planKind: true },
+                      },
                     },
                   },
                 },
@@ -518,27 +564,48 @@ async function applyMrProcuredFromPoLine(tx, purchaseRequestLineId, poQty) {
 
 /**
  * Purchase dept creates RM PO from pending purchase request lines.
+ * Same RM across PRs/pools consolidates to one commercial PO line; allocations stay separate.
  */
 async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
   const relaxed = isTestingModeRelaxed();
   const supplierPoNumber = requireSupplierPoNumber(input.supplierPoNumber);
   return prisma.$transaction(async (tx) => {
-    const lineIds = input.lines.map((l) => l.purchaseRequestLineId);
+    const requestedLines = (input.lines || []).filter((l) => qtyToNumber(l.qty) > QUEUE_EPS);
+    if (!requestedLines.length) {
+      const err = new Error("Select at least one requisition line with order quantity greater than zero.");
+      err.statusCode = 400;
+      err.code = "RM_PO_NO_ELIGIBLE_LINES";
+      throw err;
+    }
+
+    const lineIds = requestedLines.map((l) => l.purchaseRequestLineId);
+    const uniqueLineIds = [...new Set(lineIds)];
+    if (uniqueLineIds.length !== lineIds.length) {
+      const err = new Error("Duplicate purchase request lines in the create-PO payload.");
+      err.statusCode = 400;
+      err.code = "RM_PO_DUPLICATE_PR_LINE";
+      throw err;
+    }
+
     const prLines = await tx.purchaseRequestLine.findMany({
-      where: { id: { in: lineIds } },
+      where: { id: { in: uniqueLineIds } },
       include: {
         rmItem: { include: { unitRef: { select: { unitName: true } } } },
         purchaseRequest: { select: { id: true, status: true, docNo: true } },
         sourceLinks: {
           include: {
             materialRequirementLine: {
-              include: { materialRequirement: { select: { id: true, docNo: true, status: true, sourceType: true } } },
+              include: {
+                materialRequirement: {
+                  select: { id: true, docNo: true, status: true, sourceType: true },
+                },
+              },
             },
           },
         },
       },
     });
-    if (prLines.length !== lineIds.length) {
+    if (prLines.length !== uniqueLineIds.length) {
       const err = new Error("One or more purchase request lines not found");
       err.statusCode = 400;
       throw err;
@@ -546,15 +613,9 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
 
     const warn = [];
     const poSourceTypes = [];
-
-    const commercial = await freezeRmPurchaseOrderCommercialSnapshots(tx, {
-      supplierId: input.supplierId,
-      supplierLocationId: input.supplierLocationId ?? null,
-    });
-
-    const inputByPrLineId = new Map(input.lines.map((l) => [l.purchaseRequestLineId, l]));
-    const lineCreates = [];
-    const poLineMeta = [];
+    const inputByPrLineId = new Map(requestedLines.map((l) => [l.purchaseRequestLineId, l]));
+    /** @type {import("./rmPoLineConsolidation").RmPoAllocationInput[]} */
+    const allocationInputs = [];
 
     for (const prLine of prLines) {
       for (const source of prLine.sourceLinks || []) {
@@ -574,20 +635,32 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
       assertPositiveRate(spec.rate);
       const resolved = resolveLineTaxFromItem(prLine.rmItem, { relaxed });
       warn.push(...resolved.warnings);
-      const amount = computeLineAmount(qty, spec.rate);
-      lineCreates.push({
+      allocationInputs.push({
+        purchaseRequestLineId: prLine.id,
+        purchaseRequestId: prLine.purchaseRequestId,
+        purchaseRequestDocNo: prHeader?.docNo ?? null,
         itemId: prLine.rmItemId,
-        qty: String(qty),
-        rate: String(spec.rate),
+        itemName: prLine.rmItem?.itemName ?? "",
+        qty,
+        rate: qtyToNumber(spec.rate),
         unit: resolved.unit,
         hsn: resolved.hsn,
-        gstRate: String(resolved.gstRate),
-        amount: String(amount),
+        gstRate: resolved.gstRate,
+        sourceTypes: (prLine.sourceLinks || [])
+          .map((s) => s.materialRequirementLine?.materialRequirement?.sourceType)
+          .filter(Boolean),
       });
-      poLineMeta.push({ purchaseRequestLineId: prLine.id, qty, purchaseRequestId: prLine.purchaseRequestId });
     }
 
-    assertSingleDemandPoolFromSourceTypes(poSourceTypes, "RM purchase order");
+    // Commercial PO may span pools; PR create still enforces single-pool firewall.
+    const demandPoolsOnPo = assertKnownDemandPoolsForCommercialRmPo(poSourceTypes);
+
+    const consolidated = consolidateRmPoAllocations(allocationInputs, { computeLineAmount });
+
+    const commercial = await freezeRmPurchaseOrderCommercialSnapshots(tx, {
+      supplierId: input.supplierId,
+      supplierLocationId: input.supplierLocationId ?? null,
+    });
 
     const created = await tx.rmPurchaseOrder.create({
       data: {
@@ -612,28 +685,50 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
         purchaseSourceStateCodeSnapshot: commercial.purchaseSourceStateCodeSnapshot,
         purchaseSourceSnapshot: commercial.purchaseSourceSnapshot,
         purchaseGstModeSnapshot: commercial.purchaseGstModeSnapshot,
-        lines: { create: lineCreates },
+        lines: {
+          create: consolidated.map((c) => ({
+            itemId: c.itemId,
+            qty: String(c.qty),
+            rate: String(c.rate),
+            unit: c.unit,
+            hsn: c.hsn,
+            gstRate: String(c.gstRate),
+            amount: String(c.amount),
+          })),
+        },
       },
       include: { supplier: true, supplierLocation: true, lines: { include: { item: true } } },
     });
 
+    // Match created lines back to consolidated groups by itemId (one commercial line per item).
+    const poLineByItemId = new Map();
+    for (const poLine of created.lines) {
+      poLineByItemId.set(poLine.itemId, poLine);
+    }
+
     const touchedPrIds = new Set();
-    for (let i = 0; i < created.lines.length; i++) {
-      const poLine = created.lines[i];
-      const meta = poLineMeta[i];
-      await tx.rmPoLineProcurementLink.create({
-        data: {
-          rmPoLineId: poLine.id,
-          purchaseRequestLineId: meta.purchaseRequestLineId,
-          allocatedQty: String(meta.qty),
-        },
-      });
-      await tx.purchaseRequestLine.update({
-        where: { id: meta.purchaseRequestLineId },
-        data: { orderedQty: { increment: meta.qty } },
-      });
-      await applyMrProcuredFromPoLine(tx, meta.purchaseRequestLineId, meta.qty);
-      touchedPrIds.add(meta.purchaseRequestId);
+    for (const group of consolidated) {
+      const poLine = poLineByItemId.get(group.itemId);
+      if (!poLine) {
+        const err = new Error(`Internal error: missing PO line for item ${group.itemId}`);
+        err.statusCode = 500;
+        throw err;
+      }
+      for (const alloc of group.allocations) {
+        await tx.rmPoLineProcurementLink.create({
+          data: {
+            rmPoLineId: poLine.id,
+            purchaseRequestLineId: alloc.purchaseRequestLineId,
+            allocatedQty: String(alloc.qty),
+          },
+        });
+        await tx.purchaseRequestLine.update({
+          where: { id: alloc.purchaseRequestLineId },
+          data: { orderedQty: { increment: alloc.qty } },
+        });
+        await applyMrProcuredFromPoLine(tx, alloc.purchaseRequestLineId, alloc.qty);
+        touchedPrIds.add(alloc.purchaseRequestId);
+      }
     }
 
     for (const prId of touchedPrIds) {
@@ -662,7 +757,7 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
         entityId: `RM_PO:${created.id}`,
         actorUserId: userId,
         actorRole: actor.role,
-        summary: `RM PO RMPO-${created.id} from purchase request (${created.lines.length} lines)`,
+        summary: `RM PO RMPO-${created.id} from purchase request (${consolidated.length} commercial lines, ${allocationInputs.length} allocations)`,
         payload: {
           module: "PURCHASE",
           actionLabel: "CREATE_PO_FROM_REQUEST",
@@ -671,6 +766,8 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
             supplierId: created.supplierId,
             supplierPoNumber: created.supplierPoNumber,
             lineCount: created.lines.length,
+            allocationCount: allocationInputs.length,
+            demandPools: demandPoolsOnPo,
           },
           status: { from: null, to: created.status },
         },
@@ -735,4 +832,6 @@ module.exports = {
   linePendingPoQty,
   lineExcessOrderedQty,
   validatePurchaseRequestPoLineQty,
+  mapPendingRequestRow,
+  primarySourceMetaFromPrLine,
 };

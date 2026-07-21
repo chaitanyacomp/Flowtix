@@ -6,6 +6,7 @@ import {
   type PendingAction,
   type PendingActionsDashboardProps,
 } from "../lib/pendingActionsApi";
+import { countStoreDashboardActionablePendingActions } from "../lib/storeDashboardPresentation";
 import { useAuth } from "./useAuth";
 import { useErpCachedQuery } from "./useErpCachedQuery";
 import { useRouteActive } from "./useRouteActive";
@@ -55,11 +56,18 @@ export function useDashboardPendingActionsDesk(options?: {
   });
 
   const payload = query.data;
-  const count = Number(payload?.count ?? payload?.actions?.length ?? 0);
+  const actionsList = payload?.actions;
+  const count = React.useMemo(() => {
+    const list = actionsList ?? [];
+    if (role === "STORE") {
+      return countStoreDashboardActionablePendingActions(list);
+    }
+    return Number(payload?.count ?? list.length ?? 0);
+  }, [role, payload?.count, actionsList]);
   const storePendingRsActions = React.useMemo(() => {
     if (!options?.filterStorePendingRs) return [] as PendingAction[];
-    return (payload?.actions ?? []).filter((a) => isStoreOwnedNoQtyRsPendingAction(a));
-  }, [options?.filterStorePendingRs, payload?.actions]);
+    return (actionsList ?? []).filter((a) => isStoreOwnedNoQtyRsPendingAction(a));
+  }, [options?.filterStorePendingRs, actionsList]);
 
   const deskProps: PendingActionsDashboardProps | undefined = !demo.enabled
     ? {

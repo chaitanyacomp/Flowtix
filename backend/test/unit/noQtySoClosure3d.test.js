@@ -41,10 +41,24 @@ function makeClosureDb(overrides = {}) {
     ...(overrides.so || {}),
   };
 
+  const itemsById = new Map(
+    (overrides.items || []).map((it) => [Number(it.id), it]),
+  );
+
   const db = {
     $queryRaw: async () => [{ id: so.id }],
     auditLog: {
       create: async () => ({ id: 1 }),
+    },
+    item: {
+      findMany: async ({ where } = {}) => {
+        const ids = where?.id?.in;
+        if (Array.isArray(ids)) {
+          return ids.map((id) => itemsById.get(Number(id))).filter(Boolean);
+        }
+        return [...itemsById.values()];
+      },
+      findUnique: async ({ where } = {}) => itemsById.get(Number(where?.id)) ?? null,
     },
     salesOrder: {
       findUnique: async ({ where }) => (where.id === so.id ? { ...so } : null),
@@ -403,10 +417,23 @@ describe("Batch 3D assessNoQtySoClosure", () => {
       activeCycle: null,
       cycles: [{ id: 10, cycleNo: 1 }],
       workOrders: [{ id: 5 }],
+      items: [{ id: 501, itemName: "HDPE Cap", unit: "Nos", itemCode: "FG-001" }],
       qcEntries: [
         {
           acceptedQty: "100",
-          production: { workOrderLine: { fgItemId: 501 } },
+          production: {
+            id: 77,
+            docNo: "PE-26-0003",
+            workOrderLine: {
+              fgItemId: 501,
+              workOrder: {
+                id: 5,
+                docNo: "WO-26-0003",
+                cycleId: 10,
+                cycle: { id: 10, cycleNo: 1 },
+              },
+            },
+          },
         },
       ],
       lockedDispatch: [],
@@ -414,6 +441,50 @@ describe("Batch 3D assessNoQtySoClosure", () => {
     const a = await assessNoQtySoClosure(db, 1);
     assert.equal(a.mode, CLOSURE_MODES.BLOCKED);
     assert.ok(a.blockers.some((b) => b.code === "FG_DISPOSITION_REQUIRED"));
+    const fg = (a.itemSummaries || []).find((s) => s.itemId === 501);
+    assert.ok(fg);
+    assert.equal(fg.itemName, "HDPE Cap");
+    assert.equal(fg.itemCode, "FG-001");
+    assert.equal(fg.unit, "Nos");
+    assert.equal(fg.quantity, 100);
+    assert.equal(fg.acceptedFgPendingDispositionQty, 100);
+    assert.equal(fg.identityResolved, true);
+    assert.equal(fg.workOrderNumber, "WO-26-0003");
+    assert.equal(fg.productionBatchNumber, "PE-26-0003");
+    assert.equal(fg.cycleReference, "Cycle 1");
+    const serialized = JSON.stringify(a.itemSummaries);
+    assert.equal(serialized.includes("Item ID"), false);
+    assert.equal(serialized.includes("Item #"), false);
+  });
+
+  it("marks FG pending as unknown when item master cannot be resolved", async () => {
+    const db = makeClosureDb({
+      activeCycle: null,
+      cycles: [{ id: 10, cycleNo: 1 }],
+      workOrders: [{ id: 5 }],
+      items: [],
+      qcEntries: [
+        {
+          acceptedQty: "187",
+          production: {
+            id: 88,
+            docNo: "PE-26-0096",
+            workOrderLine: {
+              fgItemId: 96,
+              workOrder: { id: 5, docNo: "WO-26-0003", cycle: { cycleNo: 2 } },
+            },
+          },
+        },
+      ],
+      lockedDispatch: [],
+    });
+    const a = await assessNoQtySoClosure(db, 1);
+    const fg = (a.itemSummaries || []).find((s) => s.itemId === 96);
+    assert.ok(fg);
+    assert.equal(fg.identityResolved, false);
+    assert.equal(fg.itemName, null);
+    assert.equal(fg.quantity, 187);
+    assert.equal(fg.workOrderNumber, "WO-26-0003");
   });
 });
 
@@ -423,6 +494,7 @@ describe("Batch 3D FG disposition", () => {
       activeCycle: null,
       cycles: [{ id: 10, cycleNo: 1 }],
       workOrders: [{ id: 5 }],
+      items: [{ id: 501, itemName: "FG Cap", unit: "Nos" }],
       qcEntries: [
         {
           acceptedQty: "25",
@@ -444,6 +516,32 @@ describe("Batch 3D FG disposition", () => {
     a = await assessNoQtySoClosure(db, 1);
     assert.equal(a.acceptedFgPendingDispositionQty, 0);
     assert.ok(!a.blockers.some((b) => b.code === "FG_DISPOSITION_REQUIRED"));
+  });
+
+  it("blocks transfer to general stock when item identity is unresolved", async () => {
+    const db = makeClosureDb({
+      activeCycle: null,
+      cycles: [{ id: 10, cycleNo: 1 }],
+      workOrders: [{ id: 5 }],
+      items: [],
+      qcEntries: [
+        {
+          acceptedQty: "10",
+          production: { workOrderLine: { fgItemId: 96 } },
+        },
+      ],
+      lockedDispatch: [],
+    });
+    await assert.rejects(
+      () =>
+        recordAcceptedFgDisposition(db, {
+          salesOrderId: 1,
+          itemId: 96,
+          qty: 10,
+          dispositionType: "TRANSFER_TO_GENERAL_STOCK",
+        }),
+      (err) => err.code === "FG_ITEM_IDENTITY_UNRESOLVED",
+    );
   });
 
   it("rejects Green Level transfer disposition type", async () => {

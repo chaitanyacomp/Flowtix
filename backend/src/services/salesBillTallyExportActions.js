@@ -1,5 +1,7 @@
 const { mapSalesBillToTallyExportPayload } = require("./salesBillTallyExportPayload");
 const { buildSalesBillTallyXml, buildSalesBillTallyBulkXml } = require("./salesBillTallyXml");
+const { assessSalesBillTallyExportReadiness } = require("./salesBillTallyExportReadiness");
+const { loadCompanyStateForTallyExport, logSalesBillExportFailureOnce } = require("./salesBillTallyExportSupport");
 const auditLog = require("./auditLog");
 const { logActivity } = require("./activityLogService");
 const {
@@ -13,7 +15,13 @@ const billIncludeForTallyExport = {
   customer: { include: { stateRef: true } },
   dispatch: { include: { salesOrder: true } },
   lines: {
-    include: { item: { include: { unitRef: { select: { unitName: true } } } } },
+    include: {
+      item: {
+        include: {
+          unitRef: { select: { unitName: true, unitCode: true, tallyName: true, tallyGuid: true } },
+        },
+      },
+    },
     orderBy: { id: "asc" },
   },
 };
@@ -75,23 +83,16 @@ function validateTallyExportEligibility({ bill, payload }) {
       return "Billing quantity must be based on dispatch.";
     }
   }
+  const readiness = assessSalesBillTallyExportReadiness(payload);
+  if (!readiness.ready && readiness.primaryIssue?.message) {
+    return readiness.primaryIssue.message;
+  }
   return null;
 }
 
 function safeTallyFilename(bill) {
   const safeNo = String(bill.billNo || `SB-${bill.id}`).replace(/[^\w\-\.]+/g, "-");
   return `sales-bill-${safeNo}.xml`;
-}
-
-async function loadCompanyState(prisma) {
-  return prisma.appSetting.findUnique({
-    where: { id: 1 },
-    select: {
-      companyGstin: true,
-      companyState: true,
-      companyStateRef: { select: { id: true, stateName: true, stateCode: true } },
-    },
-  });
 }
 
 async function prepareSalesBillTallyExport(prisma, billId) {
@@ -104,42 +105,16 @@ async function prepareSalesBillTallyExport(prisma, billId) {
     err.statusCode = 404;
     throw err;
   }
-  const companyState = await loadCompanyState(prisma);
+  const companyState = await loadCompanyStateForTallyExport(prisma);
   const payload = mapSalesBillToTallyExportPayload({ bill, companyState });
   return { bill, payload };
 }
 
 async function logExportFailure({ user, bill, errMsg }) {
-  const sbDoc = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);
-  await logActivity({
-    user,
-    module: ACTIVITY_MODULES.SALES_BILL,
-    entityType: ACTIVITY_ENTITY_TYPES.SALES_BILL,
-    entityId: bill.id,
-    docNo: sbDoc,
-    action: ACTIVITY_ACTIONS.EXPORT_FAILED,
-    message: `Sales Bill ${sbDoc} Tally export failed`,
-    metadata: { error: String(errMsg).slice(0, 240) },
-  });
+  await logSalesBillExportFailureOnce({ user, bill, errMsg });
 }
 
-async function markBillExported(tx, bill, filename, actor) {
-  const flipResult = await tx.salesBill.updateMany({
-    where: { id: bill.id, isExported: false },
-    data: {
-      isExported: true,
-      exportedAt: new Date(),
-      exportedFileName: filename,
-      exportedById: actor?.userId ?? null,
-    },
-  });
-  if (flipResult.count !== 1) {
-    const sbDoc = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);
-    const err = new Error(`${sbDoc} was already exported. Refresh and try again.`);
-    err.statusCode = 409;
-    throw err;
-  }
-
+async function logBulkXmlGenerated(tx, bill, filename, actor) {
   const sbDocOk = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);
   await logActivity({
     user: actor?.user ?? actor,
@@ -148,11 +123,12 @@ async function markBillExported(tx, bill, filename, actor) {
     entityId: bill.id,
     docNo: sbDocOk,
     action: ACTIVITY_ACTIONS.EXPORTED,
-    message: `Sales Bill ${sbDocOk} exported to Tally`,
+    message: `Sales Bill ${sbDocOk} Tally XML generated (bulk) — confirmation pending`,
     metadata: {
       fileName: filename,
       dispatchIds: bill.dispatchId != null ? [bill.dispatchId] : undefined,
       bulk: true,
+      exportLifecycle: "GENERATED",
     },
   });
   if (actor?.userId) {
@@ -162,16 +138,17 @@ async function markBillExported(tx, bill, filename, actor) {
       entityId: `SALES_BILL:${bill.id}`,
       actorUserId: actor.userId,
       actorRole: actor.role,
-      summary: `Sales bill ${bill.billNo || `SB-${bill.id}`} exported to Tally XML`,
+      summary: `Sales bill ${bill.billNo || `SB-${bill.id}`} Tally XML generated (bulk) — not marked exported until Tally confirmation`,
       payload: {
         module: "REPORTS",
-        actionLabel: "EXPORT",
+        actionLabel: "GENERATE",
         ref: { type: "TALLY_EXPORT", id: String(bill.id), no: filename },
         snapshot: {
           salesBillId: bill.id,
           dispatchId: bill.dispatchId ?? null,
           fileName: filename,
           bulk: true,
+          exportLifecycle: "GENERATED",
         },
       },
     });
@@ -179,8 +156,8 @@ async function markBillExported(tx, bill, filename, actor) {
 }
 
 /**
- * Bulk export: validate all bills first, then mark all exported and return combined XML.
- * Rejects already-exported bills (no silent re-export / duplicate flip).
+ * Bulk export: validate all bills first, then return combined voucher-only XML.
+ * Does not mark bills exported — confirm after Tally accepts the import.
  */
 async function exportSalesBillsToTallyBulk(prisma, rawIds, actor = {}) {
   const ids = [...new Set((rawIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))];
@@ -201,7 +178,7 @@ async function exportSalesBillsToTallyBulk(prisma, rawIds, actor = {}) {
     }
     if (bill.isExported) {
       const sbDoc = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);
-      const err = new Error(`${sbDoc} has already been exported (XML already downloaded). Reset export to export again.`);
+      const err = new Error(`${sbDoc} has already been confirmed exported. Reset export to generate XML again.`);
       err.statusCode = 400;
       throw err;
     }
@@ -217,8 +194,19 @@ async function exportSalesBillsToTallyBulk(prisma, rawIds, actor = {}) {
   }
 
   const payloads = prepared.map((p) => p.payload);
-  const xml =
-    payloads.length === 1 ? buildSalesBillTallyXml(payloads[0]) : buildSalesBillTallyBulkXml(payloads);
+  let xml;
+  try {
+    xml =
+      payloads.length === 1 ? buildSalesBillTallyXml(payloads[0]) : buildSalesBillTallyBulkXml(payloads);
+  } catch (buildErr) {
+    const msg = buildErr instanceof Error ? buildErr.message : "Tally XML generation failed.";
+    for (const { bill } of prepared) {
+      await logExportFailure({ user: actor?.user ?? actor, bill, errMsg: msg });
+    }
+    const err = new Error(msg);
+    err.statusCode = 400;
+    throw err;
+  }
   const filename =
     payloads.length === 1
       ? safeTallyFilename(prepared[0].bill)
@@ -227,7 +215,7 @@ async function exportSalesBillsToTallyBulk(prisma, rawIds, actor = {}) {
   await prisma.$transaction(async (tx) => {
     for (const { bill } of prepared) {
       const perFile = payloads.length === 1 ? filename : safeTallyFilename(bill);
-      await markBillExported(tx, bill, perFile, actor);
+      await logBulkXmlGenerated(tx, bill, perFile, actor);
     }
   });
 

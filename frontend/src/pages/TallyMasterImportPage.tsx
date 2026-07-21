@@ -81,9 +81,44 @@ type ApplyResult = {
   failed: number;
   results: { entityType: string; tallyName: string; action: string; erpId: number | null; error: string | null; warning: string | null }[];
   warnings: string[];
+  correlationId?: string;
+  unresolvedCount?: number;
+  summaryMessage?: string;
+};
+
+type BlockingError = {
+  entityType: string;
+  tallyName: string;
+  proposedAction: string;
+  errors: string[];
+  fieldIssues?: FieldIssue[];
+  message: string;
 };
 
 type StateOpt = { id: number; stateName: string; stateCode: string };
+
+type AlertFilter = "all" | "blocking" | "warnings" | "duplicates";
+
+function formatTallyImportError(e: unknown): string {
+  if (e instanceof ApiRequestError) {
+    const body = e.body && typeof e.body === "object" ? (e.body as { error?: Record<string, unknown> }) : null;
+    const err = body?.error && typeof body.error === "object" ? body.error : null;
+    const parts: string[] = [];
+    const code = (err && typeof err.code === "string" ? err.code : e.code) || null;
+    const ledgerName = err && typeof err.ledgerName === "string" ? err.ledgerName : null;
+    const field = err && typeof err.field === "string" ? err.field : null;
+    const reason = err && typeof err.reason === "string" ? err.reason : null;
+    const correlationId = err && typeof err.correlationId === "string" ? err.correlationId : null;
+    if (e.message) parts.push(e.message);
+    if (code) parts.push(`Code: ${code}`);
+    if (ledgerName) parts.push(`Ledger: ${ledgerName}`);
+    if (field) parts.push(`Field: ${field}`);
+    if (reason && reason !== e.message) parts.push(`Reason: ${reason}`);
+    if (correlationId) parts.push(`Correlation ID: ${correlationId}`);
+    return parts.join(" · ");
+  }
+  return e instanceof Error ? e.message : "Import failed.";
+}
 
 function parseCommaKeywordList(raw: string): string[] | undefined {
   const parts = String(raw || "")
@@ -252,6 +287,9 @@ export function TallyMasterImportPage() {
   const [applyResult, setApplyResult] = React.useState<ApplyResult | null>(null);
   const [itemRowTypes, setItemRowTypes] = React.useState<Record<string, DefaultItemType>>({});
   const [tab, setTab] = React.useState<"customers" | "suppliers" | "items" | "units" | "alerts">("customers");
+  const [blockingErrors, setBlockingErrors] = React.useState<BlockingError[]>([]);
+  const [alertFilter, setAlertFilter] = React.useState<AlertFilter>("all");
+  const [lastCorrelationId, setLastCorrelationId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     void (async () => {
@@ -283,6 +321,8 @@ export function TallyMasterImportPage() {
     setInfoNotes([]);
     setApplyResult(null);
     setWarnings([]);
+    setBlockingErrors([]);
+    setLastCorrelationId(null);
     try {
       const fd = new FormData();
       fd.append("file", file);
@@ -306,12 +346,25 @@ export function TallyMasterImportPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const msg = data?.error?.message || `Preview failed (${res.status})`;
-        throw new ApiRequestError(msg, res.status, data?.error?.code);
+        const err = data?.error || {};
+        const msg = [
+          err.message || `Preview failed (${res.status})`,
+          err.code ? `Code: ${err.code}` : null,
+          err.ledgerName ? `Ledger: ${err.ledgerName}` : null,
+          err.field ? `Field: ${err.field}` : null,
+          err.reason ? `Reason: ${err.reason}` : null,
+          err.correlationId ? `Correlation ID: ${err.correlationId}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        if (err.correlationId) setLastCorrelationId(String(err.correlationId));
+        throw new ApiRequestError(msg, res.status, err.code, { body: data });
       }
       setPreviewToken(data.previewToken);
+      if (data.correlationId) setLastCorrelationId(String(data.correlationId));
       setWarnings(Array.isArray(data.warnings) ? data.warnings : []);
       setInfoNotes(Array.isArray(data.infoNotes) ? data.infoNotes : []);
+      setBlockingErrors(Array.isArray(data.blockingErrors) ? data.blockingErrors : []);
       setParsedMasterCounts(data.parsedMasterCounts ?? null);
       setSummary(data.summary);
       setCustomers(data.customers ?? []);
@@ -327,9 +380,14 @@ export function TallyMasterImportPage() {
         initTypes[r.tallyName] = t === "RM" || t === "FG" ? t : defaultItemType;
       }
       setItemRowTypes(initTypes);
-      toast.showSuccess("Preview ready. Review the tabs, then confirm import.");
+      const blockCount = Array.isArray(data.blockingErrors) ? data.blockingErrors.length : 0;
+      toast.showSuccess(
+        blockCount
+          ? `Preview ready with ${blockCount} blocking error(s). Review Alerts — Confirm still imports valid rows and identity backfills.`
+          : "Preview ready. Review the tabs, then confirm import.",
+      );
     } catch (e) {
-      toast.showError(e instanceof ApiRequestError ? e.message : e instanceof Error ? e.message : "Preview failed.");
+      toast.showError(formatTallyImportError(e));
     } finally {
       setPreviewing(false);
     }
@@ -342,7 +400,8 @@ export function TallyMasterImportPage() {
     }
     const ok = window.confirm(
       "Import the rows shown in the preview into the ERP?\n\n" +
-        "This updates live master data (only as shown in the preview). " +
+        "Valid rows will be processed (creates, empty-field updates, and Tally identity backfills). " +
+        "Rows with blocking errors are left unresolved.\n\n" +
         "We recommend creating a database backup first (Masters → Backup & Restore).\n\n" +
         "Vouchers and accounting entries are never imported.",
     );
@@ -355,13 +414,16 @@ export function TallyMasterImportPage() {
         body: JSON.stringify({ previewToken, confirm: true, itemTypeOverrides: itemRowTypes }),
       });
       setApplyResult(out);
-      toast.showSuccess(
-        `Import finished: ${out.created} created, ${out.updated} updated, ${out.skipped} skipped, ${out.failed} failed.`,
-      );
+      if (out.correlationId) setLastCorrelationId(out.correlationId);
+      const summaryText =
+        out.summaryMessage ||
+        `Import finished: ${out.created} created, ${out.updated} updated, ${out.skipped} skipped, ${out.failed} failed.`;
+      if (out.failed > 0) toast.showError(summaryText);
+      else toast.showSuccess(summaryText);
       setPreviewToken(null);
       setItemRowTypes({});
     } catch (e) {
-      toast.showError(e instanceof ApiRequestError ? e.message : e instanceof Error ? e.message : "Import failed.");
+      toast.showError(formatTallyImportError(e));
     } finally {
       setApplying(false);
     }
@@ -418,6 +480,13 @@ export function TallyMasterImportPage() {
 
   const activeRows =
     tab === "customers" ? customers : tab === "suppliers" ? suppliers : tab === "items" ? items : tab === "units" ? units : [];
+
+  const allPreviewRows = [...customers, ...suppliers, ...items, ...units];
+  const duplicateRows = allPreviewRows.filter((r) => r.proposedAction === "SKIP_DUPLICATE");
+  const warningOnlyRows = allPreviewRows.filter((r) => rowStatus(r) === "WARNING");
+  const hasSchemaBlockingError = blockingErrors.some((e) => /schema|identity column|prisma generate|migration/i.test(e.message));
+  // Confirm stays enabled for row-level ERROR (those rows are left unresolved). Only hard schema blockers disable it.
+  const confirmDisabled = applying || !previewToken || hasSchemaBlockingError;
 
   const counts = parsedMasterCounts;
 
@@ -596,36 +665,99 @@ export function TallyMasterImportPage() {
               ))}
             </div>
             {tab === "alerts" ? (
-              <div className="max-h-72 space-y-2 overflow-auto text-sm">
-                {infoNotes.map((n) => (
-                  <div key={`info-${n}`} className="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-sky-950">
-                    {n}
-                  </div>
-                ))}
-                {warnings.map((w) => (
-                  <div key={w} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-950">
-                    {w}
-                  </div>
-                ))}
-                {[...customers, ...suppliers, ...items, ...units].flatMap((r) => {
-                  const issues = r.fieldIssues?.length
-                    ? r.fieldIssues.map((fi) => ({ r, x: fi.message, kind: r.errors.includes(fi.message) ? ("e" as const) : ("w" as const) }))
-                    : [
-                        ...r.warnings.map((x) => ({ r, x, kind: "w" as const })),
-                        ...r.errors.map((x) => ({ r, x, kind: "e" as const })),
-                      ];
-                  return issues.map(({ r: row, x, kind }, i) => (
-                    <div
-                      key={`${row.entityType}-${row.tallyName}-${kind}-${i}`}
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-1.5">
+                  {(
+                    [
+                      ["all", "All"],
+                      ["blocking", `Blocking Errors (${blockingErrors.length})`],
+                      ["warnings", `Warnings (${warningOnlyRows.length})`],
+                      ["duplicates", `Duplicates (${duplicateRows.length})`],
+                    ] as const
+                  ).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setAlertFilter(id)}
                       className={cn(
-                        "rounded border px-2 py-1",
-                        kind === "e" ? "border-red-200 bg-red-50 text-red-900" : "border-slate-200 bg-slate-50 text-slate-800",
+                        "rounded-md px-2 py-1 text-[11px] font-medium",
+                        alertFilter === id ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200",
                       )}
                     >
-                      {x}
-                    </div>
-                  ));
-                })}
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="max-h-72 space-y-2 overflow-auto text-sm" data-testid="tally-import-alerts">
+                  {alertFilter === "all" || alertFilter === "warnings"
+                    ? infoNotes.map((n) => (
+                        <div key={`info-${n}`} className="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-sky-950">
+                          {n}
+                        </div>
+                      ))
+                    : null}
+                  {alertFilter === "all" || alertFilter === "warnings"
+                    ? warnings.map((w) => (
+                        <div key={w} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-950">
+                          {w}
+                        </div>
+                      ))
+                    : null}
+                  {alertFilter === "blocking" || alertFilter === "all"
+                    ? blockingErrors.map((be, i) => (
+                        <div
+                          key={`block-${be.entityType}-${be.tallyName}-${i}`}
+                          className="rounded border border-red-200 bg-red-50 px-2 py-1 text-red-900"
+                          data-testid="tally-import-blocking-error"
+                        >
+                          <span className="font-semibold">{be.entityType}</span> · {be.message}
+                        </div>
+                      ))
+                    : null}
+                  {alertFilter === "duplicates"
+                    ? duplicateRows.map((r) => (
+                        <div
+                          key={`dup-${r.entityType}-${r.tallyName}`}
+                          className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-slate-800"
+                        >
+                          {r.entityType} &quot;{r.tallyName}&quot; — SKIP_DUPLICATE
+                          {r.warnings[0] ? ` · ${r.warnings[0]}` : ""}
+                        </div>
+                      ))
+                    : null}
+                  {alertFilter === "all" || alertFilter === "warnings"
+                    ? allPreviewRows.flatMap((r) => {
+                        if (rowStatus(r) === "ERROR") return [];
+                        const issues = r.fieldIssues?.length
+                          ? r.fieldIssues
+                              .filter((fi) => !r.errors.includes(fi.message))
+                              .map((fi) => ({ r, x: fi.message, kind: "w" as const }))
+                          : r.warnings.map((x) => ({ r, x, kind: "w" as const }));
+                        return issues.map(({ r: row, x, kind }, i) => (
+                          <div
+                            key={`${row.entityType}-${row.tallyName}-${kind}-${i}`}
+                            className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-slate-800"
+                          >
+                            {x}
+                          </div>
+                        ));
+                      })
+                    : null}
+                  {alertFilter === "all"
+                    ? allPreviewRows
+                        .filter((r) => rowStatus(r) === "ERROR")
+                        .flatMap((r) =>
+                          (r.fieldIssues?.length ? r.fieldIssues.map((fi) => fi.message) : r.errors).map((x, i) => (
+                            <div
+                              key={`err-${r.entityType}-${r.tallyName}-${i}`}
+                              className="rounded border border-red-200 bg-red-50 px-2 py-1 text-red-900"
+                            >
+                              {x}
+                            </div>
+                          )),
+                        )
+                    : null}
+                </div>
               </div>
             ) : tab === "items" ? (
               <ItemsPreviewTable
@@ -639,10 +771,30 @@ export function TallyMasterImportPage() {
             ) : (
               <PartyPreviewTable rows={activeRows} />
             )}
-            <div className="flex flex-wrap gap-2 pt-2">
-              <Button type="button" onClick={() => void runApply()} disabled={applying || !previewToken} className="bg-emerald-700 hover:bg-emerald-800">
+            <div className="flex flex-wrap items-center gap-2 pt-2">
+              <Button
+                type="button"
+                onClick={() => void runApply()}
+                disabled={confirmDisabled}
+                className="bg-emerald-700 hover:bg-emerald-800"
+                data-testid="tally-import-confirm-btn"
+              >
                 {applying ? "Importing…" : "Confirm import"}
               </Button>
+              {blockingErrors.length > 0 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  data-testid="tally-import-view-blocking-btn"
+                  onClick={() => {
+                    setTab("alerts");
+                    setAlertFilter("blocking");
+                  }}
+                >
+                  View blocking error{blockingErrors.length === 1 ? "" : "s"} ({blockingErrors.length})
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 variant="outline"
@@ -652,6 +804,19 @@ export function TallyMasterImportPage() {
               >
                 Tab CSV
               </Button>
+              {hasSchemaBlockingError ? (
+                <p className="w-full text-xs text-red-800">
+                  Confirm is disabled until Tally identity columns are available (apply migration + prisma generate).
+                </p>
+              ) : blockingErrors.length > 0 ? (
+                <p className="w-full text-xs text-amber-900">
+                  {blockingErrors.length} blocking row(s) will be left unresolved. SKIP_DUPLICATE rows are warnings and still receive
+                  identity backfill. Confirm imports all valid rows.
+                </p>
+              ) : null}
+              {lastCorrelationId ? (
+                <p className="w-full font-mono text-[10px] text-slate-500">Last correlation ID: {lastCorrelationId}</p>
+              ) : null}
             </div>
           </CardContent>
         </Card>

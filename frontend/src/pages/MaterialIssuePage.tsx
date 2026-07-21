@@ -26,7 +26,9 @@ import {
 import { buildRmControlCenterHref } from "../lib/woProcurementContinuity";
 import { buildMaterialIssuePostActionSearchParams } from "../lib/manufacturingNavigationContinuity";
 import { MaterialIssuePmrQueuePanel } from "../components/erp/MaterialIssuePmrQueuePanel";
-import { MaterialIssueAllowanceRow } from "../components/erp/MaterialIssueAllowanceRow";
+import { MaterialIssueRmTable } from "../components/erp/MaterialIssueRmTable";
+import { buildMaterialIssueActionSummary } from "../lib/materialIssueRmTableUx";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import {
   buildActionableWorkOrderDropdownOptions,
   mapIssuedWaitingForProductionPanelRows,
@@ -34,7 +36,6 @@ import {
   filterPmrsWithPendingIssue,
   pickActionablePmrForWorkOrder,
   resolveDefaultMaterialIssueToLocationId,
-  resolveMaterialIssueLineStatus,
   shouldShowNoRmAvailableWarning,
 } from "../lib/materialIssueWorkspace";
 import {
@@ -68,15 +69,10 @@ import {
 } from "../lib/docNoDisplay";
 import {
   calculatePlannedAllowance,
+  deriveAllowanceFromIssueNow,
   formatAllowanceInput,
   type PlannedAllowanceInputSource,
 } from "../lib/plannedProcessAllowance";
-import {
-  blockDecimalSpinnerKeys,
-  blockDecimalWheel,
-  normalizeDecimalOnBlur,
-  sanitizeDecimalInput,
-} from "../lib/keyboardDecimalInput";
 import {
   hydrateIssueLinesWithAllowanceApprovals,
   mergeAllowanceQueueInfoIntoPmrs,
@@ -450,13 +446,36 @@ export function MaterialIssuePage() {
         nextLine.plannedAllowancePct = calc.valid
           ? formatAllowanceInput(calc.calculatedPct, 4)
           : line.plannedAllowancePct ?? "0";
-        // Auto-update Issue Now unless the operator has overridden for partial issue.
-        if (!line.issueQtyTouched) {
-          nextLine.issueQty = defaultIssueQtyForLine(nextLine, line.available);
-        }
+        if (calc.valid) nextLine.issueQty = formatAllowanceInput(calc.defaultIssueNowQty);
+        nextLine.issueQtyTouched = false;
         return nextLine;
       }),
     );
+  }
+  function updateIssueNowQty(lineKey: string, rawValue: string) {
+    setLines((prev) => prev.map((line) => {
+      if (line.key !== lineKey) return line;
+      const derived = deriveAllowanceFromIssueNow({
+        issueQtyRaw: rawValue,
+        theoreticalQty: Number(line.fullWoRmNeed ?? line.originalRequestQty ?? 0),
+        alreadyIssuedQty: Number(line.alreadyIssuedQty ?? 0),
+      });
+      if (!derived.valid) return { ...line, issueQty: rawValue, issueQtyTouched: true };
+      const nextLine: IssueLineDraft = {
+        ...line,
+        issueQty: rawValue,
+        issueQtyTouched: true,
+        allowanceInputSource: "QUANTITY",
+        plannedAllowanceQty: formatAllowanceInput(derived.allowanceQty),
+        allowanceApprovalStatus: line.allowanceApprovalStatus === "APPROVED" ? "NONE" : line.allowanceApprovalStatus,
+        allowanceApprovalId: line.allowanceApprovalStatus === "APPROVED" ? null : line.allowanceApprovalId,
+      };
+      const calc = allowanceForLine(nextLine);
+      nextLine.plannedAllowancePct = calc.valid
+        ? formatAllowanceInput(calc.calculatedPct, 4)
+        : line.plannedAllowancePct ?? "0";
+      return nextLine;
+    }));
   }
   useUnsavedChangesGuard({
     isDirty:
@@ -771,6 +790,7 @@ export function MaterialIssuePage() {
       workOrderId: urlWorkOrderId || null,
       pmrId: urlPmrId || null,
       pmrs: scopedPendingPmrs,
+      fromAllowanceAction: deepLink.fromPendingActions,
     });
 
     if (resolved.ok) {
@@ -796,12 +816,23 @@ export function MaterialIssuePage() {
     }
 
     showError(resolved.message);
-    // Stay on requested bucket with empty form — never load an unrelated WO.
+    // Stale allowance / missing PMR — clear pinned WO/PMR and leave list-only on a usable bucket.
     setActivePmrId(null);
     setActivePmr(null);
     setIssueDecision(null);
     setLines([]);
     setWorkOrderId("");
+    if (resolved.reason === "STALE_ALLOWANCE" || resolved.reason === "NOT_FOUND") {
+      const next = new URLSearchParams(searchParams);
+      next.delete("pmrId");
+      next.delete("workOrderId");
+      next.delete("allowanceApprovalId");
+      next.set("bucket", "readyToIssue");
+      next.delete("queue");
+      if (returnTo) next.set("returnTo", returnTo);
+      if (deepLink.fromPendingActions) next.set("from", "pending-actions");
+      setSearchParams(next, { replace: true });
+    }
   }, [
     activePmrId,
     allowanceApprovals.length,
@@ -1283,8 +1314,6 @@ export function MaterialIssuePage() {
     }
   }
 
-  const fromLoc = ctx?.fromLocations.find((l) => l.id === fromLocationId);
-  const toLoc = ctx?.toLocations.find((l) => l.id === toLocationId);
   const woPmrMode = issueMode === "wo-pmr";
   const executionReady = woPmrMode && Boolean(activePmr && activePmrId);
   const pmrContextReady = Boolean(activePmr && lines.some((ln) => ln.pmrLineId));
@@ -1430,6 +1459,64 @@ export function MaterialIssuePage() {
     });
   }, [sessionComplete, executionReady, activePmr, activePmrId, lines]);
 
+  const materialIssueActionSummary = React.useMemo(() => {
+    if (!woPmrMode || !executionReady || lines.length === 0) return null;
+    return buildMaterialIssueActionSummary(
+      lines
+        .filter((ln) => ln.pmrLineId)
+        .map((ln) => ({
+          pmrLineId: ln.pmrLineId,
+          unit: ln.unit,
+          issueQty: ln.issueQty,
+          theoreticalQty: Number(ln.fullWoRmNeed ?? ln.originalRequestQty ?? 0),
+          issuedQty: Number(ln.alreadyIssuedQty ?? 0),
+          pendingQty: Number(ln.pmrPendingQty ?? ln.pendingQty ?? 0),
+          stillRequiredQty: ln.stillRequiredQty,
+          issueCapQty: ln.issueCapQty,
+          maxAllowedIssueQty: ln.maxAllowedIssueQty,
+          plannedAllowanceQty: ln.plannedAllowanceQty,
+          allowanceReason: ln.allowanceReason,
+          availableQty: ln.available ?? ln.freeStoreStock ?? ln.issueAvailableStoreQty ?? null,
+          approvalStatus: ln.allowanceApprovalStatus,
+          approvalRejectionReason: ln.allowanceApprovalRejectionReason,
+        })),
+      user?.role,
+    );
+  }, [woPmrMode, executionReady, lines, user?.role]);
+
+  const rmTableRows = React.useMemo(() => {
+    return lines.map((ln) => {
+      const item = ctx?.rmItems.find((i) => i.id === ln.itemId);
+      const unit = ln.unit ?? item?.unit;
+      const required = ln.originalRequestQty ?? ln.effectiveRequiredQty ?? 0;
+      const theoretical = Number(ln.fullWoRmNeed ?? required);
+      const issued = Number(ln.alreadyIssuedQty ?? 0);
+      const shortIssue = Number(ln.waivedQty ?? ln.shortIssueQty ?? 0);
+      const pending = Number(ln.pmrPendingQty ?? ln.pendingQty ?? 0);
+      const avail = ln.available ?? ln.freeStoreStock ?? ln.issueAvailableStoreQty ?? null;
+      const noIssue = isMaterialIssueLineStockBlocked(pending, avail);
+      return {
+        key: ln.key,
+        itemName: ln.itemName ?? item?.itemName ?? "RM item",
+        unit,
+        theoreticalQty: theoretical,
+        issuedQty: issued,
+        trueShortIssueQty: shortIssue,
+        pendingQty: pending,
+        stillRequiredQty: ln.stillRequiredQty,
+        issueCapQty: ln.issueCapQty,
+        maxAllowedIssueQty: ln.maxAllowedIssueQty,
+        availableQty: ln.loadingAvailable ? null : avail,
+        allowanceQty: ln.plannedAllowanceQty ?? "0",
+        allowanceReason: ln.allowanceReason ?? "",
+        issueQty: ln.issueQty,
+        disabled: noIssue || pmrLoading || primaryAction.readOnly,
+        approvalStatus: ln.allowanceApprovalStatus ?? "NONE",
+        approvalRejectionReason: ln.allowanceApprovalRejectionReason,
+      };
+    });
+  }, [ctx?.rmItems, lines, pmrLoading, primaryAction.readOnly]);
+
   const hideWorkflowTrail =
     returnTo === "pending-actions" || materialIssueNavContext.origin === "pending-actions";
 
@@ -1444,7 +1531,7 @@ export function MaterialIssuePage() {
   }, [sessionComplete]);
 
   return (
-    <PageContainer className="erp-txn-workspace erp-mat-plan-workspace space-y-2">
+    <PageContainer className="erp-txn-workspace erp-mat-plan-workspace space-y-1">
       <StickyWorkspaceHead
         lead={
           hideWorkflowTrail ? (
@@ -1454,7 +1541,17 @@ export function MaterialIssuePage() {
           )
         }
       >
-        <h1 className="text-[13px] font-semibold leading-tight text-slate-900">Material Issue</h1>
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <h1 className="text-sm font-semibold leading-tight text-slate-900">Material Issue</h1>
+          {materialIssuePrimaryStrip ? (
+            <span
+              className="inline-flex max-w-full items-center rounded-full border border-amber-300/80 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-950"
+              data-testid="material-issue-inline-status"
+            >
+              {materialIssuePrimaryStrip}
+            </span>
+          ) : null}
+        </div>
       </StickyWorkspaceHead>
 
       {sessionBanner && !sessionComplete ? (
@@ -1503,468 +1600,380 @@ export function MaterialIssuePage() {
         <ErpPageLoader variant="workspace" hint="Loading material issue workspace…" />
       ) : (
         <>
-      <div className={cn("grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(240px,300px)]")}>
-        <div id="material-issue-execution" className="rounded-md border border-slate-200 bg-white p-2 shadow-sm">
-          <div className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-600">
-            <span>
-              <span className="font-semibold text-slate-700">From:</span> {fromLoc?.locationName ?? "—"}
-            </span>
-            <span aria-hidden>·</span>
-            <span>
-              <span className="font-semibold text-slate-700">To:</span> {toLoc?.locationName ?? "—"}
-            </span>
-            <span aria-hidden>·</span>
-            <span>
-              <span className="font-semibold text-slate-700">Pending PMRs:</span>{" "}
-              {sessionScope.requirementSheetId || sessionScope.salesOrderId
-                ? `${scopedPendingPmrs.length}${scopedPendingPmrs.length !== pendingPmrs.length ? ` / ${pendingPmrs.length}` : ""}`
-                : pendingPmrs.length}
-            </span>
-            <span aria-hidden>·</span>
-            <span>
-              <span className="font-semibold text-slate-700">Recent:</span> {recent.length}
-            </span>
-          </div>
-
-          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              {materialIssuePrimaryStrip ? (
-                <span
-                  className="inline-flex max-w-full items-center rounded-full border border-amber-300/80 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-950"
-                  data-testid="material-issue-inline-status"
-                >
-                  {materialIssuePrimaryStrip}
-                </span>
-              ) : (
-                <span className="text-[11px] font-semibold text-slate-800">Issue material to production</span>
-              )}
-            </div>
-            <div className="flex shrink-0 rounded border border-slate-200 p-0.5 text-[10px]">
-              <button
-                type="button"
-                className={cn(
-                  "rounded px-2 py-0.5 font-bold",
-                  woPmrMode ? "bg-slate-900 text-white" : "text-slate-600",
-                )}
-                onClick={() => {
-                  setIssueMode("wo-pmr");
-                  if (!activePmrId) setLines([]);
-                }}
-              >
-                WO / PMR
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  "rounded px-2 py-0.5 font-bold",
-                  !woPmrMode ? "bg-slate-900 text-white" : "text-slate-600",
-                )}
-                onClick={() => {
-                  setIssueMode("manual");
-                  clearExecution();
-                  setLines([emptyLine()]);
-                }}
-              >
-                Manual
-              </button>
-            </div>
-          </div>
-
-          {woPmrMode && activePmr && executionReady && !canIssueAnyLine && resolvedWorkOrderIdForHint ? (
-            <Link
-              to={buildRmControlCenterHref({ workOrderId: resolvedWorkOrderIdForHint })}
-              className="mb-1.5 inline-block text-[10px] font-semibold text-violet-900 underline"
-            >
-              View allocation in RM Control Center
-            </Link>
-          ) : null}
-
-          {pmrLoading ? (
-            <p className="mb-1 text-[11px] text-slate-600">Loading material request lines…</p>
-          ) : pmrLoadError ? (
-            <p className="mb-1 rounded border border-red-200 bg-red-50 px-2 py-1 text-[11px] text-red-800">{pmrLoadError}</p>
-          ) : null}
-
-          {woPmrMode && executionReady && primaryAction.key === "AWAITING_APPROVAL" ? (
-            <div
-              className="mb-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-950"
-              data-testid="material-issue-awaiting-approval-banner"
-            >
-              <p className="font-bold">Awaiting Admin Approval</p>
-              <p className="mt-0.5">
-                This RM allowance request has been sent to Admin for review. This form is read-only until it is
-                decided — pick another work order from the queue while you wait.
-              </p>
-              <Button type="button" size="sm" variant="outline" className="mt-1.5 h-7 text-[11px]" onClick={clearExecution}>
-                Back · Select another work order
-              </Button>
-            </div>
-          ) : null}
-
-          {woPmrMode && executionReady && primaryAction.key === "REVISE_RESUBMIT" ? (
-            <div
-              className="mb-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-950"
-              data-testid="material-issue-rejected-banner"
-            >
-              <p className="font-bold">Rejected by Admin</p>
-              <p className="mt-0.5">
-                {rejectionReasons.length
-                  ? rejectionReasons.join(" · ")
-                  : "Revise the Add Qty or reason below, then resubmit for approval."}
-              </p>
-            </div>
-          ) : null}
-
-          <div className="grid gap-1.5 sm:grid-cols-2">
-            <label className="erp-form-field block">
-              <span className="text-xs font-medium text-slate-600">From location (store)</span>
-              <select
-                className="erp-select mt-1 w-full"
-                value={fromLocationId === "" ? "" : String(fromLocationId)}
-                onChange={(e) => setFromLocationId(e.target.value ? Number(e.target.value) : "")}
-                disabled={loading || primaryAction.readOnly}
-              >
-                <option value="">Select store…</option>
-                {ctx?.fromLocations.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.locationName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="erp-form-field block">
-              <span className="text-xs font-medium text-slate-600">To location (production)</span>
-              <select
-                className="erp-select mt-1 w-full"
-                value={toLocationId === "" ? "" : String(toLocationId)}
-                onChange={(e) => setToLocationId(e.target.value ? Number(e.target.value) : "")}
-                disabled={loading || primaryAction.readOnly}
-              >
-                <option value="">Select production area…</option>
-                {ctx?.toLocations.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.locationName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {woPmrMode ? (
-              <label className="erp-form-field block sm:col-span-2">
-                <span className="text-xs font-medium text-slate-600">Work order</span>
-                <select
-                  className="erp-select mt-1 w-full"
-                  value={workOrderId === "" ? "" : String(workOrderId)}
-                  onChange={(e) => onWorkOrderSelect(e.target.value ? Number(e.target.value) : "")}
-                  disabled={loading || pmrLoading || primaryAction.readOnly}
-                >
-                  <option value="">Select work order…</option>
-                  {actionableWorkOrderOptions.map((wo) => (
-                    <option key={wo.id} value={wo.id}>
-                      {wo.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : (
-              <label className="erp-form-field block sm:col-span-2">
-                <span className="text-xs font-medium text-slate-600">Work order (manual)</span>
-                <select
-                  className="erp-select mt-1 w-full"
-                  value={workOrderId === "" ? "" : String(workOrderId)}
-                  onChange={(e) => onWorkOrderSelect(e.target.value ? Number(e.target.value) : "")}
-                  disabled={loading}
-                >
-                  <option value="">Optional</option>
-                  {ctx?.workOrders.map((wo) => (
-                    <option key={wo.id} value={wo.id}>
-                      {wo.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <label className="erp-form-field block sm:col-span-2">
-              <span className="text-xs font-medium text-slate-600">Remarks</span>
-              <Input
-                className="mt-1"
-                value={remarks}
-                onChange={(e) => setRemarks(e.target.value)}
-                placeholder="Optional note for store records"
-              />
-            </label>
-          </div>
-
-          {selectedPmrFullyIssued ? (
-            <div
-              className="mt-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-4 text-center"
-              data-testid="material-issue-fully-issued-message"
-            >
-              <p className="text-[12px] font-semibold text-emerald-950">
-                Material already fully issued for this work order.
-              </p>
-            </div>
-          ) : woPmrMode && !executionReady && !pmrLoading ? (
-            <div className="mt-2 rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center">
-              <p className="text-[12px] font-semibold text-slate-800">
-                {actionablePendingPmrs.length === 0
-                  ? "No pending material requests."
-                  : "Select a work order from the queue to load RM lines."}
-              </p>
-            </div>
-          ) : woPmrMode ? (
-            <div className="mt-2 min-w-0 space-y-2" data-testid="material-issue-compact-grid">
-              {lines.map((ln) => {
-                const item = ctx?.rmItems.find((i) => i.id === ln.itemId);
-                const unit = ln.unit ?? item?.unit;
-                const required = ln.originalRequestQty ?? ln.effectiveRequiredQty ?? 0;
-                const theoretical = Number(ln.fullWoRmNeed ?? required);
-                const issued = Number(ln.alreadyIssuedQty ?? 0);
-                const shortIssue = Number(ln.waivedQty ?? ln.shortIssueQty ?? 0);
-                const pending = Number(ln.pmrPendingQty ?? ln.pendingQty ?? 0);
-                const avail = ln.available ?? ln.freeStoreStock ?? ln.issueAvailableStoreQty ?? null;
-                const noIssue = isMaterialIssueLineStockBlocked(pending, avail);
-                const lineStatus = resolveMaterialIssueLineStatus({
-                  pendingQty: pending,
-                  available: avail,
-                  physicalStock: ln.totalStoreStock ?? null,
-                  issueQty: ln.issueQty,
-                  woWaitingProcurement: waitingProcurement,
-                  lineReadinessKey: ln.lineReadinessKey,
-                  lineReadinessLabel: ln.lineReadinessLabel,
-                  lineReadinessExplanation: ln.lineReadinessExplanation,
-                });
-                return (
-                  <MaterialIssueAllowanceRow
-                    key={ln.key}
-                    row={{
-                      key: ln.key,
-                      itemName: ln.itemName ?? item?.itemName ?? "RM item",
-                      unit,
-                      theoreticalQty: theoretical,
-                      issuedQty: issued,
-                      trueShortIssueQty: shortIssue,
-                      pendingQty: pending,
-                      availableQty: ln.loadingAvailable ? null : avail,
-                      allowanceQty: ln.plannedAllowanceQty ?? "0",
-                      allowanceReason: ln.allowanceReason ?? "",
-                      issueQty: ln.issueQty,
-                      disabled: noIssue || pmrLoading,
-                      backendStatusLabel: lineStatus.label,
-                      backendStatusExplanation: lineStatus.explanation,
-                      approvalStatus: ln.allowanceApprovalStatus ?? "NONE",
-                      approvalRejectionReason: ln.allowanceApprovalRejectionReason,
-                    }}
-                    actorRole={user?.role}
-                    onExtraQtyChange={(value) => updateExtraAllowanceQty(ln.key, value)}
-                    onIssueQtyChange={(value) =>
-                      setLines((prev) =>
-                        prev.map((row) =>
-                          row.key === ln.key
-                            ? { ...row, issueQty: value, issueQtyTouched: true }
-                            : row,
-                        ),
-                      )
-                    }
-                    onReasonChange={(value) =>
-                      setLines((prev) =>
-                        prev.map((row) =>
-                          row.key === ln.key ? { ...row, allowanceReason: value } : row,
-                        ),
-                      )
-                    }
-                  />
-                );
-              })}
-            </div>
-          ) : (
-            <div className="mt-2 grid min-w-0 gap-2 rounded border border-slate-200 p-2">
-              {lines.map((ln) => {
-                const item = ctx?.rmItems.find((i) => i.id === ln.itemId);
-                const unit = ln.unit ?? item?.unit;
-                const avail = ln.available ?? null;
-                const noIssue = isMaterialIssueLineStockBlocked(1, avail);
-                return (
-                  <div key={ln.key} className="grid min-w-0 gap-2 sm:grid-cols-[minmax(10rem,1fr)_minmax(6rem,.5fr)_minmax(8rem,.6fr)_auto] sm:items-end">
-                    <label className="min-w-0 text-xs font-medium text-slate-600">
-                      RM Item
-                      <select
-                        className="erp-select mt-1 w-full min-w-0"
-                        value={ln.itemId === "" ? "" : String(ln.itemId)}
-                        onChange={(event) => onLineItemChange(ln.key, event.target.value ? Number(event.target.value) : "")}
-                        disabled={!fromLocationId || loading}
-                      >
-                        <option value="">Select RM…</option>
-                        {ctx?.rmItems.map((rm) => <option key={rm.id} value={rm.id}>{rm.itemName}</option>)}
-                      </select>
-                    </label>
-                    <div className="text-right text-sm tabular-nums">
-                      <span className="block text-xs font-medium text-slate-600">Available</span>
-                      {ln.loadingAvailable ? "…" : avail != null ? fmtQty(avail, unit) : "—"}
-                    </div>
-                    <label className="min-w-0 text-xs font-medium text-slate-600">
-                      Issue Now
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        pattern="[0-9]*[.]?[0-9]*"
-                        autoComplete="off"
-                        className="mt-1 h-9 min-w-0 text-right tabular-nums"
-                        value={ln.issueQty}
-                        onChange={(event) => {
-                          const next = sanitizeDecimalInput(event.target.value);
-                          if (next == null) return;
-                          setLines((prev) =>
-                            prev.map((row) =>
-                              row.key === ln.key
-                                ? { ...row, issueQty: next, issueQtyTouched: true }
-                                : row,
-                            ),
-                          );
-                        }}
-                        onBlur={() =>
-                          setLines((prev) =>
-                            prev.map((row) =>
-                              row.key === ln.key
-                                ? { ...row, issueQty: normalizeDecimalOnBlur(row.issueQty) }
-                                : row,
-                            ),
-                          )
-                        }
-                        onKeyDown={blockDecimalSpinnerKeys}
-                        onWheel={(event) => {
-                          blockDecimalWheel(event);
-                          (event.currentTarget as HTMLInputElement).blur();
-                        }}
-                        disabled={!ln.itemId || noIssue}
-                        aria-label={`Issue Now for ${item?.itemName ?? "RM item"}`}
-                      />
-                    </label>
-                    <Button type="button" variant="ghost" size="icon" className="h-9 w-9" onClick={() => removeLine(ln.key)} disabled={lines.length <= 1}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {showPartialAutofillHint && woPmrMode ? (
-            <p className="mt-2 text-[11px] text-slate-600">
-              Issue now is pre-filled as the minimum of pending and available stock. Adjust before submitting.
-            </p>
-          ) : null}
-
-          {showNoRmAvailableWarning ? (
-            <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-              <p className="font-bold">No RM available for issue</p>
-              <p className="mt-0.5 text-xs leading-relaxed text-amber-900">
-                {issueDecision?.blockerReason ??
-                  (waitingProcurement
-                    ? "Waiting for Store / Purchase stock. RM requirement is raised — issue can start once stock is received (GRN)."
-                    : "Stock is not free for this work order (committed elsewhere or not yet received). Raise or track the RM requirement in RM Control Center.")}
-              </p>
-              {resolvedWorkOrderIdForHint ? (
-                <Link
-                  to={buildRmControlCenterHref({ workOrderId: resolvedWorkOrderIdForHint, returnTo: "material-issue" })}
-                  className="mt-1 inline-block text-[11px] font-bold text-violet-900 underline"
-                >
-                  Open RM Control Center
-                </Link>
-              ) : null}
-            </div>
-          ) : null}
-
-          {woPmrMode &&
-          issueDecision &&
-          (issueDecision.totalIssued > 0 ||
-            issueDecision.showPartialDecisionPanel ||
-            (issueDecision.totalShortIssueQty ?? issueDecision.totalWaived) > 1e-6) ? (
-            <section
-              className="mt-2 rounded border border-violet-200 bg-violet-50/80 px-3 py-2.5"
-              data-testid="material-issue-decision-panel"
-            >
-              <h3 className="text-[12px] font-bold text-violet-950">Material issue status</h3>
-              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] tabular-nums text-violet-950">
+      <div className="grid min-h-0 gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(240px,300px)] lg:items-start">
+        <div
+          id="material-issue-execution"
+          className="flex max-h-[calc(100dvh-5rem)] min-h-[24rem] min-w-0 flex-col rounded-md border border-slate-200 bg-white shadow-sm"
+        >
+          <div className="shrink-0 space-y-1 border-b border-slate-100 px-2 py-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-slate-600">
                 <span>
-                  <span className="font-semibold">Required:</span>{" "}
-                  {fmtQty(issueDecision.totalOriginalRequired ?? issueDecision.totalRequired)}
+                  <span className="font-semibold text-slate-700">Pending PMRs:</span>{" "}
+                  {sessionScope.requirementSheetId || sessionScope.salesOrderId
+                    ? `${scopedPendingPmrs.length}${scopedPendingPmrs.length !== pendingPmrs.length ? ` / ${pendingPmrs.length}` : ""}`
+                    : pendingPmrs.length}
                 </span>
+                <span aria-hidden>·</span>
                 <span>
-                  <span className="font-semibold">Issued:</span> {fmtQty(issueDecision.totalIssued)}
-                </span>
-                {issueDecision.totalExcessIssue > 1e-6 ? (
-                  <span>
-                    <span className="font-semibold">Excess:</span> {fmtQty(issueDecision.totalExcessIssue)}
-                  </span>
-                ) : null}
-                {(issueDecision.totalShortIssueQty ?? issueDecision.totalWaived) > 1e-6 ? (
-                  <span data-testid="material-issue-short-issue-qty">
-                    <span className="font-semibold">Short Issue:</span>{" "}
-                    {fmtQty(issueDecision.totalShortIssueQty ?? issueDecision.totalWaived)}
-                  </span>
-                ) : (
-                  <span>
-                    <span className="font-semibold">Remaining:</span> {fmtQty(issueDecision.totalRemaining)}
-                  </span>
-                )}
-                <span>
-                  <span className="font-semibold">Status:</span>{" "}
-                  {issueDecision.pmrStatusLabel ??
-                    (issueDecision.pmrStatus === "SHORT_ISSUE_ACCEPTED"
-                      ? "Closed – Short Issue Accepted"
-                      : issueDecision.pmrStatus ?? "—")}
+                  <span className="font-semibold text-slate-700">Recent:</span> {recent.length}
                 </span>
               </div>
-              {(issueDecision.totalShortIssueQty ?? issueDecision.totalWaived) > 1e-6 ? (
-                <p className="mt-1 text-[11px] text-violet-900" data-testid="material-issue-short-issue-note">
-                  Short Issue is audit-only — that quantity was not issued and remains in RM Store (no stock
-                  movement). Production uses Issued qty only.
-                </p>
-              ) : null}
-              {issueDecision.materialReleasedToProductionAt ? (
-                <p className="mt-1 text-[11px] font-medium text-emerald-900">Released to production.</p>
-              ) : null}
-              {issueDecision.releaseBlockedByUnissuedBom ? (
-                <div
-                  className="mt-2 rounded border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] text-red-950"
-                  data-testid="material-issue-release-blocked-warning"
+              <div className="flex shrink-0 rounded border border-slate-200 p-0.5 text-[11px]">
+                <button
+                  type="button"
+                  className={cn(
+                    "rounded px-2.5 py-0.5 font-semibold",
+                    woPmrMode ? "bg-slate-900 text-white" : "text-slate-600",
+                  )}
+                  onClick={() => {
+                    setIssueMode("wo-pmr");
+                    if (!activePmrId) setLines([]);
+                  }}
                 >
-                  <p className="font-bold">Production cannot be released.</p>
-                  <p className="mt-0.5">Some required BOM materials have not been issued yet.</p>
-                  {issueDecision.unissuedRequiredLines?.length ? (
-                    <ul className="mt-1 list-disc space-y-0.5 pl-4">
-                      {issueDecision.unissuedRequiredLines.map((ln) => (
-                        <li key={`${ln.itemId}-${ln.pmrLineId ?? 0}`}>
-                          {ln.itemName} ({fmtQty(ln.issuedQty, ln.unit)} / {fmtQty(ln.requiredQty, ln.unit)})
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
+                  Issue RM
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "rounded px-2.5 py-0.5 font-semibold",
+                    !woPmrMode ? "bg-slate-900 text-white" : "text-slate-600",
+                  )}
+                  onClick={() => {
+                    setIssueMode("manual");
+                    clearExecution();
+                    setLines([emptyLine()]);
+                  }}
+                >
+                  Manual
+                </button>
+              </div>
+            </div>
+
+            {woPmrMode && activePmr && executionReady && !canIssueAnyLine && resolvedWorkOrderIdForHint ? (
+              <Link
+                to={buildRmControlCenterHref({ workOrderId: resolvedWorkOrderIdForHint })}
+                className="inline-block text-[10px] font-semibold text-violet-900 underline"
+              >
+                View allocation in RM Control Center
+              </Link>
+            ) : null}
+
+            {pmrLoading ? (
+              <p className="text-[11px] text-slate-600">Loading material request lines…</p>
+            ) : pmrLoadError ? (
+              <p className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[11px] text-red-800">{pmrLoadError}</p>
+            ) : null}
+
+            {woPmrMode && executionReady && primaryAction.key === "AWAITING_APPROVAL" ? (
+              <div
+                className="rounded border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-950"
+                data-testid="material-issue-awaiting-approval-banner"
+              >
+                <p className="font-bold">Awaiting Admin Approval</p>
+                <p className="mt-0.5 leading-snug">
+                  Pick another work order from the queue while this allowance is reviewed.
+                </p>
+                <Button type="button" size="sm" variant="outline" className="mt-1 h-7 text-[11px]" onClick={clearExecution}>
+                  Select another work order
+                </Button>
+              </div>
+            ) : null}
+
+            {woPmrMode && executionReady && primaryAction.key === "REVISE_RESUBMIT" ? (
+              <div
+                className="rounded border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] text-red-950"
+                data-testid="material-issue-rejected-banner"
+              >
+                <p className="font-bold">Rejected by Admin</p>
+                <p className="mt-0.5 leading-snug">
+                  {rejectionReasons.length
+                    ? rejectionReasons.join(" · ")
+                    : "Revise Add Qty or reason below, then resubmit."}
+                </p>
+              </div>
+            ) : null}
+
+            <div className="grid gap-1 sm:grid-cols-2">
+              <label className="erp-form-field block">
+                <span className="text-xs font-medium text-slate-600">From location (store)</span>
+                <select
+                  className="erp-select mt-0.5 w-full"
+                  value={fromLocationId === "" ? "" : String(fromLocationId)}
+                  onChange={(e) => setFromLocationId(e.target.value ? Number(e.target.value) : "")}
+                  disabled={loading || primaryAction.readOnly}
+                >
+                  <option value="">Select store…</option>
+                  {ctx?.fromLocations.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.locationName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="erp-form-field block">
+                <span className="text-xs font-medium text-slate-600">To location (production)</span>
+                <select
+                  className="erp-select mt-0.5 w-full"
+                  value={toLocationId === "" ? "" : String(toLocationId)}
+                  onChange={(e) => setToLocationId(e.target.value ? Number(e.target.value) : "")}
+                  disabled={loading || primaryAction.readOnly}
+                >
+                  <option value="">Select production area…</option>
+                  {ctx?.toLocations.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.locationName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {woPmrMode ? (
+                <label className="erp-form-field block sm:col-span-1">
+                  <span className="text-xs font-medium text-slate-600">Work order</span>
+                  <select
+                    className="erp-select mt-0.5 w-full"
+                    value={workOrderId === "" ? "" : String(workOrderId)}
+                    onChange={(e) => onWorkOrderSelect(e.target.value ? Number(e.target.value) : "")}
+                    disabled={loading || pmrLoading || primaryAction.readOnly}
+                  >
+                    <option value="">Select work order…</option>
+                    {actionableWorkOrderOptions.map((wo) => (
+                      <option key={wo.id} value={wo.id}>
+                        {wo.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <label className="erp-form-field block sm:col-span-1">
+                  <span className="text-xs font-medium text-slate-600">Work order (manual)</span>
+                  <select
+                    className="erp-select mt-0.5 w-full"
+                    value={workOrderId === "" ? "" : String(workOrderId)}
+                    onChange={(e) => onWorkOrderSelect(e.target.value ? Number(e.target.value) : "")}
+                    disabled={loading}
+                  >
+                    <option value="">Optional</option>
+                    {ctx?.workOrders.map((wo) => (
+                      <option key={wo.id} value={wo.id}>
+                        {wo.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <label className="erp-form-field block sm:col-span-1">
+                <span className="text-xs font-medium text-slate-600">Remarks</span>
+                <Input
+                  className="mt-0.5 h-9"
+                  value={remarks}
+                  onChange={(e) => setRemarks(e.target.value)}
+                  placeholder="Optional note"
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-2 py-1.5">
+            {selectedPmrFullyIssued ? (
+              <div
+                className="rounded border border-emerald-200 bg-emerald-50 px-3 py-3 text-center"
+                data-testid="material-issue-fully-issued-message"
+              >
+                <p className="text-sm font-semibold text-emerald-950">
+                  Material already fully issued for this work order.
+                </p>
+              </div>
+            ) : woPmrMode && !executionReady && !pmrLoading ? (
+              <div className="rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-3 text-center">
+                <p className="text-sm font-semibold text-slate-800">
+                  {actionablePendingPmrs.length === 0
+                    ? "No pending material requests."
+                    : "Select a work order from the queue to load RM lines."}
+                </p>
+              </div>
+            ) : woPmrMode ? (
+              <MaterialIssueRmTable
+                className="min-h-0 flex-1"
+                rows={rmTableRows}
+                actorRole={user?.role}
+                onExtraQtyChange={(lineKey, value) => updateExtraAllowanceQty(lineKey, value)}
+                onIssueQtyChange={(lineKey, value) => updateIssueNowQty(lineKey, value)}
+                onReasonChange={(lineKey, value) =>
+                  setLines((prev) =>
+                    prev.map((row) => (row.key === lineKey ? { ...row, allowanceReason: value } : row)),
+                  )
+                }
+              />
+            ) : (
+              <div className="grid min-w-0 gap-2 rounded border border-slate-200 p-2">
+                {lines.map((ln) => {
+                  const item = ctx?.rmItems.find((i) => i.id === ln.itemId);
+                  const unit = ln.unit ?? item?.unit;
+                  const avail = ln.available ?? null;
+                  const noIssue = isMaterialIssueLineStockBlocked(1, avail);
+                  return (
+                    <div
+                      key={ln.key}
+                      className="grid min-w-0 gap-2 sm:grid-cols-[minmax(10rem,1fr)_minmax(6rem,.5fr)_minmax(8rem,.6fr)_auto] sm:items-end"
+                    >
+                      <label className="min-w-0 text-xs font-medium text-slate-600">
+                        RM Item
+                        <select
+                          className="erp-select mt-1 w-full min-w-0"
+                          value={ln.itemId === "" ? "" : String(ln.itemId)}
+                          onChange={(event) =>
+                            onLineItemChange(ln.key, event.target.value ? Number(event.target.value) : "")
+                          }
+                          disabled={!fromLocationId || loading}
+                        >
+                          <option value="">Select RM…</option>
+                          {ctx?.rmItems.map((rm) => (
+                            <option key={rm.id} value={rm.id}>
+                              {rm.itemName}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="text-right text-sm tabular-nums">
+                        <span className="block text-xs font-medium text-slate-600">Available</span>
+                        {ln.loadingAvailable ? "…" : avail != null ? fmtQty(avail, unit) : "—"}
+                      </div>
+                      <label className="min-w-0 text-xs font-medium text-slate-600">
+                        Issue Now
+                        <DecimalInput
+                          className="mt-1 h-9 min-w-0 text-right tabular-nums"
+                          value={ln.issueQty}
+                          unit={unit}
+                          onValueChange={(next) =>
+                            setLines((prev) =>
+                              prev.map((row) =>
+                                row.key === ln.key ? { ...row, issueQty: next, issueQtyTouched: true } : row,
+                              ),
+                            )
+                          }
+                          disabled={!ln.itemId || noIssue}
+                          aria-label={`Issue Now for ${item?.itemName ?? "RM item"}`}
+                        />
+                      </label>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9"
+                        onClick={() => removeLine(ln.key)}
+                        disabled={lines.length <= 1}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {showPartialAutofillHint && woPmrMode ? (
+              <p className="mt-1 shrink-0 text-[11px] text-slate-600">
+                Issue now is pre-filled as the minimum of pending and available stock.
+              </p>
+            ) : null}
+
+            {showNoRmAvailableWarning ? (
+              <div className="mt-1 shrink-0 rounded border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-sm text-amber-950">
+                <p className="font-bold">No RM available for issue</p>
+                <p className="mt-0.5 text-xs leading-relaxed text-amber-900">
+                  {issueDecision?.blockerReason ??
+                    (waitingProcurement
+                      ? "Waiting for stock — issue can start once GRN is received."
+                      : "Stock is committed elsewhere or not yet received.")}
+                </p>
+                {resolvedWorkOrderIdForHint ? (
+                  <Link
+                    to={buildRmControlCenterHref({
+                      workOrderId: resolvedWorkOrderIdForHint,
+                      returnTo: "material-issue",
+                    })}
+                    className="mt-1 inline-block text-[11px] font-bold text-violet-900 underline"
+                  >
+                    Open RM Control Center
+                  </Link>
+                ) : null}
+              </div>
+            ) : null}
+
+            {woPmrMode &&
+            issueDecision &&
+            (issueDecision.totalIssued > 0 ||
+              issueDecision.showPartialDecisionPanel ||
+              (issueDecision.totalShortIssueQty ?? issueDecision.totalWaived) > 1e-6) ? (
+              <section
+                className="mt-1.5 shrink-0 rounded border border-violet-200 bg-violet-50/80 px-2.5 py-2"
+                data-testid="material-issue-decision-panel"
+              >
+                <h3 className="text-[11px] font-bold text-violet-950">Material issue status</h3>
+                <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-violet-950">
+                  <span>
+                    <span className="font-semibold">Required:</span>{" "}
+                    {fmtQty(issueDecision.totalOriginalRequired ?? issueDecision.totalRequired)}
+                  </span>
+                  <span>
+                    <span className="font-semibold">Issued:</span> {fmtQty(issueDecision.totalIssued)}
+                  </span>
+                  {(issueDecision.totalShortIssueQty ?? issueDecision.totalWaived) > 1e-6 ? (
+                    <span data-testid="material-issue-short-issue-qty">
+                      <span className="font-semibold">Short Issue:</span>{" "}
+                      {fmtQty(issueDecision.totalShortIssueQty ?? issueDecision.totalWaived)}
+                    </span>
+                  ) : (
+                    <span>
+                      <span className="font-semibold">Remaining:</span> {fmtQty(issueDecision.totalRemaining)}
+                    </span>
+                  )}
                 </div>
-              ) : null}
-              {issueDecision.showPartialDecisionPanel ? (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-8 text-[11px]"
-                    disabled={submitting}
-                    onClick={() => void handleIssueLater()}
+                {issueDecision.releaseBlockedByUnissuedBom ? (
+                  <div
+                    className="mt-1 rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] text-red-950"
+                    data-testid="material-issue-release-blocked-warning"
                   >
-                    Issue Later
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-8 text-[11px]"
-                    disabled={submitting}
-                    onClick={() => setShowWaiveForm((v) => !v)}
-                  >
-                    Close remaining (Short Issue)
-                  </Button>
-                  {issueDecision.canReleaseToProduction ? (
+                    <p className="font-bold">Production cannot be released — unissued BOM materials remain.</p>
+                  </div>
+                ) : null}
+                {issueDecision.showPartialDecisionPanel ? (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 text-[11px]"
+                      disabled={submitting}
+                      onClick={() => void handleIssueLater()}
+                    >
+                      Issue Later
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 text-[11px]"
+                      disabled={submitting}
+                      onClick={() => setShowWaiveForm((v) => !v)}
+                    >
+                      Close remaining (Short Issue)
+                    </Button>
+                    {issueDecision.canReleaseToProduction ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-8 bg-violet-900 text-[11px] hover:bg-violet-800"
+                        disabled={submitting}
+                        onClick={() => void handleReleaseToProduction()}
+                      >
+                        Release to Production
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : issueDecision.canReleaseToProduction ? (
+                  <div className="mt-1.5">
                     <Button
                       type="button"
                       size="sm"
@@ -1974,86 +1983,91 @@ export function MaterialIssuePage() {
                     >
                       Release to Production
                     </Button>
-                  ) : null}
-                </div>
-              ) : issueDecision.canReleaseToProduction ? (
-                <div className="mt-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="h-8 bg-violet-900 text-[11px] hover:bg-violet-800"
-                    disabled={submitting}
-                    onClick={() => void handleReleaseToProduction()}
-                  >
-                    Release to Production
-                  </Button>
-                </div>
-              ) : null}
-              {showWaiveForm && issueDecision.canWaiveRemaining ? (
-                <div className="mt-2 space-y-1.5 rounded border border-violet-200 bg-white p-2">
-                  <label className="erp-form-field block">
-                    <span className="text-xs font-medium text-slate-600">Short Issue reason</span>
-                    <select
-                      className="erp-select mt-1 w-full"
-                      value={waiveReason}
-                      onChange={(e) => setWaiveReason(e.target.value)}
+                  </div>
+                ) : null}
+                {showWaiveForm && issueDecision.canWaiveRemaining ? (
+                  <div className="mt-1.5 space-y-1.5 rounded border border-violet-200 bg-white p-2">
+                    <label className="erp-form-field block">
+                      <span className="text-xs font-medium text-slate-600">Short Issue reason</span>
+                      <select
+                        className="erp-select mt-1 w-full"
+                        value={waiveReason}
+                        onChange={(e) => setWaiveReason(e.target.value)}
+                      >
+                        <option value="">Select reason…</option>
+                        <option value="SCALE_LIMITATION">Scale limitation</option>
+                        <option value="PACKING_LIMITATION">Packing limitation</option>
+                        <option value="MANAGEMENT_DECISION">Management decision</option>
+                        <option value="OTHER">Other</option>
+                      </select>
+                    </label>
+                    <label className="erp-form-field block">
+                      <span className="text-xs font-medium text-slate-600">Remarks</span>
+                      <Input className="mt-1" value={waiveRemarks} onChange={(e) => setWaiveRemarks(e.target.value)} />
+                    </label>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="destructive"
+                      className="h-8 text-[11px]"
+                      disabled={submitting || !waiveReason}
+                      onClick={() => void handleWaiveRemaining()}
                     >
-                      <option value="">Select reason…</option>
-                      <option value="SCALE_LIMITATION">Scale limitation</option>
-                      <option value="PACKING_LIMITATION">Packing limitation</option>
-                      <option value="MANAGEMENT_DECISION">Management decision</option>
-                      <option value="OTHER">Other</option>
-                    </select>
-                  </label>
-                  <label className="erp-form-field block">
-                    <span className="text-xs font-medium text-slate-600">Remarks</span>
-                    <Input className="mt-1" value={waiveRemarks} onChange={(e) => setWaiveRemarks(e.target.value)} />
-                  </label>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="destructive"
-                    className="h-8 text-[11px]"
-                    disabled={submitting || !waiveReason}
-                    onClick={() => void handleWaiveRemaining()}
-                  >
-                    Confirm Short Issue close
-                  </Button>
-                </div>
-              ) : null}
-            </section>
-          ) : null}
+                      Confirm Short Issue close
+                    </Button>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
+          </div>
 
-          <div className="mt-3 flex flex-wrap gap-2">
-            {!woPmrMode ? (
-              <Button type="button" variant="outline" size="sm" onClick={addLine}>
-                <Plus className="mr-1 h-4 w-4" />
-                Add line
+          <div
+            className="mt-auto shrink-0 border-t border-slate-200 bg-white/95 px-2 py-2 backdrop-blur-sm"
+            data-testid="material-issue-action-bar"
+          >
+            {materialIssueActionSummary ? (
+              <p
+                className="mb-1.5 text-[11px] font-medium tabular-nums text-slate-700"
+                data-testid="material-issue-action-summary"
+              >
+                {materialIssueActionSummary}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              {!woPmrMode ? (
+                <Button type="button" variant="outline" size="sm" onClick={addLine}>
+                  <Plus className="mr-1 h-4 w-4" />
+                  Add line
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                className="h-9 px-5 font-bold"
+                disabled={primaryButtonDisabled}
+                onClick={() => void onPrimaryActionClick()}
+                data-testid="material-issue-primary-action"
+              >
+                <Send className="mr-1 h-4 w-4" />
+                {woPmrMode ? primaryAction.label : "Issue Material"}
               </Button>
-            ) : null}
-            <Button
-              type="button"
-              size="sm"
-              className="h-10 px-5 font-bold"
-              disabled={primaryButtonDisabled}
-              onClick={() => void onPrimaryActionClick()}
-              data-testid="material-issue-primary-action"
-            >
-              <Send className="mr-1 h-4 w-4" />
-              {woPmrMode ? primaryAction.label : "Issue Material"}
-            </Button>
-            <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void loadAll()}>
-              Refresh
-            </Button>
-            {woPmrMode && executionReady ? (
-              <button type="button" className="text-xs font-semibold text-slate-600 underline" onClick={clearExecution}>
-                Clear selection
-              </button>
-            ) : null}
+              <Button type="button" variant="outline" size="sm" disabled={loading} onClick={() => void loadAll()}>
+                Refresh
+              </Button>
+              {woPmrMode && executionReady ? (
+                <button
+                  type="button"
+                  className="text-xs font-semibold text-slate-600 underline"
+                  onClick={clearExecution}
+                >
+                  Clear Selection
+                </button>
+              ) : null}
+            </div>
           </div>
         </div>
 
-        <div className="space-y-2.5">
+        <div className="flex max-h-[calc(100dvh-5rem)] min-h-0 flex-col gap-2 overflow-y-auto lg:sticky lg:top-2">
           {woPmrMode ? (
             <MaterialIssuePmrQueuePanel
               pendingPmrs={actionablePendingPmrs}

@@ -56,7 +56,14 @@ const USER_SCOPED_SESSION_PREFIXES = [
   "erp:production-report-draft:v1:",
 ] as const;
 
-export type StoredAuthUser = { id: number; email: string; role: string; name: string };
+export type StoredAuthUser = {
+  id: number;
+  email: string;
+  role: string;
+  name: string;
+  permissions?: string[];
+  landingPath?: string;
+};
 
 let authFailureHandled = false;
 

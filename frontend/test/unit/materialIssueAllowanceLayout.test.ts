@@ -1,8 +1,13 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import {
+  buildMaterialIssueActionSummary,
+  resolveCompactLineStatus,
+} from "../../src/lib/materialIssueRmTableUx";
+import { calculatePlannedAllowance } from "../../src/lib/plannedProcessAllowance";
 
-const rowSource = readFileSync(
-  new URL("../../src/components/erp/MaterialIssueAllowanceRow.tsx", import.meta.url),
+const tableSource = readFileSync(
+  new URL("../../src/components/erp/MaterialIssueRmTable.tsx", import.meta.url),
   "utf8",
 );
 const pageSource = readFileSync(
@@ -10,60 +15,103 @@ const pageSource = readFileSync(
   "utf8",
 );
 
-describe("Material Issue compact RM card layout contract", () => {
-  it("uses the final two-row four-column field layout", () => {
-    expect(pageSource).toContain("material-issue-compact-grid");
-    expect(rowSource).toContain("RM Item");
-    expect(rowSource).toContain("Qty (BOM)");
-    expect(rowSource).toContain("Allowance %");
-    expect(rowSource).toContain("Available Qty");
-    expect(rowSource).toContain("Add Qty");
-    expect(rowSource).toContain("Issue Now");
-    expect(rowSource).toContain("Already Issued");
-    expect(rowSource).toContain("Remaining");
-    expect(rowSource).toContain("Issue Status");
-    expect(rowSource).toContain("DESKTOP_COLS");
-    expect(rowSource).toContain("Original BOM requirement");
-    // Compact card must not show a "Pending" qty column (approval statuses may still say PENDING_*).
-    expect(rowSource).not.toMatch(/FieldLabel[^>]*>\s*Pending\s*</);
-    expect(rowSource).not.toContain("Use Recommended");
-    expect(rowSource).not.toContain("Recommended Issue");
-    expect(rowSource).not.toContain("Line 1:");
-    expect(pageSource).not.toContain("Line 1:");
+describe("Material Issue compact RM table layout contract", () => {
+  it("uses a single-header table with required columns", () => {
+    expect(pageSource).toContain("MaterialIssueRmTable");
+    expect(tableSource).toContain("material-issue-compact-grid");
+    expect(tableSource).toContain("material-issue-rm-table-body");
+    expect(pageSource).toContain("material-issue-action-summary");
+    expect(pageSource).toContain("material-issue-action-bar");
+    expect(tableSource).toContain("RM Item");
+    expect(tableSource).toContain("BOM Qty");
+    expect(tableSource).toContain("Allowance %");
+    expect(tableSource).toContain("Available Stock");
+    expect(tableSource).toContain("Add Qty");
+    expect(tableSource).toContain("Issue Now");
+    expect(tableSource).toContain("Already Issued");
+    expect(tableSource).toContain("Remaining");
+    expect(tableSource).toContain("Status");
+    expect(tableSource).not.toContain("Issue Status");
+    expect(tableSource).not.toMatch(/FieldLabel[^>]*>\s*Pending\s*</);
+    expect(tableSource).not.toContain("Use Recommended");
+    expect(tableSource).not.toContain("Recommended Issue");
   });
 
-  it("does not use number inputs that expose spinner/wheel increment behaviour", () => {
-    expect(rowSource).not.toContain('type="number"');
-    expect(rowSource).toContain('type="text"');
-    expect(rowSource).toContain('inputMode="decimal"');
-    expect(rowSource).toContain("blockDecimalSpinnerKeys");
-    expect(rowSource).toContain("blockDecimalWheel");
+  it("scrolls only the RM table body and keeps the action bar visible", () => {
+    expect(tableSource).toContain('data-testid="material-issue-rm-table-body"');
+    expect(tableSource).toContain("overflow-y-auto");
+    expect(tableSource).not.toContain("overflow-x-auto");
+    expect(pageSource).toContain('data-testid="material-issue-action-bar"');
+    expect(pageSource).toContain("max-h-[calc(100dvh-5rem)]");
   });
 
-  it("has no permanent horizontal scrolling", () => {
-    expect(pageSource).not.toContain('className="mt-2 overflow-x-auto rounded border border-slate-200"');
-    expect(rowSource).not.toContain("overflow-x-auto");
+  it("uses DecimalInput without native number spinners", () => {
+    expect(tableSource).toContain("DecimalInput");
+    expect(tableSource).not.toContain('type="number"');
+    expect(pageSource).toContain("buildMaterialIssueActionSummary");
   });
 
-  it("Add Qty is editable; Allowance % is read-only acknowledgement", () => {
-    expect(rowSource).toContain('data-testid="extra-allowance-pct"');
-    expect(rowSource).toContain("onExtraQtyChange");
-    expect(rowSource).toContain('variant="prominent"');
-    expect(pageSource).toContain("updateExtraAllowanceQty");
-    expect(pageSource).toContain('allowanceInputSource: "QUANTITY"');
-    expect(pageSource).not.toContain("enteredAllowancePct");
-  });
-
-  it("keeps Available Ready/Short and Issue Status compact", () => {
-    expect(rowSource).toContain('data-testid="stock-readiness-badge"');
-    expect(rowSource).toContain("issueStatusPresentation");
-    expect(rowSource).toContain("Issue Status");
-    expect(rowSource).toContain("status.issueLabel");
+  it("shows compact status badges with tooltip detail only", () => {
+    expect(tableSource).toContain("resolveCompactLineStatus");
+    expect(tableSource).toContain('data-testid="material-issue-status-pill"');
+    expect(tableSource).toContain('data-testid="extra-allowance-pct"');
   });
 
   it("expands only for reason/approval details", () => {
-    expect(rowSource).toContain('data-expanded={expanded ? "true" : "false"}');
-    expect(rowSource).toContain("calculation.requiresReason");
-    expect(rowSource).toContain("Admin approval required above 5%.");
+    expect(tableSource).toContain('data-expanded={showReason ? "true" : "false"}');
+    expect(tableSource).toContain("calculation.requiresReason");
+    expect(tableSource).toContain("Admin approval required above 5%.");
+  });
+});
+
+describe("materialIssueRmTableUx", () => {
+  it("builds sticky action summary text", () => {
+    const summary = buildMaterialIssueActionSummary(
+      [
+        {
+          pmrLineId: 1,
+          unit: "Kg",
+          issueQty: "30.4",
+          theoreticalQty: 30.4,
+          issuedQty: 0,
+          pendingQty: 30.4,
+          plannedAllowanceQty: "0",
+          availableQty: 530,
+          approvalStatus: "NONE",
+        },
+        {
+          pmrLineId: 2,
+          unit: "Kg",
+          issueQty: "7.6",
+          theoreticalQty: 7.6,
+          issuedQty: 0,
+          pendingQty: 7.6,
+          plannedAllowanceQty: "0",
+          availableQty: 57,
+          approvalStatus: "NONE",
+        },
+      ],
+      "STORE",
+    );
+    expect(summary).toContain("2 RM lines");
+    expect(summary).toContain("Issue 38");
+    expect(summary).toContain("2 Ready");
+    expect(summary).toContain("0 Approval Pending");
+  });
+
+  it("maps approval pending to compact status", () => {
+    const calc = calculatePlannedAllowance({
+      theoreticalQty: 10,
+      quantityRaw: "1",
+      alreadyIssuedQty: 0,
+    });
+    const status = resolveCompactLineStatus({
+      calculation: calc,
+      availableQty: 100,
+      issueQty: "11",
+      pendingQty: 10,
+      approvalStatus: "PENDING_APPROVAL",
+    });
+    expect(status.label).toBe("Approval Pending");
   });
 });

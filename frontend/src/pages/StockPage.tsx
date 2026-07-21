@@ -892,8 +892,7 @@ export function StockPage() {
               <table className="w-full min-w-[980px] text-[13px]">
                 <thead className="border-b border-slate-200 bg-slate-50">
                   <tr className="text-left text-[12px] text-slate-600">
-                    <th className="px-2 py-1.5 font-medium">Item ID</th>
-                    <th className="px-2 py-1.5 font-medium">Item name</th>
+                    <th className="px-2 py-1.5 font-medium">Item</th>
                     <th className="px-2 py-1.5 font-medium">Type</th>
                     <th className="px-2 py-1.5 font-medium">Unit</th>
                     <th className="px-2 py-1.5 font-medium whitespace-nowrap">Stock status</th>
@@ -940,8 +939,9 @@ export function StockPage() {
                             : "ring-1 ring-inset ring-amber-300/80"),
                       )}
                     >
-                      <td className="px-2 py-1.5 font-mono text-slate-700">{r.itemId}</td>
-                      <td className="px-2 py-1.5 font-medium text-slate-900">{r.item.itemName}</td>
+                      <td className="px-2 py-1.5 font-medium text-slate-900">
+                        {r.item?.itemName?.trim() || "Unknown item — data correction required"}
+                      </td>
                       <td className="px-2 py-1.5">
                         <Badge
                           variant={r.item.itemType === "FG" ? "success" : "default"}

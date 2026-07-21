@@ -88,6 +88,9 @@ import {
   resolveDispatchFullPrepareAction,
   canCompactDispatchFull,
   isCompactDraftSavedIdleState,
+  shouldPreserveDispatchSelectionWithOpenDraft,
+  shouldDeferErpRefreshUntilAfterDraftSaveSettle,
+  resolveDispatchDraftSaveBusyLabel,
   DISPATCH_FINALIZE_API_SUFFIX,
   listUnlockedDraftIdsForItem,
   listUnlockedDraftsForItem,
@@ -107,6 +110,7 @@ import {
   sumLineStatsDispatchDraftForItem,
   sumLineStatsRemainingForItem,
 } from "../lib/dispatchLineQuantities";
+import { blockDecimalSpinnerKeys, blockDecimalWheel } from "../lib/keyboardDecimalInput";
 import { bumpErpRefresh } from "../lib/erpRefresh";
 import {
   DISPATCH_BILLING_ADJUSTMENT_LABEL,
@@ -1454,6 +1458,9 @@ export function DispatchPage() {
     reset: resetDispatchQty,
   } = useMandatoryPositiveQtyDraft();
   const [dispatching, setDispatching] = React.useState(false);
+  /** Holds Current Dispatch stable through Save Draft → single refresh → finalize mode. */
+  const [draftSaveSettling, setDraftSaveSettling] = React.useState(false);
+  const suppressLiveReloadRef = React.useRef(false);
   const [reversingId, setReversingId] = React.useState<number | null>(null);
   const [lockingId, setLockingId] = React.useState<number | null>(null);
   const [deletingId, setDeletingId] = React.useState<number | null>(null);
@@ -2140,12 +2147,13 @@ export function DispatchPage() {
   }, [ledgerPage, ledgerDateFrom, ledgerDateTo, fromNoQtySo, fromGlobalSearch, fromDashboard, fromPendingActions, focusSoId, focusSoIdValid, soId, noQtySelectedCycleId]);
 
   React.useEffect(() => {
+    if (suppressLiveReloadRef.current || dispatching || draftSaveSettling) return;
     void loadLedger();
     const row = displayRowsRef.current.find((r) => r.id === soId);
     if (row?.orderType === "NO_QTY" && noQtySelectedCycleId != null) {
       void loadSalesOrders();
     }
-  }, [noQtySelectedCycleId, soId, loadLedger, loadSalesOrders, liveTick]);
+  }, [noQtySelectedCycleId, soId, loadLedger, loadSalesOrders, liveTick, dispatching, draftSaveSettling]);
 
   React.useEffect(() => {
     if (!fromScopedSo || !focusSoIdValid) setFocusSo(null);
@@ -2288,8 +2296,9 @@ export function DispatchPage() {
   }, [soId, salesOrderLineId]);
 
   React.useEffect(() => {
+    if (suppressLiveReloadRef.current || dispatching || draftSaveSettling) return;
     loadSalesOrders().catch((e) => setError(e instanceof Error ? e.message : "Failed"));
-  }, [loadSalesOrders, liveTick]);
+  }, [loadSalesOrders, liveTick, dispatching, draftSaveSettling]);
 
   // Reopened prepared draft mode: load draft by id from URL.
   React.useEffect(() => {
@@ -2319,8 +2328,9 @@ export function DispatchPage() {
   }, [ledgerRows, focusLedgerDispatchId, focusLedgerDispatchIdValid, setSearchParams]);
 
   React.useEffect(() => {
+    if (suppressLiveReloadRef.current || dispatching || draftSaveSettling) return;
     loadLedger().catch((e) => setError(e instanceof Error ? e.message : "Failed"));
-  }, [loadLedger, liveTick]);
+  }, [loadLedger, liveTick, dispatching, draftSaveSettling]);
 
   const selectedSoReplacement = selectedSo?.orderType === "REPLACEMENT";
 
@@ -2328,7 +2338,7 @@ export function DispatchPage() {
   React.useEffect(() => {
     if (dispatchCompactMode) return;
     // Keep selection stable while Save Draft is in flight (avoids empty intermediate flashes).
-    if (dispatching) return;
+    if (dispatching || draftSaveSettling) return;
     if (!soId) {
       setSalesOrderLineId(0);
       resetDispatchQty();
@@ -2357,6 +2367,29 @@ export function DispatchPage() {
           return computeDispatchableNow({ so, ls: l, cycleIdOverride: cyc }) > 1e-9;
         })
       : (so.lineStats ?? []).filter((l) => isDispatchOpenListLineCandidate(l, so.orderType));
+    const selectedLine = (so.lineStats || []).find((l) => l.lineId === salesOrderLineId);
+    const openDraftOnLine = selectedLine
+      ? isNoQty
+        ? sumLineStatsDispatchDraftForItem(so.lineStats, selectedLine.itemId)
+        : readDispatchDraftQty(selectedLine)
+      : 0;
+    const openDraftOnSoTotal = isNoQty
+      ? Array.from(new Set((so.lineStats || []).map((l) => l.itemId))).reduce(
+          (s, itemId) => s + sumLineStatsDispatchDraftForItem(so.lineStats, itemId),
+          0,
+        )
+      : (so.lineStats || []).reduce((s, l) => s + readDispatchDraftQty(l), 0);
+    const preserveForOpenDraft = shouldPreserveDispatchSelectionWithOpenDraft({
+      openDraftQtyOnSelectedLine: openDraftOnLine,
+      openDraftQtyOnSalesOrder: openDraftOnSoTotal,
+      reopenedPreparedDraft: Boolean(
+        reopenedPreparedDraft &&
+          Number(reopenedPreparedDraft.soId) === Number(so.id) &&
+          Number.isFinite(draftDispatchId) &&
+          draftDispatchId > 0 &&
+          Number(reopenedPreparedDraft.id) === draftDispatchId,
+      ),
+    });
     if (!selectable.length) {
       if (fromScopedSo && focusSoIdValid && Number(so.id) === Number(focusSoId) && isNoQty) {
         // Keep the focused zero-dispatchable line visible as informational excess-stock context.
@@ -2368,13 +2401,7 @@ export function DispatchPage() {
         return;
       }
       // Keep SO/FG selection when a prepared draft was reopened from history — finalize path even if headroom shows 0.
-      if (
-        reopenedPreparedDraft &&
-        Number(reopenedPreparedDraft.soId) === Number(so.id) &&
-        Number.isFinite(draftDispatchId) &&
-        draftDispatchId > 0 &&
-        Number(reopenedPreparedDraft.id) === draftDispatchId
-      ) {
+      if (preserveForOpenDraft) {
         return;
       }
       setSoId(0);
@@ -2385,10 +2412,11 @@ export function DispatchPage() {
     if (salesOrderLineId === 0) return;
     const stillValid = selectable.some((l) => l.lineId === salesOrderLineId);
     if (!stillValid) {
+      if (preserveForOpenDraft) return;
       setSalesOrderLineId(0);
       resetDispatchQty();
     }
-  }, [soId, displayRows, salesOrderLineId, resetDispatchQty, reopenedPreparedDraft, draftDispatchId, dispatchCompactMode, fromScopedSo, focusSoIdValid, focusSoId, dispatching]);
+  }, [soId, displayRows, salesOrderLineId, resetDispatchQty, reopenedPreparedDraft, draftDispatchId, dispatchCompactMode, fromScopedSo, focusSoIdValid, focusSoId, dispatching, draftSaveSettling, noQtySelectedCycleId]);
 
   const allLines = selectedSo?.lineStats ?? [];
   /** Regular SO: confirmed backlog (`pendingDispatchQty` > 0). NO_QTY: all cycle / FG lines so reasons stay visible at 0 dispatchable. */
@@ -3233,12 +3261,17 @@ export function DispatchPage() {
       }
     }
     setDispatching(true);
+    setDraftSaveSettling(true);
+    suppressLiveReloadRef.current = true;
     const prepareKeySeed = `${soId}:${currentLine.itemId}:${dispatchQtyParsed}:${selectedSo?.orderType ?? ""}:${deliveryLocationId ?? ""}`;
     let idempotencyKey = prepareIdempotencyKeysRef.current.get(prepareKeySeed);
     if (!idempotencyKey) {
       idempotencyKey = allocateIdempotencyKey("dispatch-prepare");
       prepareIdempotencyKeysRef.current.set(prepareKeySeed, idempotencyKey);
     }
+    const preservedSoId = soId;
+    const preservedLineId = salesOrderLineId;
+    const preservedQtyStr = dispatchQtyStr;
     try {
       const dispatchBody =
         selectedSo?.orderType === "NO_QTY"
@@ -3292,9 +3325,15 @@ export function DispatchPage() {
           setDispatchInfo("Dispatch draft saved.");
         }
         setSalesBillStepDispatchId(null);
-        bumpErpRefresh(["dispatch", "dashboard", "pending-actions", "stock"]);
-        await loadSalesOrders();
-        await loadLedger();
+        // One authoritative refresh — do not bumpErpRefresh first (avoids liveTick double-fetch flicker).
+        await Promise.all([loadSalesOrders(), loadLedger()]);
+        flushSync(() => {
+          if (preservedSoId > 0) setSoId(preservedSoId);
+          if (preservedLineId > 0) setSalesOrderLineId(preservedLineId);
+        });
+        if (shouldDeferErpRefreshUntilAfterDraftSaveSettle()) {
+          bumpErpRefresh(["dispatch", "dashboard", "pending-actions", "stock"]);
+        }
         return;
       }
       const alloc = prepRes?.allocation;
@@ -3325,13 +3364,15 @@ export function DispatchPage() {
         setDispatchInfo("Dispatch draft saved. Use Finalize Dispatch to post stock.");
       }
       setSalesBillStepDispatchId(null);
-      // Preserve current SO/line after draft save — no auto-advance / empty intermediate states.
-      const preservedSoId = soId;
-      const preservedLineId = salesOrderLineId;
-      await loadSalesOrders();
-      await loadLedger();
-      if (preservedSoId > 0) setSoId(preservedSoId);
-      if (preservedLineId > 0) setSalesOrderLineId(preservedLineId);
+      // Preserve current SO/line after draft save — single parallel refresh, no empty intermediate states.
+      await Promise.all([loadSalesOrders(), loadLedger()]);
+      flushSync(() => {
+        if (preservedSoId > 0) setSoId(preservedSoId);
+        if (preservedLineId > 0) setSalesOrderLineId(preservedLineId);
+      });
+      if (shouldDeferErpRefreshUntilAfterDraftSaveSettle()) {
+        bumpErpRefresh(["dispatch", "dashboard", "pending-actions", "stock"]);
+      }
     } catch (e) {
       if (e instanceof ApiRequestError && e.code === "IDEMPOTENCY_IN_PROGRESS") {
         setDispatchInfo(
@@ -3339,10 +3380,14 @@ export function DispatchPage() {
         );
       } else {
         setError(e instanceof Error ? e.message : "Failed");
+        // Preserve entered quantity on failure.
+        if (preservedQtyStr !== "") setDispatchQtyStr(preservedQtyStr);
       }
     } finally {
+      suppressLiveReloadRef.current = false;
       dispatchSubmitLockRef.current = false;
       setDispatching(false);
+      setDraftSaveSettling(false);
     }
   }
 
@@ -6629,7 +6674,90 @@ export function DispatchPage() {
                     billingFallbackLabel={currentWorkbenchBillingFallback}
                     allocationSlices={currentWorkbenchAllocationSlices}
                     guidance={currentWorkbenchGuidance}
+                    headerActions={
+                      selectedSo?.orderType === "NO_QTY" && currentLine && !qtyInputDisabled ? (
+                        <div
+                          className="flex w-full min-w-0 flex-col items-stretch gap-1 sm:max-w-[22rem] sm:items-end"
+                          data-testid="dispatch-qty-header-entry"
+                        >
+                          <div className="flex flex-wrap items-end justify-end gap-1.5">
+                            <div className="erp-form-field min-w-0">
+                              <span className="text-[10px] font-medium text-slate-600">Dispatch Qty</span>
+                              <div className="mt-0.5 flex items-center gap-1">
+                                <Input
+                                  ref={dispatchQtyRef}
+                                  {...dispatchQtyBind}
+                                  type="text"
+                                  data-testid="dispatch-qty-input"
+                                  inputMode="decimal"
+                                  autoComplete="off"
+                                  className={cn(
+                                    "h-9 w-[7.5rem] rounded-md border-slate-200 px-2 text-right text-sm tabular-nums",
+                                    operatorInputClass,
+                                    "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
+                                  )}
+                                  placeholder="0"
+                                  value={dispatchQtyStr}
+                                  disabled={qtyInputDisabled}
+                                  onKeyDown={(e) => {
+                                    blockDecimalSpinnerKeys(e);
+                                    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                                      shortcutHints.markFieldShortcutUsed("dispatchPrepare");
+                                      void onDispatch();
+                                    }
+                                    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                                      shortcutHints.markFieldShortcutUsed("dispatchQty");
+                                    }
+                                  }}
+                                  onWheel={blockDecimalWheel}
+                                />
+                                <span className="shrink-0 text-[11px] font-medium text-slate-600">Nos</span>
+                              </div>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="default"
+                              size="sm"
+                              data-testid="prepare-dispatch-btn"
+                              className="h-9 shrink-0 rounded-md border-transparent bg-slate-900 px-3 text-[13px] font-semibold text-white shadow-sm hover:bg-slate-950"
+                              disabled={!canNoQtyDispatchNow || dispatching || draftSaveSettling}
+                              onClick={() => {
+                                shortcutHints.markFieldShortcutUsed("dispatchPrepare");
+                                void onDispatch();
+                              }}
+                            >
+                              {resolveDispatchDraftSaveBusyLabel(dispatching || draftSaveSettling)}
+                            </Button>
+                            <button
+                              type="button"
+                              className="mb-0.5 whitespace-nowrap text-[11px] font-medium text-slate-500 underline decoration-slate-300 underline-offset-2 hover:text-slate-800 disabled:pointer-events-none disabled:opacity-50"
+                              disabled={dispatching || draftSaveSettling}
+                              data-testid="dispatch-qty-clear-btn"
+                              onClick={() => {
+                                setError(null);
+                                resetDispatchQty();
+                              }}
+                            >
+                              Clear
+                            </button>
+                          </div>
+                          {dispatchQtyExceedsPrepareCap ? (
+                            <p className="text-right text-[11px] font-medium text-red-800" data-testid="dispatch-qty-validation">
+                              Cannot dispatch more than can dispatch now ({fmtDispatchQty(maxDispatchPrepareQty)}).
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null
+                    }
                   >
+                  {draftSaveSettling ? (
+                    <div
+                      className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-2 text-[12px] font-semibold text-sky-950"
+                      data-testid="dispatch-preparing-gate"
+                    >
+                      Preparing dispatch…
+                    </div>
+                  ) : null}
                   {selectedSo?.orderType === "NO_QTY" ? (
                     <div className="space-y-2">
                       <div className="overflow-hidden rounded-lg border border-slate-200/90 bg-white px-2.5 py-2 shadow-sm ring-1 ring-slate-100/70">
@@ -6685,7 +6813,7 @@ export function DispatchPage() {
                                       usableStockNow: noQtyWorkbenchHeadroomBreakdown.usableStockNow,
                                       canDispatchNow: noQtyWorkbenchHeadroomBreakdown.dispatchPossibleNow,
                                     };
-                                return <OperationalDispatchSnapshot metrics={metrics} showFlowHint={false} />;
+                                return <OperationalDispatchSnapshot metrics={metrics} showFlowHint={false} compact />;
                               })()}
                               {noQtyDraftExceedsUsable ? (
                                 <p className="text-[10px] font-medium leading-snug text-red-800">
@@ -6705,87 +6833,6 @@ export function DispatchPage() {
                               </div>
                             </div>
                           )}
-
-                          <FieldShortcutHint
-                            show={shortcutHints.activeFieldId === "dispatchQty"}
-                            hint={shortcutHints.activeFieldHintText ?? ""}
-                            placement="below-end"
-                            className="min-w-0 flex-1 sm:max-w-[8rem]"
-                          >
-                            <div className="erp-form-field min-w-0">
-                              <span className="text-[10px] font-medium text-slate-600">Dispatch qty</span>
-                              <Input
-                                ref={dispatchQtyRef}
-                                {...dispatchQtyBind}
-                                type="text"
-                                data-testid="dispatch-qty-input"
-                                inputMode="decimal"
-                                autoComplete="off"
-                                className={cn(
-                                  "mt-0.5 h-9 w-full min-w-[4.5rem] rounded-md border-slate-200 px-2 text-sm tabular-nums",
-                                  operatorInputClass,
-                                )}
-                                placeholder="0"
-                                value={dispatchQtyStr}
-                                disabled={qtyInputDisabled}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-                                    shortcutHints.markFieldShortcutUsed("dispatchPrepare");
-                                    void onDispatch();
-                                  }
-                                  if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
-                                    shortcutHints.markFieldShortcutUsed("dispatchQty");
-                                  }
-                                }}
-                              />
-                              {dispatchQtyExceedsPrepareCap ? (
-                                <p className="mt-0.5 text-[11px] font-medium text-red-800">
-                                  Cannot dispatch more than can dispatch now ({fmtDispatchQty(maxDispatchPrepareQty)}).
-                                </p>
-                              ) : null}
-                            </div>
-                          </FieldShortcutHint>
-
-                          <div className="flex shrink-0 items-end gap-1.5">
-                            <Button
-                              type="button"
-                              variant="default"
-                              size="sm"
-                              data-testid="prepare-dispatch-btn"
-                              className="h-9 shrink-0 rounded-md border-transparent bg-slate-900 px-3 text-[13px] font-semibold text-white shadow-sm hover:bg-slate-950"
-                              disabled={!canNoQtyDispatchNow || dispatching}
-                              onClick={() => {
-                                shortcutHints.markFieldShortcutUsed("dispatchPrepare");
-                                void onDispatch();
-                              }}
-                            >
-                              {dispatching ? "Saving dispatch draft…" : DISPATCH_OP.SAVE_DRAFT_QTY}
-                            </Button>
-                            <button
-                              type="button"
-                              className="mb-0.5 hidden whitespace-nowrap text-[11px] font-medium text-slate-500 underline decoration-slate-300 underline-offset-2 hover:text-slate-800 sm:inline disabled:pointer-events-none disabled:opacity-50"
-                              disabled={dispatching}
-                              onClick={() => {
-                                setError(null);
-                                resetDispatchQty();
-                              }}
-                            >
-                              Clear
-                            </button>
-                          </div>
-                        </div>
-                        <div className="mt-1 flex justify-end sm:hidden">
-                          <button
-                            type="button"
-                            className="text-[11px] font-medium text-slate-500 underline decoration-slate-300 underline-offset-2 hover:text-slate-800 disabled:pointer-events-none disabled:opacity-50"
-                            disabled={dispatching}
-                            onClick={() => {
-                              setError(null);
-                              resetDispatchQty();
-                            }}
-                          >
-                            Clear
-                          </button>
                         </div>
 
                         {selectedSo?.orderType === "NO_QTY" &&

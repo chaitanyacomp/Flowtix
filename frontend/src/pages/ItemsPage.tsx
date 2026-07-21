@@ -4,6 +4,7 @@ import { apiFetch } from "../services/api";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { useAuth } from "../hooks/useAuth";
 import { PageActions } from "../components/PageHeader";
 import { useToast } from "../contexts/ToastContext";
@@ -844,14 +845,11 @@ export function ItemsPage() {
                             <div className="erp-form-field">
                               <span className="erp-form-label">GST rate %</span>
                               <div className="flex flex-wrap items-center gap-2">
-                                <Input
-                                  type="number"
-                                  min={0}
-                                  max={100}
-                                  step="0.01"
+                                <DecimalInput
                                   className="max-w-[8rem]"
                                   value={gstRateStr}
-                                  onChange={(e) => setGstRateStr(e.target.value)}
+                                  onValueChange={setGstRateStr}
+                                  normalizeOnBlur={false}
                                   placeholder=""
                                 />
                                 <select
@@ -890,12 +888,10 @@ export function ItemsPage() {
                               <>
                                 <div className="erp-form-field max-w-xs">
                                   <span className="erp-form-label">Minimum Stock</span>
-                                  <Input
-                                    type="number"
-                                    min={0}
-                                    step="any"
+                                  <DecimalInput
                                     value={minimumStock}
-                                    onChange={(e) => setMinimumStock(e.target.value)}
+                                    onValueChange={setMinimumStock}
+                                    normalizeOnBlur={false}
                                     placeholder="Required"
                                     required
                                   />
@@ -914,12 +910,10 @@ export function ItemsPage() {
                                   {targetStockOpen ? (
                                     <div className="erp-form-field mt-2 max-w-xs">
                                       <span className="erp-form-label">Target Stock</span>
-                                      <Input
-                                        type="number"
-                                        min={0}
-                                        step="any"
+                                      <DecimalInput
                                         value={targetStock}
-                                        onChange={(e) => setTargetStock(e.target.value)}
+                                        onValueChange={setTargetStock}
+                                        normalizeOnBlur={false}
                                         placeholder="Optional"
                                       />
                                       <p className="mt-1 text-xs text-slate-500">
@@ -934,26 +928,22 @@ export function ItemsPage() {
                               <div className="grid gap-2.5 sm:grid-cols-2">
                                 <div className="erp-form-field">
                                   <span className="erp-form-label">Minimum stock</span>
-                                  <Input
-                                    type="number"
-                                    min={0}
-                                    step="any"
+                                  <DecimalInput
                                     value={minimumStock}
-                                    onChange={(e) => setMinimumStock(e.target.value)}
+                                    onValueChange={setMinimumStock}
+                                    normalizeOnBlur={false}
                                     placeholder="0"
                                   />
                                 </div>
                                 <div className="erp-form-field">
                                   <span className="erp-form-label">Low Stock Level</span>
-                                  <Input
-                                    type="number"
-                                    min={0}
-                                    step="any"
+                                  <DecimalInput
                                     value={lowStockAlert}
-                                    onChange={(e) => {
-                                      setLowStockAlert(e.target.value);
+                                    onValueChange={(next) => {
+                                      setLowStockAlert(next);
                                       setLowStockTouched(true);
                                     }}
+                                    normalizeOnBlur={false}
                                     placeholder="0"
                                   />
                                   <p className="mt-1 text-xs text-slate-500">Optional warning level for on-hand visibility</p>
@@ -961,12 +951,10 @@ export function ItemsPage() {
                                 {creatingType === "FG" ? (
                                   <div className="erp-form-field sm:col-span-2 max-w-xs">
                                     <span className="erp-form-label">Manual Green Level qty</span>
-                                    <Input
-                                      type="number"
-                                      min={0}
-                                      step="any"
+                                    <DecimalInput
                                       value={fgManualGreenLevel}
-                                      onChange={(e) => setFgManualGreenLevel(e.target.value)}
+                                      onValueChange={setFgManualGreenLevel}
+                                      normalizeOnBlur={false}
                                       placeholder="From Excel at go-live"
                                     />
                                   </div>
@@ -992,25 +980,19 @@ export function ItemsPage() {
                             <div className="mt-2 grid gap-2.5 sm:grid-cols-2">
                               <div className="erp-form-field">
                                 <span className="erp-form-label">Critical below (%)</span>
-                                <Input
-                                  type="number"
-                                  min={0}
-                                  max={100}
-                                  step="1"
+                                <DecimalInput
                                   value={criticalCoveragePct}
-                                  onChange={(e) => setCriticalCoveragePct(e.target.value)}
+                                  onValueChange={setCriticalCoveragePct}
+                                  normalizeOnBlur={false}
                                   placeholder="50"
                                 />
                               </div>
                               <div className="erp-form-field">
                                 <span className="erp-form-label">Warning below (%)</span>
-                                <Input
-                                  type="number"
-                                  min={0}
-                                  max={100}
-                                  step="1"
+                                <DecimalInput
                                   value={warningCoveragePct}
-                                  onChange={(e) => setWarningCoveragePct(e.target.value)}
+                                  onValueChange={setWarningCoveragePct}
+                                  normalizeOnBlur={false}
                                   placeholder="80"
                                 />
                               </div>

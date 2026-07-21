@@ -37,6 +37,12 @@ import {
 } from "../lib/salesBillFinalizeValidation";
 import { bumpErpRefresh } from "../lib/erpRefresh";
 import { remainingWorkQueueCount } from "../lib/workQueueContext";
+import {
+  isMissingTransportationLedgerError,
+  parseSalesBillTallyExportError,
+  tallyTransportationMappingHref,
+  type TallyExportReadiness,
+} from "../lib/salesBillTallyExportReadiness";
 
 function billOrderTypeLabel(ot?: string | null): string {
   if (ot === "NO_QTY") return "NO_QTY";
@@ -105,6 +111,7 @@ type Bill = {
   taxIntraState?: boolean;
   gstMode?: "LOCAL" | "INTERSTATE" | string | null;
   posStateCode?: string | null;
+  tallyExportReadiness?: TallyExportReadiness | null;
   posStateName?: string | null;
   posSource?: string | null;
   customerNameSnapshot?: string;
@@ -210,6 +217,9 @@ export function SalesBillEditPage() {
   const [headerBaseline, setHeaderBaseline] = React.useState({ billNo: "", billDate: "", remarks: "" });
   const [saving, setSaving] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
+  const [confirmingTallyImport, setConfirmingTallyImport] = React.useState(false);
+  const [creatingMasters, setCreatingMasters] = React.useState(false);
+  const [refreshingReadiness, setRefreshingReadiness] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
   const [resetting, setResetting] = React.useState(false);
   const [cancelling, setCancelling] = React.useState(false);
@@ -426,16 +436,24 @@ export function SalesBillEditPage() {
       });
       if (!res.ok) {
         let msg = "Could not export to Tally";
+        let code: string | null = null;
         const ct = res.headers.get("content-type");
         if (ct && ct.includes("application/json")) {
           try {
-            const j = (await res.json()) as { error?: { message?: string } };
-            if (j?.error?.message) msg = j.error.message;
+            const j = (await res.json()) as unknown;
+            const parsed = parseSalesBillTallyExportError(j);
+            msg = parsed.message;
+            code = parsed.code;
+            if (parsed.readiness) {
+              setBill((prev) => (prev ? { ...prev, tallyExportReadiness: parsed.readiness } : prev));
+            }
           } catch {
             /* ignore */
           }
         }
-        throw new Error(msg);
+        const err = new Error(msg) as Error & { code?: string | null };
+        err.code = code;
+        throw err;
       }
       const blob = await res.blob();
       const a = document.createElement("a");
@@ -450,19 +468,8 @@ export function SalesBillEditPage() {
       setReExportAuth(null);
       await loadSoHead(refreshed.dispatch.soId);
       bumpErpRefresh(["pending-actions", "dashboard"]);
-      if (workQueue) {
-        const remaining = remainingWorkQueueCount(workQueue, true);
-        if (remaining === 0) {
-          navigate("/pending-actions", { replace: true });
-          return;
-        }
-        setExportQueuePrompt({ remaining });
-        return;
-      }
-      await refreshNextPendingExportHint(refreshed.id);
-      await refreshBillingQueueHint(refreshed.dispatch.id);
       alert(
-        "Tally XML downloaded and marked exported in ERP. Import the file in Tally to post the voucher — download is not a Tally import confirmation.",
+        "Tally voucher XML downloaded. Import it in Tally, then click Confirm imported in Tally only after Tally accepts the voucher. This bill is not marked exported until confirmation.",
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not export to Tally";
@@ -481,6 +488,137 @@ export function SalesBillEditPage() {
       return;
     }
     await performSalesBillExport();
+  }
+
+  async function refreshAndValidateTally() {
+    if (!bill || refreshingReadiness) return;
+    setRefreshingReadiness(true);
+    setExportError(null);
+    try {
+      const refreshed = await apiFetch<Bill>(`/api/sales-bills/${bill.id}`);
+      setBill(refreshed);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Could not refresh Tally readiness.";
+      setExportError(msg);
+    } finally {
+      setRefreshingReadiness(false);
+    }
+  }
+
+  async function createMissingMastersXml() {
+    if (!bill || bill.status !== "FINALIZED" || creatingMasters) return;
+    setCreatingMasters(true);
+    setExportError(null);
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch(getApiUrl(`/api/sales-bills/${bill.id}/export/tally-masters.xml`), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        let msg = "Could not build missing masters XML";
+        const ct = res.headers.get("content-type");
+        if (ct && ct.includes("application/json")) {
+          try {
+            const j = (await res.json()) as unknown;
+            msg = parseSalesBillTallyExportError(j).message;
+          } catch {
+            /* ignore */
+          }
+        }
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      const safeNo = (bill.billNo?.trim() ? bill.billNo.trim() : `SB-${bill.id}`).replace(/[^\w\-\.]+/g, "-");
+      a.download = `sales-bill-${safeNo}-masters.xml`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      alert(
+        "Masters-only XML downloaded. Import this file in Tally before the voucher XML. Imported/mapped stock items are not included.",
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Could not build missing masters XML";
+      setExportError(msg);
+      alert(msg);
+    } finally {
+      setCreatingMasters(false);
+    }
+  }
+
+  async function mapExistingMasterPrompt() {
+    if (!bill) return;
+    const typeRaw = window.prompt("Master type to map (CUSTOMER or ITEM):", "CUSTOMER");
+    const type = String(typeRaw || "").trim().toUpperCase();
+    if (type !== "CUSTOMER" && type !== "ITEM") {
+      alert("Enter CUSTOMER or ITEM.");
+      return;
+    }
+    const defaultId = type === "CUSTOMER" ? bill.customerId : bill.lines[0]?.itemId;
+    const idRaw = window.prompt("ERP master id:", defaultId != null ? String(defaultId) : "");
+    const erpId = Number(idRaw);
+    if (!Number.isFinite(erpId) || erpId <= 0) {
+      alert("Valid ERP id is required.");
+      return;
+    }
+    const tallyName = window.prompt("Exact Tally master NAME:")?.trim();
+    if (!tallyName) {
+      alert("Exact Tally master NAME is required.");
+      return;
+    }
+    const tallyGuid = window.prompt("Tally GUID (optional):")?.trim() || null;
+    try {
+      const refreshed = await apiFetch<Bill>(`/api/sales-bills/${bill.id}/tally-master-map`, {
+        method: "POST",
+        body: JSON.stringify({ type, erpId, tallyName, tallyGuid }),
+      });
+      setBill(refreshed);
+      setExportError(null);
+      alert("Master mapping saved. Refresh and Validate if needed, then download voucher XML.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Could not map master.";
+      setExportError(msg);
+      alert(msg);
+    }
+  }
+
+  async function confirmTallyImport() {
+    if (!bill || bill.status !== "FINALIZED" || bill.isExported || confirmingTallyImport) return;
+    const ok = window.confirm(
+      "Confirm only if Tally accepted this Sales voucher without 'Referenced master is missing' errors. Continue?",
+    );
+    if (!ok) return;
+    setConfirmingTallyImport(true);
+    setExportError(null);
+    try {
+      await apiFetch(`/api/sales-bills/${bill.id}/confirm-tally-export`, { method: "POST", body: JSON.stringify({}) });
+      const refreshed = await apiFetch<Bill>(`/api/sales-bills/${bill.id}`);
+      setBill(refreshed);
+      bumpErpRefresh(["pending-actions", "dashboard"]);
+      if (workQueue) {
+        const remaining = remainingWorkQueueCount(workQueue, true);
+        if (remaining === 0) {
+          navigate("/pending-actions", { replace: true });
+          return;
+        }
+        setExportQueuePrompt({ remaining });
+        return;
+      }
+      await refreshNextPendingExportHint(refreshed.id);
+      await refreshBillingQueueHint(refreshed.dispatch.id);
+      alert("Sales Bill marked exported after Tally confirmation.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Could not confirm Tally import.";
+      setExportError(msg);
+      alert(msg);
+    } finally {
+      setConfirmingTallyImport(false);
+    }
   }
 
   async function approveReExport() {
@@ -951,7 +1089,7 @@ export function SalesBillEditPage() {
                         const rates = lineTaxRates(ln, bill.taxIntraState !== false);
                         return (
                           <tr key={ln.id} className="border-b border-slate-100">
-                            <td className="text-slate-800">{ln.itemNameSnapshot || ln.item.itemName}<details className="mt-0.5 text-[10px] text-slate-500"><summary className="cursor-pointer">Tax breakdown</summary><div>Goods taxable: {formatMoney(ln.goodsTaxableAmount ?? (n(ln.basicAmount) - n(ln.transportationAllocation || 0)))}</div><div>Allocated transportation: {formatMoney(ln.transportationAllocation || 0)}</div><div>Total taxable: {formatMoney(ln.basicAmount)} at {formatGstPercent(ln.gstRate)}</div><div>CGST {rates.cgst ?? "â€”"}: {rates.cgst ? formatMoney(ln.cgstAmount) : "â€”"} Â· SGST {rates.sgst ?? "â€”"}: {rates.sgst ? formatMoney(ln.sgstAmount) : "â€”"} Â· IGST {rates.igst ?? "â€”"}: {rates.igst ? formatMoney(ln.igstAmount) : "â€”"}</div></details></td>
+                            <td className="text-slate-800">{ln.itemNameSnapshot || ln.item.itemName}<details className="mt-0.5 text-[10px] text-slate-500"><summary className="cursor-pointer">Tax breakdown</summary><div>Goods taxable: {formatMoney(ln.goodsTaxableAmount ?? (n(ln.basicAmount) - n(ln.transportationAllocation || 0)))}</div><div>Allocated transportation: {formatMoney(ln.transportationAllocation || 0)}</div><div>Total taxable: {formatMoney(ln.basicAmount)} at {formatGstPercent(ln.gstRate)}</div><div>CGST {rates.cgst ?? "—"}: {rates.cgst ? formatMoney(ln.cgstAmount) : "—"} · SGST {rates.sgst ?? "—"}: {rates.sgst ? formatMoney(ln.sgstAmount) : "—"} · IGST {rates.igst ?? "—"}: {rates.igst ? formatMoney(ln.igstAmount) : "—"}</div></details></td>
                             <td className="text-slate-700">{ln.hsnCodeSnapshot || "—"}</td>
                             <td className="text-right tabular-nums text-slate-800">{ln.qty}</td>
                             {showNoQtyRateUi ? (
@@ -1373,6 +1511,22 @@ export function SalesBillEditPage() {
                 exportedByName={bill.exportedBy?.name ?? null}
                 exportBlockedReason={null}
                 exportAttemptError={exportError}
+                tallyExportReadiness={bill.tallyExportReadiness ?? null}
+                mapTransportationHref={
+                  isMissingTransportationLedgerError(
+                    exportError ?? "",
+                    bill.tallyExportReadiness?.status,
+                  ) || bill.tallyExportReadiness?.status === "MISSING_TRANSPORTATION_LEDGER_MAPPING"
+                    ? tallyTransportationMappingHref({ salesBillId: bill.id })
+                    : null
+                }
+                onMapExistingMaster={() => void mapExistingMasterPrompt()}
+                onCreateMissingMaster={() => void createMissingMastersXml()}
+                onRefreshAndValidate={() => void refreshAndValidateTally()}
+                onConfirmTallyImport={() => void confirmTallyImport()}
+                confirmingTallyImport={confirmingTallyImport}
+                creatingMasters={creatingMasters}
+                refreshingReadiness={refreshingReadiness}
                 exportResetAt={bill.exportResetAt ?? null}
                 isAdmin={isAdmin}
                 exporting={exporting}
@@ -1451,6 +1605,12 @@ export function SalesBillEditPage() {
               exportedByName={bill.exportedBy?.name ?? null}
               exportBlockedReason={null}
               exportAttemptError={exportError}
+              tallyExportReadiness={bill.tallyExportReadiness ?? null}
+              mapTransportationHref={
+                bill.tallyExportReadiness?.status === "MISSING_TRANSPORTATION_LEDGER_MAPPING"
+                  ? tallyTransportationMappingHref({ salesBillId: bill.id })
+                  : null
+              }
               exportResetAt={bill.exportResetAt ?? null}
               isAdmin={isAdmin}
               exporting={exporting}
@@ -1521,6 +1681,7 @@ export function SalesBillEditPage() {
               exportedByName={bill.exportedBy?.name ?? null}
               exportBlockedReason={null}
               exportAttemptError={exportError}
+              tallyExportReadiness={bill.tallyExportReadiness ?? null}
               exportResetAt={bill.exportResetAt ?? null}
               isAdmin={isAdmin}
               exporting={exporting}

@@ -5,6 +5,7 @@ import * as React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { Badge } from "../components/ui/badge";
 import { apiFetch, getApiUrl } from "../services/api";
 import { cn } from "../lib/utils";
@@ -466,7 +467,7 @@ export function ProductionRmVarianceReportPage() {
           </label>
           <label className="grid gap-1 text-xs font-medium text-slate-600">
             Variance threshold (%)
-            <Input type="number" min={0} step="0.1" className="h-9" value={thresholdPct} onChange={(e) => setThresholdPct(e.target.value)} />
+            <DecimalInput className="h-9" value={thresholdPct} onValueChange={setThresholdPct} normalizeOnBlur={false} />
           </label>
           <label className="flex items-end gap-2 pb-1 text-xs font-medium text-slate-700">
             <input

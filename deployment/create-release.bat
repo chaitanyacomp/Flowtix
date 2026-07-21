@@ -139,6 +139,7 @@ copy /Y "%DEPLOY%\collect-diagnostics.bat" "%RELEASE_DIR%\tools\collect-diagnost
 copy /Y "%DEPLOY%\collect-diagnostics.js" "%RELEASE_DIR%\tools\collect-diagnostics.js" >nul
 copy /Y "%DEPLOY%\certify-install.bat" "%RELEASE_DIR%\tools\certify-install.bat" >nul
 copy /Y "%DEPLOY%\certify-install.js" "%RELEASE_DIR%\tools\certify-install.js" >nul
+copy /Y "%DEPLOY%\create-initial-admin.js" "%RELEASE_DIR%\tools\create-initial-admin.js" >nul
 if exist "%DEPLOY%\production.env.example" (
   mkdir "%RELEASE_DIR%\shared" 2>nul
   copy /Y "%DEPLOY%\production.env.example" "%RELEASE_DIR%\shared\.env.example" >nul
@@ -494,6 +495,13 @@ if not exist "%RELEASE_DIR%\tools\certify-install.js" (
   set "FAIL=1"
 ) else (
   echo   OK: tools\certify-install.js
+)
+
+if not exist "%RELEASE_DIR%\tools\create-initial-admin.js" (
+  echo   FAIL: tools\create-initial-admin.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\create-initial-admin.js
 )
 
 if not exist "%RELEASE_DIR%\tools\vendor\winsw\WinSW-x64.exe" (

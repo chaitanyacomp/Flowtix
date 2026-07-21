@@ -216,7 +216,8 @@ function ownerForRmRiskRow(raw) {
   }
 
   if (queueType === "READY_TO_RELEASE_WO") {
-    return raw?.workOrderReleased ? VISIBLE_OWNERS.PRODUCTION : VISIBLE_OWNERS.STORE;
+    // Canonical workflow: material ready → Production starts. No Store "Release" step.
+    return VISIBLE_OWNERS.PRODUCTION;
   }
 
   if (queueType === "RM_RECEIVED_CREATE_WO" || operationalKey === "RM_RECEIVED_CREATE_WO") {
@@ -274,13 +275,18 @@ function normalizeRmRiskRow(raw) {
     orderType: null,
   });
 
+  const nextActionLabel =
+    currentStatus === CONTROL_TOWER_STATUSES.READY_TO_START || queueType === "READY_TO_RELEASE_WO"
+      ? "Ready to Start"
+      : raw?.recommendedAction ?? raw?.blockerReason ?? "Review RM";
+
   return buildNormalizedRow({
     rowType: ROW_TYPES.RM_RISK,
     documentType: DOCUMENT_TYPES.RM_SHORTAGE,
     documentNo: raw?.workOrderNo ?? raw?.salesOrderNo ?? null,
     currentStatus,
     currentOwner,
-    nextAction: raw?.recommendedAction ?? raw?.blockerReason ?? "Review RM shortage",
+    nextAction: nextActionLabel,
     ageHours: null,
     riskLevel: riskFromRmStatus(raw?.status),
     sourceModule: SOURCE_MODULES.RM_RISK,
@@ -331,17 +337,25 @@ function normalizeProductionRow(raw) {
   const workOrderId = Number(raw?.workOrderId);
   const lineId = Number(raw?.workOrderLineId);
   const orderType = raw?.orderType ?? "NORMAL";
+  const workState = String(raw?.productionWorkState ?? "").trim().toUpperCase();
   const sourceId = `production:wo:${workOrderId}:line:${lineId}`;
   const lineage = buildSourceLineageMetadata(raw, {
     sourceStatus: raw?.status ?? null,
     sourceNextAction: nextAction,
   });
-  const currentStatus = mapSourceToCurrentStatus({
+  let currentStatus = mapSourceToCurrentStatus({
     rowType: ROW_TYPES.PRODUCTION_QUEUE,
     sourceStatus: raw?.status ?? null,
     sourceNextAction: nextAction,
     orderType,
   });
+  // Align with Dashboard: READY_TO_START is not Running / PRODUCTION_PENDING swimlane confusion.
+  if (workState === "READY_TO_START" && currentStatus === CONTROL_TOWER_STATUSES.PRODUCTION_PENDING) {
+    currentStatus = CONTROL_TOWER_STATUSES.READY_TO_START;
+  }
+  if (workState === "PAUSED_PRODUCTION") {
+    currentStatus = CONTROL_TOWER_STATUSES.PRODUCTION_ON_HOLD;
+  }
 
   return buildNormalizedRow({
     rowType: ROW_TYPES.PRODUCTION_QUEUE,
@@ -350,7 +364,10 @@ function normalizeProductionRow(raw) {
     documentNo: formatProductionQueueDocumentNo(raw),
     currentStatus,
     currentOwner: ownerForProductionNextAction(nextAction),
-    nextAction: raw?.actionLabel ?? nextAction,
+    nextAction:
+      workState === "READY_TO_START"
+        ? "Ready to Start"
+        : raw?.actionLabel ?? nextAction,
     ageHours: ageHoursFromTimestamp(raw?.workOrderDate),
     riskLevel: nextAction === "ON_HOLD" ? RISK_LEVELS.MEDIUM : RISK_LEVELS.LOW,
     sourceModule: SOURCE_MODULES.PRODUCTION_QUEUE,
@@ -368,6 +385,7 @@ function normalizeProductionRow(raw) {
       cycleId: raw?.cycleId ?? null,
       rmReadinessGate: raw?.rmReadinessGate ?? null,
       productionExecutionStatus: raw?.productionExecutionStatus ?? null,
+      productionWorkState: raw?.productionWorkState ?? null,
       actionHref: raw?.actionHref ?? null,
       lastShortageQty: raw?.lastShortageQty ?? null,
       ...lineage,

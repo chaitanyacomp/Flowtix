@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { Badge } from "../components/ui/badge";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../contexts/ToastContext";
@@ -287,8 +288,8 @@ export function EnquiriesPage() {
   const [customerId, setCustomerId] = React.useState(0);
   const [flowType, setFlowType] = React.useState<"REGULAR" | "NO_QTY">("REGULAR");
   const [remarks, setRemarks] = React.useState("");
-  const [enqLines, setEnqLines] = React.useState<{ itemId: number; qty: number }[]>([
-    { itemId: 0, qty: Number.NaN },
+  const [enqLines, setEnqLines] = React.useState<{ itemId: number; qty: string }[]>([
+    { itemId: 0, qty: "" },
   ]);
   const [creating, setCreating] = React.useState(false);
 
@@ -308,7 +309,7 @@ export function EnquiriesPage() {
   const [editCustomerId, setEditCustomerId] = React.useState(0);
   const [editFlowType, setEditFlowType] = React.useState<"REGULAR" | "NO_QTY">("REGULAR");
   const [editRemarks, setEditRemarks] = React.useState("");
-  const [editLines, setEditLines] = React.useState<{ itemId: number; qty: number }[]>([]);
+  const [editLines, setEditLines] = React.useState<{ itemId: number; qty: string }[]>([]);
   const [savingEdit, setSavingEdit] = React.useState(false);
 
   // Feasibility form state (now lives in side panel)
@@ -374,7 +375,7 @@ export function EnquiriesPage() {
     setFlowType("REGULAR");
     setRemarks("");
     setCustomerId(customers[0]?.id ?? 0);
-    setEnqLines([{ itemId: items[0]?.id ?? 0, qty: Number.NaN }]);
+    setEnqLines([{ itemId: items[0]?.id ?? 0, qty: "" }]);
   }
 
   async function onCreate() {
@@ -425,7 +426,7 @@ export function EnquiriesPage() {
     setEditCustomerId(r.customer.id);
     setEditFlowType((r.flowType ?? "REGULAR") === "NO_QTY" ? "NO_QTY" : "REGULAR");
     setEditRemarks(r.remarks ?? "");
-    setEditLines(r.lines.map((l) => ({ itemId: l.item.id, qty: Number(l.qty) })));
+    setEditLines(r.lines.map((l) => ({ itemId: l.item.id, qty: String(l.qty) })));
   }
 
   async function saveEdit(e: React.FormEvent) {
@@ -458,7 +459,7 @@ export function EnquiriesPage() {
           lines:
             editFlowType === "NO_QTY"
               ? editLines.map((l) => ({ itemId: l.itemId }))
-              : editLines.map((l) => ({ itemId: l.itemId, qty: l.qty })),
+              : editLines.map((l) => ({ itemId: l.itemId, qty: Number(l.qty) })),
         }),
       });
       setEditRow(null);
@@ -951,16 +952,12 @@ export function EnquiriesPage() {
                     {editFlowType === "REGULAR" ? (
                       <div className="erp-form-field max-w-[10rem]">
                         <span className="erp-form-label">Qty</span>
-                        <Input
-                          type="number"
-                          min={0.001}
-                          step="any"
-                          value={Number.isFinite(l.qty) ? String(l.qty) : ""}
+                        <DecimalInput
+                          value={l.qty}
                           onFocus={(e) => e.target.select()}
-                          onChange={(e) => {
-                            const raw = e.target.value;
-                            const v = raw.trim() === "" ? Number.NaN : Number(raw);
-                            setEditLines((p) => p.map((x, j) => (j === i ? { ...x, qty: v } : x)));
+                          normalizeOnBlur={false}
+                          onValueChange={(next) => {
+                            setEditLines((p) => p.map((x, j) => (j === i ? { ...x, qty: next } : x)));
                           }}
                         />
                       </div>
@@ -992,7 +989,7 @@ export function EnquiriesPage() {
                       );
                       return;
                     }
-                    setEditLines((p) => [...p, { itemId: nextItem.id, qty: Number.NaN }]);
+                    setEditLines((p) => [...p, { itemId: nextItem.id, qty: "" }]);
                   }}
                 >
                   Add line
@@ -1049,8 +1046,8 @@ function NewEnquiryPanel(props: {
   setFlowType: (v: "REGULAR" | "NO_QTY") => void;
   remarks: string;
   setRemarks: (v: string) => void;
-  lines: { itemId: number; qty: number }[];
-  setLines: React.Dispatch<React.SetStateAction<{ itemId: number; qty: number }[]>>;
+  lines: { itemId: number; qty: string }[];
+  setLines: React.Dispatch<React.SetStateAction<{ itemId: number; qty: string }[]>>;
   creating: boolean;
   onCancel: () => void;
   onSubmit: () => void;
@@ -1156,30 +1153,26 @@ function NewEnquiryPanel(props: {
                   </select>
                 </div>
                 <div className="col-span-5 flex items-center gap-1.5">
-                  <Input
+                  <DecimalInput
                     ref={(el) => {
                       qtyInputRefs.current[i] = el;
                     }}
                     className="h-8 text-[13px]"
-                    type="number"
                     data-testid="enquiry-qty-input"
-                    min={0.001}
-                    step="any"
-                    value={Number.isFinite(l.qty) ? String(l.qty) : ""}
+                    value={l.qty}
                     onFocus={(e) => e.target.select()}
+                    normalizeOnBlur={false}
                     onKeyDown={(e) => {
                       if (e.key !== "Enter") return;
                       e.preventDefault();
                       const used = new Set(lines.map((x) => x.itemId));
                       const nextItem = items.find((it) => !used.has(it.id));
                       if (!nextItem) return;
-                      setLines((p) => [...p, { itemId: nextItem.id, qty: Number.NaN }]);
+                      setLines((p) => [...p, { itemId: nextItem.id, qty: "" }]);
                       window.setTimeout(() => itemSelectRefs.current[i + 1]?.focus(), 0);
                     }}
-                    onChange={(e) => {
-                      const raw = (e.target as HTMLInputElement).value;
-                      const v = raw.trim() === "" ? Number.NaN : Number(raw);
-                      setLines((p) => p.map((x, j) => (j === i ? { ...x, qty: v } : x)));
+                    onValueChange={(next) => {
+                      setLines((p) => p.map((x, j) => (j === i ? { ...x, qty: next } : x)));
                     }}
                   />
                   {lines.length > 1 ? (
@@ -1248,7 +1241,7 @@ function NewEnquiryPanel(props: {
               onAddLineErrorToast();
               return;
             }
-            setLines((p) => [...p, { itemId: nextItem.id, qty: Number.NaN }]);
+            setLines((p) => [...p, { itemId: nextItem.id, qty: "" }]);
             window.setTimeout(() => itemSelectRefs.current[lines.length]?.focus(), 0);
           }}
         >

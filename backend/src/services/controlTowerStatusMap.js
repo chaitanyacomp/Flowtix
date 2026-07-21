@@ -9,7 +9,10 @@ const CONTROL_TOWER_STATUSES = Object.freeze({
   WAITING_RM: "WAITING_RM",
   PROCUREMENT_IN_PROGRESS: "PROCUREMENT_IN_PROGRESS",
   RM_READY_FOR_ISSUE: "RM_READY_FOR_ISSUE",
+  /** @deprecated Prefer READY_TO_START — kept as alias for older rows/tests. */
   WO_RELEASE_READY: "WO_RELEASE_READY",
+  /** RM-ready WO waiting for Production to start (not Running). */
+  READY_TO_START: "READY_TO_START",
 
   PRODUCTION_PENDING: "PRODUCTION_PENDING",
   PRODUCTION_ON_HOLD: "PRODUCTION_ON_HOLD",
@@ -45,7 +48,8 @@ const RM_READY_QUEUE_TYPES = new Set([
   "PMR_WAITING_ISSUE",
 ]);
 
-const WO_RELEASE_QUEUE_TYPES = new Set(["READY_TO_RELEASE_WO"]);
+/** Legacy queue type — material issued; Production owns Ready to Start (no Store release step). */
+const READY_TO_START_QUEUE_TYPES = new Set(["READY_TO_RELEASE_WO"]);
 
 function normToken(v) {
   return String(v ?? "")
@@ -74,8 +78,9 @@ function mapSourceToCurrentStatus(input = {}) {
   if (sourceQueueType && RM_READY_QUEUE_TYPES.has(sourceQueueType)) {
     return CONTROL_TOWER_STATUSES.RM_READY_FOR_ISSUE;
   }
-  if (sourceQueueType && WO_RELEASE_QUEUE_TYPES.has(sourceQueueType)) {
-    return CONTROL_TOWER_STATUSES.WO_RELEASE_READY;
+  // Canonical: RM issued / ready for Production start → Ready to Start (not Store "Release").
+  if (sourceQueueType && READY_TO_START_QUEUE_TYPES.has(sourceQueueType)) {
+    return CONTROL_TOWER_STATUSES.READY_TO_START;
   }
   if (
     sourceQueueType &&

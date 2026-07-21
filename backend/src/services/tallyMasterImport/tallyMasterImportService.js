@@ -83,6 +83,204 @@ function isEmptyField(v) {
   return false;
 }
 
+/**
+ * Persist exact Tally master identity on create.
+ * @param {{ tallyName?: string | null; tallyGuid?: string | null }} row
+ */
+function tallyIdentityCreateData(row) {
+  const tallyName = typeof row?.tallyName === "string" && row.tallyName.trim() ? row.tallyName.trim() : null;
+  const tallyGuid = typeof row?.tallyGuid === "string" && row.tallyGuid.trim() ? row.tallyGuid.trim().slice(0, 64) : null;
+  return {
+    tallyName,
+    tallyGuid,
+    tallyImportedAt: new Date(),
+  };
+}
+
+/**
+ * Backfill empty Tally identity on existing ERP rows (including SKIP_DUPLICATE).
+ * Only touches tallyName / tallyGuid / tallyImportedAt — never business fields.
+ * @param {{ tallyName?: string | null; tallyGuid?: string | null; tallyImportedAt?: Date | null }} ex
+ * @param {{ tallyName?: string | null; tallyGuid?: string | null }} row
+ */
+function tallyIdentityBackfillPatch(ex, row) {
+  const patch = {};
+  const tallyName = typeof row?.tallyName === "string" && row.tallyName.trim() ? row.tallyName.trim() : null;
+  const tallyGuid = typeof row?.tallyGuid === "string" && row.tallyGuid.trim() ? row.tallyGuid.trim().slice(0, 64) : null;
+  if (isEmptyField(ex?.tallyName) && tallyName) patch.tallyName = tallyName;
+  if (isEmptyField(ex?.tallyGuid) && tallyGuid) patch.tallyGuid = tallyGuid;
+  if (!ex?.tallyImportedAt && (tallyName || tallyGuid || ex?.tallyName || ex?.tallyGuid)) {
+    patch.tallyImportedAt = new Date();
+  }
+  return patch;
+}
+
+/**
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+function isPrismaMissingColumnError(err) {
+  if (!err || typeof err !== "object") return false;
+  const code = /** @type {{ code?: string }} */ (err).code;
+  if (code === "P2022") return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /Unknown column|does not exist in the current database|Unknown arg.*tally(Name|Guid|ImportedAt)/i.test(msg);
+}
+
+/**
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+function isPrismaValidationError(err) {
+  if (!err || typeof err !== "object") return false;
+  const name = /** @type {{ name?: string; constructor?: { name?: string } }} */ (err).name
+    || err.constructor?.name
+    || "";
+  return name === "PrismaClientValidationError" || isPrismaMissingColumnError(err);
+}
+
+/**
+ * Human-readable apply failure for a single master row.
+ * @param {string} entityLabel
+ * @param {string} masterName
+ * @param {string} field
+ * @param {string} reason
+ */
+function formatImportRowError(entityLabel, masterName, field, reason) {
+  const name = String(masterName || "").trim() || "(unnamed)";
+  const f = String(field || "").trim();
+  const r = String(reason || "").trim() || "Import failed.";
+  if (f) return `${entityLabel} '${name}': ${f} — ${r}`;
+  return `${entityLabel} '${name}': ${r}`;
+}
+
+/**
+ * Match an existing party by authoritative identity: tallyGuid → exact Tally name → GSTIN.
+ * Strategies are tried in order; a unique hit wins. Conflicting unique hits across strategies
+ * (e.g. name→A and GSTIN→B) are ambiguous and require user mapping.
+ *
+ * @param {{
+ *   tallyGuid: string | null;
+ *   tallyName: string;
+ *   displayName: string;
+ *   gstNorm: string | null;
+ *   byGuid: Map<string, object>;
+ *   byTallyName: Map<string, object>;
+ *   byDisplayName: Map<string, object>;
+ *   byGstin: Map<string, object>;
+ *   entityLabel: string;
+ * }} args
+ * @returns {{ match: object | null; ambiguous: boolean; error: string | null; matchVia: string[] }}
+ */
+function resolveExistingPartyMatch(args) {
+  const guid = typeof args.tallyGuid === "string" && args.tallyGuid.trim() ? args.tallyGuid.trim().toLowerCase() : null;
+  if (guid) {
+    const byGuid = args.byGuid.get(guid);
+    if (byGuid) {
+      return { match: byGuid, ambiguous: false, error: null, matchVia: ["tallyGuid"] };
+    }
+  }
+
+  const tallyKey = normalizeMasterNameKey(args.tallyName);
+  const displayKey = normalizeMasterNameKey(args.displayName);
+  /** @type {Map<number, { row: object; via: string }>} */
+  const nameHits = new Map();
+  if (tallyKey) {
+    const row = args.byTallyName.get(tallyKey);
+    if (row?.id != null) nameHits.set(Number(row.id), { row, via: "tallyName" });
+  }
+  if (displayKey) {
+    const row = args.byDisplayName.get(displayKey);
+    if (row?.id != null && !nameHits.has(Number(row.id))) {
+      nameHits.set(Number(row.id), { row, via: "name" });
+    } else if (row?.id != null && nameHits.has(Number(row.id))) {
+      // same id already recorded
+    }
+  }
+  if (nameHits.size > 1) {
+    const labels = [...nameHits.values()].map((h) => String(h.row.tallyName || h.row.name || `#${h.row.id}`));
+    return {
+      match: null,
+      ambiguous: true,
+      error: `Ambiguous match (candidates: ${labels.join(", ")}). Map the existing master explicitly instead of guessing.`,
+      matchVia: [],
+    };
+  }
+
+  const nameHit = nameHits.size === 1 ? [...nameHits.values()][0] : null;
+  const gstHit = args.gstNorm ? args.byGstin.get(args.gstNorm) : null;
+
+  if (nameHit && gstHit && Number(nameHit.row.id) !== Number(gstHit.id)) {
+    const a = String(nameHit.row.tallyName || nameHit.row.name || `#${nameHit.row.id}`);
+    const b = String(gstHit.tallyName || gstHit.name || `#${gstHit.id}`);
+    return {
+      match: null,
+      ambiguous: true,
+      error: `Ambiguous match (candidates: ${a}, ${b}). Map the existing master explicitly instead of guessing.`,
+      matchVia: [],
+    };
+  }
+
+  if (nameHit) {
+    return { match: nameHit.row, ambiguous: false, error: null, matchVia: [nameHit.via] };
+  }
+  if (gstHit) {
+    return { match: gstHit, ambiguous: false, error: null, matchVia: ["gstin"] };
+  }
+  return { match: null, ambiguous: false, error: null, matchVia: [] };
+}
+
+/**
+ * Apply identity-only backfill for a SKIP_DUPLICATE row. Never throws out of this helper.
+ * @returns {Promise<"UPDATED" | "SKIPPED" | "FAILED">}
+ */
+async function applyIdentityBackfillSafe(db, model, existingErpId, row, entityType, pushResult) {
+  if (!existingErpId) {
+    pushResult(entityType, row.tallyName, "SKIPPED", null, null, row.warnings?.[0] || null);
+    return "SKIPPED";
+  }
+  try {
+    const ex = await db[model].findUnique({
+      where: { id: existingErpId },
+      select: { id: true, tallyName: true, tallyGuid: true, tallyImportedAt: true },
+    });
+    if (!ex) {
+      pushResult(entityType, row.tallyName, "SKIPPED", existingErpId, null, row.warnings?.[0] || null);
+      return "SKIPPED";
+    }
+    const idPatch = tallyIdentityBackfillPatch(ex, row);
+    if (Object.keys(idPatch).length) {
+      await db[model].update({ where: { id: ex.id }, data: idPatch });
+      pushResult(
+        entityType,
+        row.tallyName,
+        "UPDATED",
+        ex.id,
+        null,
+        "Tally identity backfilled (tallyName / tallyGuid / tallyImportedAt only).",
+      );
+      return "UPDATED";
+    }
+    pushResult(entityType, row.tallyName, "SKIPPED", existingErpId, null, row.warnings?.[0] || null);
+    return "SKIPPED";
+  } catch (e) {
+    let reason = e instanceof Error ? e.message : String(e);
+    if (isPrismaValidationError(e) || isPrismaMissingColumnError(e)) {
+      reason =
+        "Tally identity columns are missing or the Prisma client is out of date. Apply migration 20260721180000_tally_master_identity and run npx prisma generate.";
+    }
+    pushResult(
+      entityType,
+      row.tallyName,
+      "FAILED",
+      existingErpId,
+      formatImportRowError(entityType === "CUSTOMER" ? "Customer" : entityType === "SUPPLIER" ? "Supplier" : entityType, row.tallyName, "Tally identity", reason),
+      null,
+    );
+    return "FAILED";
+  }
+}
+
 /** Simple email check to avoid Prisma issues. */
 function safeEmailOrNull(raw) {
   const t = String(raw ?? "").trim();
@@ -419,25 +617,77 @@ async function buildPreviewPayload(db, xmlString, options) {
   });
   const statesByCode = new Map(states.map((s) => [s.stateCode, s]));
 
-  const customersDb = await db.customer.findMany({
-    select: { id: true, name: true, gst: true, address: true, stateId: true, state: true, contact: true, email: true },
-  });
-  const suppliersDb = await db.supplier.findMany({
-    select: { id: true, name: true, gst: true, address: true, stateId: true, stateName: true, stateCode: true, contact: true, email: true },
-  });
+  const partySelectWithIdentity = {
+    id: true,
+    name: true,
+    gst: true,
+    address: true,
+    stateId: true,
+    contact: true,
+    email: true,
+    tallyName: true,
+    tallyGuid: true,
+    tallyImportedAt: true,
+  };
+  let identityColumnsAvailable = true;
+  let customersDb;
+  let suppliersDb;
+  try {
+    customersDb = await db.customer.findMany({
+      select: { ...partySelectWithIdentity, state: true },
+    });
+    suppliersDb = await db.supplier.findMany({
+      select: { ...partySelectWithIdentity, stateName: true, stateCode: true },
+    });
+  } catch (e) {
+    if (!isPrismaMissingColumnError(e) && !isPrismaValidationError(e)) throw e;
+    identityColumnsAvailable = false;
+    customersDb = await db.customer.findMany({
+      select: { id: true, name: true, gst: true, address: true, stateId: true, state: true, contact: true, email: true },
+    });
+    suppliersDb = await db.supplier.findMany({
+      select: { id: true, name: true, gst: true, address: true, stateId: true, stateName: true, stateCode: true, contact: true, email: true },
+    });
+  }
   const itemsDb = await db.item.findMany({
     select: { id: true, itemName: true, hsnCode: true, gstRate: true, unitId: true, unit: true, itemType: true },
   });
   const unitsDb = await db.unit.findMany({ where: { isActive: true }, select: { id: true, unitName: true, unitCode: true } });
 
   const customerByKey = new Map(customersDb.map((c) => [normalizeMasterNameKey(c.name), c]));
+  const customerByTallyName = new Map(
+    customersDb
+      .filter((c) => c.tallyName)
+      .map((c) => [normalizeMasterNameKey(c.tallyName), c]),
+  );
+  const customerByGuid = new Map(
+    customersDb
+      .filter((c) => c.tallyGuid)
+      .map((c) => [String(c.tallyGuid).trim().toLowerCase(), c]),
+  );
   const customerByGstin = new Map(
     customersDb
-      .map((c) => ({ id: c.id, gst: normalizeGstinOnSave(c.gst) }))
-      .filter((c) => c.gst)
-      .map((c) => [c.gst, c]),
+      .map((c) => ({ ...c, gstNorm: normalizeGstinOnSave(c.gst) }))
+      .filter((c) => c.gstNorm)
+      .map((c) => [c.gstNorm, c]),
   );
   const supplierByKey = new Map(suppliersDb.map((s) => [normalizeMasterNameKey(s.name), s]));
+  const supplierByTallyName = new Map(
+    suppliersDb
+      .filter((s) => s.tallyName)
+      .map((s) => [normalizeMasterNameKey(s.tallyName), s]),
+  );
+  const supplierByGuid = new Map(
+    suppliersDb
+      .filter((s) => s.tallyGuid)
+      .map((s) => [String(s.tallyGuid).trim().toLowerCase(), s]),
+  );
+  const supplierByGstin = new Map(
+    suppliersDb
+      .map((s) => ({ ...s, gstNorm: normalizeGstinOnSave(s.gst) }))
+      .filter((s) => s.gstNorm)
+      .map((s) => [s.gstNorm, s]),
+  );
   const itemByKey = new Map(itemsDb.map((it) => [normalizeMasterNameKey(it.itemName), it]));
   const unitByKey = new Map(unitsDb.map((u) => [normalizeUnitKey(u.unitName), u]));
 
@@ -447,6 +697,11 @@ async function buildPreviewPayload(db, xmlString, options) {
   };
 
   const warnings = [...parsed.warnings];
+  if (!identityColumnsAvailable) {
+    warnings.push(
+      "Tally identity columns (tallyName / tallyGuid) are not available on this database yet. Apply migration 20260721180000_tally_master_identity and regenerate the Prisma client so duplicate parties can store exact Tally names.",
+    );
+  }
   /** @type {unknown[]} */
   const partyDiagnostics = [];
   const customers = [];
@@ -458,7 +713,7 @@ async function buildPreviewPayload(db, xmlString, options) {
     process.env.TALLY_IMPORT_DEBUG === "true" ||
     String(process.env.NODE_ENV || "").toLowerCase() === "development";
 
-  /** @type {Map<string, { unitName: string; unitCode: string | null }>} */
+  /** @type {Map<string, { unitName: string; unitCode: string | null; tallyGuid: string | null }>} */
   const tallyUnitsToImport = new Map();
 
   for (const uRaw of parsed.units) {
@@ -466,7 +721,11 @@ async function buildPreviewPayload(db, xmlString, options) {
     if (!mu) continue;
     const k = normalizeUnitKey(mu.unitName);
     if (!k) continue;
-    tallyUnitsToImport.set(k, { unitName: normalizeMasterNameDisplay(mu.unitName), unitCode: mu.unitCode });
+    tallyUnitsToImport.set(k, {
+      unitName: normalizeMasterNameDisplay(mu.unitName),
+      unitCode: mu.unitCode,
+      tallyGuid: mu.tallyGuid || null,
+    });
   }
 
   for (const sRaw of parsed.stockItems) {
@@ -475,7 +734,11 @@ async function buildPreviewPayload(db, xmlString, options) {
     if (mi.baseUnit) {
       const k = normalizeUnitKey(mi.baseUnit);
       if (k && !tallyUnitsToImport.has(k)) {
-        tallyUnitsToImport.set(k, { unitName: normalizeMasterNameDisplay(mi.baseUnit), unitCode: null });
+        tallyUnitsToImport.set(k, {
+          unitName: normalizeMasterNameDisplay(mi.baseUnit),
+          unitCode: null,
+          tallyGuid: null,
+        });
       }
     }
   }
@@ -499,6 +762,7 @@ async function buildPreviewPayload(db, xmlString, options) {
     units.push({
       entityType: "UNIT",
       tallyName,
+      tallyGuid: uData.tallyGuid || null,
       proposedAction,
       existingErpId: existing ? existing.id : null,
       warnings: rowWarnings,
@@ -512,13 +776,19 @@ async function buildPreviewPayload(db, xmlString, options) {
   for (const lRaw of parsed.ledgers) {
     const cust = mapLedgerToParty(lRaw, "CUSTOMER");
     if (cust) {
-      const nk = normalizeMasterNameKey(cust.name);
       const { gstRaw, gstNorm, gstMsg } = resolveImportGstin(cust.gst);
-
-      const existingByGst = gstNorm ? customerByGstin.get(gstNorm) : null;
-      const existingByName = customerByKey.get(nk);
-      const existing =
-        existingByGst && existingByGst.id ? customersDb.find((c) => c.id === existingByGst.id) ?? existingByName : existingByName;
+      const resolved = resolveExistingPartyMatch({
+        tallyGuid: cust.tallyGuid || null,
+        tallyName: cust.tallyName,
+        displayName: cust.name,
+        gstNorm,
+        byGuid: customerByGuid,
+        byTallyName: customerByTallyName,
+        byDisplayName: customerByKey,
+        byGstin: customerByGstin,
+        entityLabel: "Customer",
+      });
+      const existing = resolved.match;
 
       const stateIdFromGst = gstNorm ? stateIdFromGstinPrefix(gstNorm, statesByCode) : null;
       const stateIdFromText = stateIdFromStateText(cust.stateText, states);
@@ -543,13 +813,29 @@ async function buildPreviewPayload(db, xmlString, options) {
       if (stateIdFromGst && stateIdFromText && stateIdFromGst !== stateIdFromText) {
         rowWarnings.push("GSTIN state differs from Tally state. GSTIN state will be used.");
       }
+      if (resolved.ambiguous && resolved.error) {
+        pushFieldIssue(rowErrors, fieldIssues, {
+          masterName: cust.tallyName || cust.name,
+          masterType: "Customer",
+          field: "Match",
+          actualValue: cust.tallyName || cust.name,
+          reason: resolved.error,
+        });
+      }
       if (existing && gstNorm && existing.gst) {
         const eg = normalizeGstinOnSave(existing.gst);
         if (eg && gstNorm && eg !== gstNorm) rowWarnings.push("GSTIN in Tally differs from existing customer record.");
       }
+      if (existing && resolved.matchVia?.includes("gstin") && !resolved.matchVia.includes("name") && !resolved.matchVia.includes("tallyName")) {
+        rowWarnings.push(
+          `Matched existing customer '${existing.name}' by GSTIN (Tally ledger '${cust.tallyName}'). Identity will be backfilled; business fields are not overwritten.`,
+        );
+      }
 
       let proposedAction = "CREATE";
-      if (existing) {
+      if (rowErrors.length) {
+        proposedAction = "ERROR";
+      } else if (existing) {
         if (options.duplicateAction === "UPDATE_EMPTY_FIELDS_ONLY") {
           const empties =
             isEmptyField(existing.contact) ||
@@ -566,13 +852,13 @@ async function buildPreviewPayload(db, xmlString, options) {
           proposedAction = empties && tallyHas ? "UPDATE_EMPTY_FIELDS" : "SKIP_DUPLICATE";
           if (proposedAction === "SKIP_DUPLICATE" && !empties) {
             rowWarnings.push(
-              "Duplicate customer name — existing non-empty fields will not be overwritten (clear wrong GSTIN/address/contact first, or delete/reset the customer).",
+              "Duplicate customer — existing non-empty fields will not be overwritten. Tally identity (tallyName / tallyGuid) will still be backfilled when empty.",
             );
           }
         } else {
           proposedAction = "SKIP_DUPLICATE";
           rowWarnings.push(
-            "Duplicate customer name — import will skip updates (choose “Update empty fields only” after clearing wrong values, or delete/reset the existing customer).",
+            "Duplicate customer — business fields skipped. Tally identity (tallyName / tallyGuid) will be backfilled when empty.",
           );
         }
       }
@@ -580,6 +866,7 @@ async function buildPreviewPayload(db, xmlString, options) {
       customers.push({
         entityType: "CUSTOMER",
         tallyName: cust.tallyName,
+        tallyGuid: cust.tallyGuid || null,
         proposedAction,
         existingErpId: existing ? existing.id : null,
         warnings: rowWarnings,
@@ -614,9 +901,19 @@ async function buildPreviewPayload(db, xmlString, options) {
 
     const sup = mapLedgerToParty(lRaw, "SUPPLIER");
     if (sup) {
-      const nk = normalizeMasterNameKey(sup.name);
-      const existing = supplierByKey.get(nk);
       const { gstRaw, gstNorm, gstMsg } = resolveImportGstin(sup.gst);
+      const resolved = resolveExistingPartyMatch({
+        tallyGuid: sup.tallyGuid || null,
+        tallyName: sup.tallyName,
+        displayName: sup.name,
+        gstNorm,
+        byGuid: supplierByGuid,
+        byTallyName: supplierByTallyName,
+        byDisplayName: supplierByKey,
+        byGstin: supplierByGstin,
+        entityLabel: "Supplier",
+      });
+      const existing = resolved.match;
       const stateId =
         stateIdFromGstinPrefix(gstNorm, statesByCode) ||
         stateIdFromStateText(sup.stateText, states) ||
@@ -636,7 +933,17 @@ async function buildPreviewPayload(db, xmlString, options) {
           disposition: "GSTIN will be left blank on import",
         });
       }
-      if (!stateId) {
+      if (resolved.ambiguous && resolved.error) {
+        pushFieldIssue(rowErrors, fieldIssues, {
+          masterName: sup.tallyName || sup.name,
+          masterType: "Supplier",
+          field: "Match",
+          actualValue: sup.tallyName || sup.name,
+          reason: resolved.error,
+        });
+      }
+      // State is required only when creating a new supplier — existing matches stay eligible for identity backfill.
+      if (!existing && !stateId) {
         pushFieldIssue(rowErrors, fieldIssues, {
           masterName: sup.name,
           masterType: "Supplier",
@@ -644,10 +951,19 @@ async function buildPreviewPayload(db, xmlString, options) {
           actualValue: sup.stateText,
           reason: "State could not be matched. Choose a fallback state in import options or fix the Tally address/GSTIN.",
         });
+      } else if (existing && !stateId) {
+        rowWarnings.push(
+          "State could not be matched from Tally; existing supplier will keep its ERP state. Identity backfill still applies.",
+        );
       }
       if (existing && gstNorm && existing.gst) {
         const eg = normalizeGstinOnSave(existing.gst);
         if (eg && gstNorm && eg !== gstNorm) rowWarnings.push("GSTIN in Tally differs from existing supplier record.");
+      }
+      if (existing && resolved.matchVia?.includes("gstin") && !resolved.matchVia.includes("name") && !resolved.matchVia.includes("tallyName")) {
+        rowWarnings.push(
+          `Matched existing supplier '${existing.name}' by GSTIN (Tally ledger '${sup.tallyName}'). Identity will be backfilled; business fields are not overwritten.`,
+        );
       }
 
       let proposedAction = "CREATE";
@@ -670,13 +986,13 @@ async function buildPreviewPayload(db, xmlString, options) {
           proposedAction = empties && tallyHas ? "UPDATE_EMPTY_FIELDS" : "SKIP_DUPLICATE";
           if (proposedAction === "SKIP_DUPLICATE" && !empties) {
             rowWarnings.push(
-              "Duplicate supplier name — existing non-empty fields will not be overwritten (choose Skip or clear wrong values first).",
+              "Duplicate supplier — existing non-empty fields will not be overwritten. Tally identity (tallyName / tallyGuid) will still be backfilled when empty.",
             );
           }
         } else {
           proposedAction = "SKIP_DUPLICATE";
           rowWarnings.push(
-            "Duplicate supplier name — import will skip updates (choose “Update empty fields only” or delete/reset the existing supplier).",
+            "Duplicate supplier — business fields skipped. Tally identity (tallyName / tallyGuid) will be backfilled when empty.",
           );
         }
       }
@@ -684,6 +1000,7 @@ async function buildPreviewPayload(db, xmlString, options) {
       suppliers.push({
         entityType: "SUPPLIER",
         tallyName: sup.tallyName,
+        tallyGuid: sup.tallyGuid || null,
         proposedAction,
         existingErpId: existing ? existing.id : null,
         warnings: rowWarnings,
@@ -815,6 +1132,7 @@ async function buildPreviewPayload(db, xmlString, options) {
     items.push({
       entityType: "ITEM",
       tallyName: mi.tallyName,
+      tallyGuid: mi.tallyGuid || null,
       proposedAction,
       existingErpId: existing ? existing.id : null,
       warnings: rowWarnings,
@@ -898,6 +1216,25 @@ async function buildPreviewPayload(db, xmlString, options) {
   if ((parseStats.voucherTypesParsed ?? 0) > 0) {
     infoNotes.push(`Voucher Types (${parseStats.voucherTypesParsed}): ${deferredNote}`);
   }
+  if ((parseStats.stockItemsParsed ?? 0) === 0 && (parseStats.unitsParsed ?? 0) === 0) {
+    infoNotes.push(
+      "This XML contains no Stock Items or Units. Item identities were not updated. Export Stock Items and Units separately from Tally (master export including STOCKITEM / UNIT), then run Preview again.",
+    );
+  }
+
+  const blockingErrors = [...customers, ...suppliers, ...items, ...units]
+    .filter((r) => r.proposedAction === "ERROR" || (Array.isArray(r.errors) && r.errors.length > 0))
+    .map((r) => ({
+      entityType: r.entityType,
+      tallyName: r.tallyName,
+      proposedAction: r.proposedAction,
+      errors: r.errors,
+      fieldIssues: r.fieldIssues || [],
+      message:
+        (r.fieldIssues && r.fieldIssues[0] && r.fieldIssues[0].message) ||
+        (Array.isArray(r.errors) && r.errors[0]) ||
+        `${r.entityType} '${r.tallyName}' has a blocking error.`,
+    }));
 
   const previewTotal = customers.length + suppliers.length + items.length + units.length;
   const rawTagSum =
@@ -930,6 +1267,9 @@ async function buildPreviewPayload(db, xmlString, options) {
     ok: true,
     warnings,
     infoNotes,
+    blockingErrors,
+    blockingErrorCount: blockingErrors.length,
+    identityBackfillEligible: identityColumnsAvailable,
     parsedMasterCounts,
     summary,
     customers,
@@ -993,8 +1333,15 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
 
   for (const row of payload.units) {
     if (row.proposedAction === "SKIP_DUPLICATE" || row.proposedAction === "ERROR") {
-      skipped += 1;
-      pushResult("UNIT", row.tallyName, "SKIPPED", row.existingErpId, null, row.warnings[0] || null);
+      if (row.proposedAction === "SKIP_DUPLICATE") {
+        const outcome = await applyIdentityBackfillSafe(db, "unit", row.existingErpId, row, "UNIT", pushResult);
+        if (outcome === "UPDATED") updated += 1;
+        else if (outcome === "FAILED") failed += 1;
+        else skipped += 1;
+      } else {
+        skipped += 1;
+        pushResult("UNIT", row.tallyName, "SKIPPED", row.existingErpId, row.errors[0] || null, row.warnings[0] || null);
+      }
       continue;
     }
     try {
@@ -1004,6 +1351,7 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
             unitName: row.mapped.unitName,
             unitCode: row.mapped.unitCode || null,
             isActive: true,
+            ...tallyIdentityCreateData(row),
           },
           select: { id: true },
         });
@@ -1011,10 +1359,17 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
         pushResult("UNIT", row.tallyName, "CREATED", createdRow.id, null, null);
       } else if (row.proposedAction === "UPDATE_EMPTY_FIELDS" && row.existingErpId) {
         const ex = await db.unit.findUnique({ where: { id: row.existingErpId } });
-        if (ex && isEmptyField(ex.unitCode) && row.mapped.unitCode) {
-          await db.unit.update({ where: { id: ex.id }, data: { unitCode: row.mapped.unitCode } });
-          updated += 1;
-          pushResult("UNIT", row.tallyName, "UPDATED", ex.id, null, null);
+        if (ex) {
+          const patch = { ...tallyIdentityBackfillPatch(ex, row) };
+          if (isEmptyField(ex.unitCode) && row.mapped.unitCode) patch.unitCode = row.mapped.unitCode;
+          if (Object.keys(patch).length) {
+            await db.unit.update({ where: { id: ex.id }, data: patch });
+            updated += 1;
+            pushResult("UNIT", row.tallyName, "UPDATED", ex.id, null, null);
+          } else {
+            skipped += 1;
+            pushResult("UNIT", row.tallyName, "SKIPPED", row.existingErpId, null, null);
+          }
         } else {
           skipped += 1;
           pushResult("UNIT", row.tallyName, "SKIPPED", row.existingErpId, null, null);
@@ -1031,8 +1386,15 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
 
   for (const row of payload.customers) {
     if (row.proposedAction === "SKIP_DUPLICATE" || row.proposedAction === "ERROR") {
-      skipped += 1;
-      pushResult("CUSTOMER", row.tallyName, "SKIPPED", row.existingErpId, null, row.warnings[0] || null);
+      if (row.proposedAction === "SKIP_DUPLICATE") {
+        const outcome = await applyIdentityBackfillSafe(db, "customer", row.existingErpId, row, "CUSTOMER", pushResult);
+        if (outcome === "UPDATED") updated += 1;
+        else if (outcome === "FAILED") failed += 1;
+        else skipped += 1;
+      } else {
+        skipped += 1;
+        pushResult("CUSTOMER", row.tallyName, "SKIPPED", row.existingErpId, row.errors[0] || null, row.warnings[0] || null);
+      }
       continue;
     }
     try {
@@ -1049,6 +1411,7 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
             contact: row.mapped.contact,
             email: row.mapped.email,
             isActive: true,
+            ...tallyIdentityCreateData(row),
           },
           select: { id: true },
         });
@@ -1077,7 +1440,7 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
           pushResult("CUSTOMER", row.tallyName, "FAILED", null, "Customer no longer exists.", null);
           continue;
         }
-        const patch = {};
+        const patch = { ...tallyIdentityBackfillPatch(ex, row) };
         if (isEmptyField(ex.contact) && row.mapped.contact) patch.contact = row.mapped.contact;
         if (isEmptyField(ex.email) && row.mapped.email) patch.email = row.mapped.email;
         if (isEmptyField(ex.address) && row.mapped.address) patch.address = row.mapped.address;
@@ -1115,14 +1478,39 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
       }
     } catch (e) {
       failed += 1;
-      pushResult("CUSTOMER", row.tallyName, "FAILED", null, e instanceof Error ? e.message : String(e), null);
+      let msg = e instanceof Error ? e.message : String(e);
+      if (isPrismaValidationError(e) || isPrismaMissingColumnError(e)) {
+        msg = formatImportRowError(
+          "Customer",
+          row.tallyName,
+          "Tally identity",
+          "Database/Prisma schema is out of date for Tally identity fields. Apply migration 20260721180000_tally_master_identity and run npx prisma generate.",
+        );
+      } else {
+        msg = formatImportRowError("Customer", row.tallyName, "Apply", msg);
+      }
+      pushResult("CUSTOMER", row.tallyName, "FAILED", null, msg, null);
     }
   }
 
   for (const row of payload.suppliers) {
     if (row.proposedAction === "SKIP_DUPLICATE" || row.proposedAction === "ERROR") {
-      skipped += 1;
-      pushResult("SUPPLIER", row.tallyName, "SKIPPED", row.existingErpId, row.errors[0] || null, row.warnings[0] || null);
+      if (row.proposedAction === "SKIP_DUPLICATE") {
+        const outcome = await applyIdentityBackfillSafe(db, "supplier", row.existingErpId, row, "SUPPLIER", pushResult);
+        if (outcome === "UPDATED") updated += 1;
+        else if (outcome === "FAILED") failed += 1;
+        else skipped += 1;
+      } else {
+        skipped += 1;
+        pushResult(
+          "SUPPLIER",
+          row.tallyName,
+          "SKIPPED",
+          row.existingErpId,
+          row.errors[0] || formatImportRowError("Supplier", row.tallyName, "Import", "Row left unresolved due to a blocking error."),
+          row.warnings[0] || null,
+        );
+      }
       continue;
     }
     try {
@@ -1151,6 +1539,7 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
             stateCode: st.stateCode,
             contact: row.mapped.contact,
             email: row.mapped.email,
+            ...tallyIdentityCreateData(row),
           },
           select: { id: true },
         });
@@ -1176,7 +1565,7 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
           pushResult("SUPPLIER", row.tallyName, "FAILED", null, "Supplier no longer exists.", null);
           continue;
         }
-        const patch = {};
+        const patch = { ...tallyIdentityBackfillPatch(ex, row) };
         if (isEmptyField(ex.contact) && row.mapped.contact) patch.contact = row.mapped.contact;
         if (isEmptyField(ex.email) && row.mapped.email) patch.email = row.mapped.email;
         if (isEmptyField(ex.address) && row.mapped.address) patch.address = row.mapped.address;
@@ -1212,7 +1601,25 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
       }
     } catch (e) {
       failed += 1;
-      pushResult("SUPPLIER", row.tallyName, "FAILED", null, e instanceof Error ? e.message : String(e), null);
+      let msg = e instanceof Error ? e.message : String(e);
+      if (isPrismaValidationError(e) || isPrismaMissingColumnError(e)) {
+        msg = formatImportRowError(
+          "Supplier",
+          row.tallyName,
+          "Tally identity",
+          "Database/Prisma schema is out of date for Tally identity fields. Apply migration 20260721180000_tally_master_identity and run npx prisma generate.",
+        );
+      } else if (/unique|duplicate|already/i.test(msg) && row.mapped?.gst) {
+        msg = formatImportRowError(
+          "Supplier",
+          row.tallyName,
+          "GSTIN",
+          `GSTIN already belongs to another supplier (value ${row.mapped.gst}).`,
+        );
+      } else {
+        msg = formatImportRowError("Supplier", row.tallyName, "Apply", msg);
+      }
+      pushResult("SUPPLIER", row.tallyName, "FAILED", null, msg, null);
     }
   }
 
@@ -1221,8 +1628,15 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
 
   for (const row of payload.items) {
     if (row.proposedAction === "SKIP_DUPLICATE" || row.proposedAction === "ERROR") {
-      skipped += 1;
-      pushResult("ITEM", row.tallyName, "SKIPPED", row.existingErpId, row.errors[0] || null, row.warnings[0] || null);
+      if (row.proposedAction === "SKIP_DUPLICATE") {
+        const outcome = await applyIdentityBackfillSafe(db, "item", row.existingErpId, row, "ITEM", pushResult);
+        if (outcome === "UPDATED") updated += 1;
+        else if (outcome === "FAILED") failed += 1;
+        else skipped += 1;
+      } else {
+        skipped += 1;
+        pushResult("ITEM", row.tallyName, "SKIPPED", row.existingErpId, row.errors[0] || null, row.warnings[0] || null);
+      }
       continue;
     }
     try {
@@ -1254,6 +1668,7 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
             gstRate: String(row.mapped.gstRate),
             redThresholdPercent: DEFAULT_CRITICAL,
             yellowThresholdPercent: DEFAULT_WARNING,
+            ...tallyIdentityCreateData(row),
           },
           select: { id: true },
         });
@@ -1266,7 +1681,7 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
           pushResult("ITEM", row.tallyName, "FAILED", null, "Item no longer exists.", null);
           continue;
         }
-        const patch = {};
+        const patch = { ...tallyIdentityBackfillPatch(ex, row) };
         if (isEmptyField(ex.hsnCode) && hsn) patch.hsnCode = hsn;
         if ((ex.gstRate == null || !Number.isFinite(Number(ex.gstRate))) && row.mapped.gstRate != null) {
           patch.gstRate = String(row.mapped.gstRate);
@@ -1292,6 +1707,7 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
     }
   }
 
+  const unresolved = results.filter((r) => r.action === "FAILED" || (r.action === "SKIPPED" && r.error));
   return {
     ok: true,
     created,
@@ -1300,6 +1716,12 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
     failed,
     results,
     warnings: payload.warnings,
+    unresolvedCount: unresolved.length,
+    unresolved: unresolved.slice(0, 50),
+    summaryMessage:
+      failed > 0 || unresolved.length
+        ? `Import finished with ${created} created, ${updated} updated (including identity backfills), ${skipped} skipped, ${failed} failed. ${unresolved.length} row(s) left unresolved — see results.`
+        : `Import finished: ${created} created, ${updated} updated, ${skipped} skipped.`,
   };
   } finally {
     deletePreviewSession(token);
@@ -1315,5 +1737,8 @@ module.exports = {
   normalizeStateTextForMatch,
   stateIdFromStateText,
   formatFieldIssue,
+  formatImportRowError,
+  resolveExistingPartyMatch,
+  tallyIdentityBackfillPatch,
   TALLY_IMPORT_PIPELINE_ID,
 };

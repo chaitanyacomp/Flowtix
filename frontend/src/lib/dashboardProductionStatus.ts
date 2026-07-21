@@ -60,12 +60,18 @@ export type DashboardProductionStatusSource = {
    * When omitted, frontend `assessProductionEntryEligibility` derives the same rule.
    */
   canAcceptProductionEntry?: boolean | null;
+  /** Backend Live Factory bucket (shared classifier). */
+  liveFactoryBucket?: string | null;
   /** Pause / block timestamp when WO is PAUSED or execution BLOCKED. */
   pausedAt?: string | null;
+  /** WO createdAt ISO — age / last activity fallback. */
+  workOrderDate?: string | null;
 };
 
 export type ProductionOperationalStatusTone =
+  | "ready"
   | "running"
+  | "paused"
   | "qc"
   | "partial"
   | "carryForward"
@@ -240,13 +246,35 @@ function effectiveProductionHref(row: DashboardProductionStatusSource): string |
 }
 
 /**
- * REGULAR flow — prefer backend nextAction + RM readiness (M1.6).
+ * REGULAR flow — prefer backend productionWorkState / nextAction + RM readiness (M1.6).
  * Qty/href may refine presentation only when nextAction is absent.
+ * Ready-to-start is never classified as Running.
  */
 function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): ProductionOperationalStatus {
-  const next = String(row.nextAction ?? "").trim().toUpperCase();
+  const workState = String(row.productionWorkState ?? "").trim().toUpperCase();
   const producedEarly = Number(row.producedQty ?? 0);
   const remainingEarly = Math.max(0, Number(row.balanceQty ?? 0));
+  const woStatusEarly = String(row.status ?? "").toUpperCase();
+  const execEarly = String(row.productionExecutionStatus ?? "").toUpperCase();
+
+  if (execEarly === "BLOCKED" || workState === "PAUSED_PRODUCTION" || woStatusEarly === "PAUSED") {
+    if (execEarly === "BLOCKED") {
+      const mapped = mapQueueReadinessToOperationalPresentation(row);
+      return { label: mapped.label || "Blocked", tone: mapped.tone === "idle" ? "partial" : mapped.tone };
+    }
+    return { label: "Paused", tone: "paused" };
+  }
+  if (workState === "READY_TO_START") {
+    return { label: "Ready to Start", tone: "ready" };
+  }
+  if (workState === "CONTINUE_PRODUCTION") {
+    return {
+      label: producedEarly > ROW_NUM_EPS && remainingEarly > ROW_NUM_EPS ? "Continue" : "Running",
+      tone: "running",
+    };
+  }
+
+  const next = String(row.nextAction ?? "").trim().toUpperCase();
   if (next) {
     // REGULAR does not use Next Cycle framing — keep historical Partially Produced for NEXT_RS.
     if (next === "NEXT_RS_REQUIRED") {
@@ -258,7 +286,7 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
       remainingEarly > ROW_NUM_EPS &&
       (next === "PRODUCTION_PENDING" || next === "PRODUCTION_DRAFT_REVIEW" || producedEarly > ROW_NUM_EPS)
     ) {
-      return { label: "Continue", tone: "partial" };
+      return { label: "Continue", tone: "running" };
     }
     const mapped = mapQueueReadinessToOperationalPresentation(row);
     if (
@@ -266,7 +294,7 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
       remainingEarly > ROW_NUM_EPS &&
       producedEarly > ROW_NUM_EPS
     ) {
-      return { label: "Continue", tone: "partial" };
+      return { label: "Continue", tone: "running" };
     }
     // Preserve prior REGULAR nuance: READY_FOR_PRODUCTION gate with zero produced → Partial RM at Production
     if (
@@ -276,6 +304,12 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
       row.rmReadyForProduction !== true
     ) {
       return { label: "Partial RM at Production", tone: "partial", contextHint: mapped.contextHint };
+    }
+    if (mapped.label === "Ready for Production" || mapped.label === "Ready to Start") {
+      return { label: "Ready to Start", tone: "ready", contextHint: mapped.contextHint };
+    }
+    if (mapped.label === "Waiting for Production") {
+      return { label: "Waiting for Production", tone: "ready", contextHint: mapped.contextHint };
     }
     return { label: mapped.label, tone: mapped.tone, contextHint: mapped.contextHint };
   }
@@ -291,7 +325,7 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
   if (woStatus === "HOLD") {
     return {
       label: holdReasonLabel(row.holdReason) === "On hold" ? "On Hold" : `On Hold - ${holdReasonLabel(row.holdReason)}`,
-      tone: "partial",
+      tone: "paused",
     };
   }
   if (woStatus === "CLOSED_WITH_SHORTFALL") {
@@ -303,11 +337,11 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
   if (gate === "WAITING_STORE_ISSUE") {
     return { label: "Waiting for RM issue", tone: "partial" };
   }
-  if (gate === "READY_FOR_PRODUCTION" && produced <= ROW_NUM_EPS) {
+  if (gate === "READY_FOR_PRODUCTION" && produced <= ROW_NUM_EPS && !rmReady) {
     return { label: "Partial RM at Production", tone: "partial" };
   }
   if (gate != null && !rmReady && produced <= ROW_NUM_EPS) {
-    return { label: "Waiting for Production", tone: "running" };
+    return { label: "Waiting for Production", tone: "ready" };
   }
   // Entry QC must not replace WO execution status when remaining capacity is executable.
   if (row.hasPendingQc && remaining <= ROW_NUM_EPS) {
@@ -317,14 +351,14 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
     return { label: "Waiting Dispatch", tone: "dispatch" };
   }
   if (produced > ROW_NUM_EPS && remaining > ROW_NUM_EPS) {
-    return { label: "Continue", tone: "partial" };
+    return { label: "Continue", tone: "running" };
   }
   if (produced <= ROW_NUM_EPS) {
     const canStart =
       gate == null
         ? woStatus === "IN_PROGRESS" || woStatus === "PENDING"
         : gate === "READY_FOR_PRODUCTION" && rmReady;
-    return { label: canStart ? "Ready for Production" : "Waiting for Production", tone: "running" };
+    return { label: canStart ? "Ready to Start" : "Waiting for Production", tone: "ready" };
   }
   if (woStatus === "IN_PROGRESS" || woStatus === "PENDING") {
     return { label: "Running", tone: "running" };
@@ -332,7 +366,7 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
   if (remaining <= ROW_NUM_EPS) {
     return { label: "Completed", tone: "idle" };
   }
-  return { label: "Production Pending", tone: "running" };
+  return { label: "Production Pending", tone: "partial" };
 }
 
 /** NO_QTY flow — backend nextAction first; carry-forward peer detection is presentation grouping only. */
@@ -421,9 +455,9 @@ function operationalStatusFromNoQtyRow(
     }
     if (produced <= ROW_NUM_EPS) {
       if (woStatus === "IN_PROGRESS" || woStatus === "PENDING") {
-        return { label: "Ready for Production", tone: "running" };
+        return { label: "Ready to Start", tone: "ready" };
       }
-      return { label: "Waiting for Production", tone: "running" };
+      return { label: "Waiting for Production", tone: "ready" };
     }
     return { label: "In Production", tone: "running" };
   }
@@ -437,12 +471,12 @@ function operationalStatusFromNoQtyRow(
 
   if (produced <= ROW_NUM_EPS) {
     if (woStatus === "IN_PROGRESS" || woStatus === "PENDING") {
-      return { label: "Ready for Production", tone: "running" };
+      return { label: "Ready to Start", tone: "ready" };
     }
-    return { label: "Waiting for Production", tone: "running" };
+    return { label: "Waiting for Production", tone: "ready" };
   }
 
-  return { label: "Production Pending", tone: "running" };
+  return { label: "Production Pending", tone: "partial" };
 }
 
 /** Green Level — prefer backend nextAction / execution block fields (M1.6). */
@@ -467,9 +501,9 @@ function operationalStatusFromGreenLevelRow(row: DashboardProductionStatusSource
   }
   if (produced <= ROW_NUM_EPS) {
     if (woStatus === "IN_PROGRESS" || woStatus === "PENDING") {
-      return { label: "Ready for Production", tone: "running" };
+      return { label: "Ready to Start", tone: "ready" };
     }
-    return { label: "Waiting for Production", tone: "running" };
+    return { label: "Waiting for Production", tone: "ready" };
   }
   if (remaining <= ROW_NUM_EPS) {
     return { label: "Production Complete", tone: "idle" };
@@ -505,14 +539,16 @@ export function productionStatusCountsAsActive(status: ProductionOperationalStat
 function sortRankForRow(row: DashboardProductionStatusRow): number {
   const toneRank: Record<ProductionOperationalStatusTone, number> = {
     qc: 0,
-    running: 1,
-    partial: 2,
-    carryForward: 2,
-    dispatch: 3,
-    idle: 4,
-    carriedForward: 6,
+    paused: 1,
+    running: 2,
+    ready: 3,
+    partial: 4,
+    carryForward: 4,
+    dispatch: 5,
+    idle: 6,
+    carriedForward: 7,
   };
-  return toneRank[row.operationalStatus.tone] ?? 7;
+  return toneRank[row.operationalStatus.tone] ?? 8;
 }
 
 function compareRowsForDisplay(a: DashboardProductionStatusRow, b: DashboardProductionStatusRow): number {

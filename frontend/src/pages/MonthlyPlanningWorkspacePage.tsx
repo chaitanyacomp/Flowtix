@@ -74,6 +74,7 @@ import {
 } from "../lib/monthlyPlanningGreenLevelRowUx";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { NativeSelect } from "../components/ui/native-select";
 import { Badge } from "../components/ui/badge";
 import {
@@ -5637,12 +5638,9 @@ function ProductionPlanTab({
                   </td>
                   <td className="px-3 py-1.5 text-right">
                     {editable ? (
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.001"
+                      <DecimalInput
                         value={r.plannedFgQty}
-                        onChange={(e) => onUpdateRow(r.key, { plannedFgQty: e.target.value })}
+                        onValueChange={(next) => onUpdateRow(r.key, { plannedFgQty: next })}
                         className="h-8 w-28 text-right tabular-nums"
                       />
                     ) : (

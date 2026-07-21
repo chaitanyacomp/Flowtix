@@ -20,6 +20,7 @@ import { type ProcurementPendingRow } from "../components/erp/ProcurementPending
 import { OperationalBlockersCard } from "../components/erp/OperationalBlockersCard";
 import { buildOperationalSoActions } from "../lib/operationalBlockers";
 import { DashboardLiveFactoryPanel } from "../components/erp/DashboardLiveFactoryPanel";
+import { AdminLiveFactoryStatus } from "../components/erp/AdminLiveFactoryStatus";
 import { OperationalAlertStrip } from "../components/erp/OperationalAlertStrip";
 import { REGULAR_TERMS } from "../lib/flowTerminology";
 import { PRODUCTION_QA_TERMS } from "../lib/productionQaTerminology";
@@ -48,6 +49,14 @@ import { ERP_DASHBOARD_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefresh
 import { useRouteActive } from "../hooks/useRouteActive";
 import { endPerfMark, usePagePerf } from "../lib/performanceTiming";
 import { summarizeDashboardProductionAttention } from "../lib/dashboardProductionStatus";
+import { summarizeFactoryProductionCounters } from "../lib/adminDashboardClassification";
+import { buildAdminCriticalExceptions } from "../lib/adminDashboardExceptions";
+import { controlTowerHref } from "../lib/controlTowerNavigation";
+import {
+  countAuthoritativeRmShortageCases,
+  isAuthoritativeRmShortageRiskRow,
+  pickLiveFactoryHighlights,
+} from "../lib/liveFactoryStatus";
 import {
   DISPATCH_READ_ROLES,
   PROCUREMENT_REVIEW_DASHBOARD_ROLES,
@@ -123,20 +132,20 @@ function dashboardWidgetFlags(role: string) {
  *
  * `dashboardWidgetFlags` controls which API sections a role can *fetch*. This
  * helper controls which workflow cards a role should actually *see and act on*
- * once data is loaded ? so STORE never sees production / QC / sales-bill CTAs
+ * once data is loaded — so STORE never sees production / QC / sales-bill CTAs
  * even though continue-working data may include them.
  *
  * Role intent (per ERP philosophy):
- *  - STORE     ? RM shortage, material planning / purchase receipts, stock alerts,
+ *  - STORE     — RM shortage, material planning / purchase receipts, stock alerts,
  *                dispatch-ready FG lines, and NO_QTY cycle planning continuation.
  *                NOT production / QC / sales-bill CTAs.
- *  - PRODUCTION? production cards (and shortage visibility, view-only).
+ *  - PRODUCTION — production cards (and shortage visibility, view-only).
  *                NOT responsible for creating RM POs.
- *  - QC        ? QC cards only.
- *  - DISPATCH  ? dispatch cards only.
- *  - SALES     ? NO_QTY requirement sheet / planning (not dispatch ? Store owns dispatch), sales-bill, enquiry cards.
- *  - ACCOUNTS  ? has a separate AccountsDashboardPage; not handled here.
- *  - ADMIN     ? all cards.
+ *  - QC        — QC cards only.
+ *  - DISPATCH  — dispatch cards only.
+ *  - SALES     — NO_QTY requirement sheet / planning (not dispatch — Store owns dispatch), sales-bill, enquiry cards.
+ *  - ACCOUNTS  — has a separate AccountsDashboardPage; not handled here.
+ *  - ADMIN     — all cards.
  */
 function dashboardActionVisibility(role: string) {
   const isAdmin = role === "ADMIN";
@@ -185,7 +194,7 @@ function DashboardTableEmpty({
 }: {
   title: string;
   description?: string;
-  /** Single dense row ? no flex-grow empty shell */
+  /** Single dense row — no flex-grow empty shell */
   compact?: boolean;
 }) {
   if (compact) {
@@ -202,7 +211,7 @@ function DashboardTableEmpty({
       <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" aria-hidden />
       <div className="min-w-0">
         <span className="font-semibold text-slate-900">{title}</span>
-        {description ? <span className="text-slate-600"> ? {description}</span> : null}
+        {description ? <span className="text-slate-600"> · {description}</span> : null}
       </div>
     </div>
   );
@@ -210,7 +219,7 @@ function DashboardTableEmpty({
 
 function formatDashDispatchMetricQty(q: number): string {
   const n = Number(q);
-  if (!Number.isFinite(n)) return "?";
+  if (!Number.isFinite(n)) return "—";
   return Number.isInteger(n) ? String(n) : n.toFixed(3);
 }
 
@@ -276,7 +285,7 @@ function OperationalDashCard({
       </div>
       {readOnly ? (
         <div className="flex max-w-[16rem] shrink-0 text-right">
-          <p className="text-[11px] font-semibold leading-snug text-slate-700">{readOnlyHint ?? "?"}</p>
+          <p className="text-[11px] font-semibold leading-snug text-slate-700">{readOnlyHint ?? "View only"}</p>
         </div>
       ) : (
         <div className="flex shrink-0">
@@ -333,7 +342,7 @@ function OperationalDashCard({
     <Link
       to={href as string}
       state={{ from: "dashboard" }}
-      aria-label={`${title} ? ${actionLabel ?? "Open"}`}
+      aria-label={`${title} · ${actionLabel ?? "Open"}`}
       className={cn(
         "group block rounded-md border py-2 pl-2.5 pr-2.5 shadow-sm no-underline outline-none transition-shadow",
         "hover:shadow-md focus-visible:ring-2 focus-visible:ring-blue-400/50 focus-visible:ring-offset-1",
@@ -426,7 +435,7 @@ type ProductionQueueRow = {
   requiredQty: number;
   /** Sum of APPROVED production on the line */
   producedQty: number;
-  /** max(0, WO line qty ? approved produced) */
+  /** max(0, WO line qty − approved produced) */
   balanceQty: number;
   status: string;
   workOrderDate: string;
@@ -462,7 +471,7 @@ type QcQueueRow = {
   status: string;
   qcDate: string;
   quantityMetricContext?: string;
-  /** From linked SalesOrder ? used when continue-working is unavailable. */
+  /** From linked SalesOrder — used when continue-working is unavailable. */
   orderType?: string | null;
   cycleId?: number | null;
 };
@@ -1228,9 +1237,9 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
    * shop-floor queues live in their own cards on the same dashboard
    * column. Therefore:
    *
-   *   ? we resolve in `commercialContinuation: true` mode ? SALES/ADMIN
+   *   — we resolve in `commercialContinuation: true` mode — SALES/ADMIN
    *     always land on a planning action;
-   *   ? we do **not** gate on `createNextRsEligible` here ? the row stays
+   *   — we do **not** gate on `createNextRsEligible` here — the row stays
    *     visible across the between-cycles lifetime; RS creation lives on
    *     the NO_QTY Agreements page (primary action opens that workspace).
    *
@@ -1368,6 +1377,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
 
   const operationalSoActions = React.useMemo(() => {
     if (!canViewOperationalBlockers || !operationalBlockersReady) return [];
+    if (role === "ADMIN") return [];
     return buildOperationalSoActions(
       canViewWoPrepareProcurement ? procurementPendingSecondary : [],
       woPrepareQueues,
@@ -1375,6 +1385,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
       canViewWoPrepareProcurement ? allocationFirstPending : [],
     );
   }, [
+    role,
     canViewOperationalBlockers,
     canViewWoPrepareProcurement,
     operationalBlockersReady,
@@ -1405,6 +1416,10 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
     () => summarizeDashboardProductionAttention(prodQueue ?? []),
     [prodQueue],
   );
+  const factoryCounters = React.useMemo(
+    () => summarizeFactoryProductionCounters(prodQueue),
+    [prodQueue],
+  );
 
   const prodWaitingForMaterial = React.useMemo(() => {
     if (!prodQueue?.length) return { workOrderCount: 0, waitingStoreIssueCount: 0 };
@@ -1423,6 +1438,14 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
       waitingStoreIssueCount: waitingStoreWoIds.size,
     };
   }, [prodQueue]);
+
+  // Must run before loading/error early returns — otherwise hook count mismatches
+  // (Rendered more hooks than during the previous render).
+  const authoritativeRmShortage = React.useMemo(
+    () => countAuthoritativeRmShortageCases(canViewRmRisk ? rmRisk ?? [] : []),
+    [canViewRmRisk, rmRisk],
+  );
+  const rmShortageBlockerCount = authoritativeRmShortage.caseCount;
 
   const loading =
     (canViewOverallSummary && data === null && !error) ||
@@ -1465,12 +1488,6 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
     );
   }
 
-  const fgStockTotal = data
-    ? data.fgStockTotalQty !== undefined
-      ? data.fgStockTotalQty
-      : data.fgStock.reduce((s, x) => s + Number(x.qty), 0)
-    : 0;
-
   const qcWq = data?.qcWorkQueueCounts;
   const qcWqRework = qcWq?.reworkQcPendingCount ?? (dispQueues?.readyForQcRecheck?.length ?? 0);
   const qcWqHold = qcWq?.holdDecisionsPendingCount ?? (dispQueues?.holdStock?.length ?? 0);
@@ -1506,7 +1523,6 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
         : "0";
   const prepDispatchLines =
     canViewOverallSummary && data != null ? Number(data.pendingDispatchCount ?? 0) : 0;
-  const rmRiskCount = canViewRmRisk ? (rmRisk?.length ?? 0) : 0;
   const purchaseLineCount = canViewPurchaseSummary ? (purchaseSummary?.length ?? 0) : 0;
   const firstProcurementPending =
     procurementPending?.find((r) => Number(r.workOrderId ?? 0) > 0 || Number(r.materialRequirementId ?? 0) > 0) ??
@@ -1526,7 +1542,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
   // queue would see "operations not clear" yet have no visible action card.
   const hasOperationalQueueAttention =
     (canViewOperationalBlockers && hasOperationalBlockerCards) ||
-    hasSoWoRmBlockerAttention(rmRiskCount, actionVisibility.canSeeRmShortageOperational) ||
+    hasSoWoRmBlockerAttention(rmShortageBlockerCount, actionVisibility.canSeeRmShortageOperational) ||
     (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcWqHold > 0) ||
     (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcWqLegacy > 0) ||
     (actionVisibility.canShowProductionQaCards && canViewProductionQaQueue && qcWqRework > 0) ||
@@ -1595,24 +1611,20 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
     opsQueuesReady &&
     noOperationalFetchErrors &&
     opsAttentionClear &&
-    // Phase B: Operations are not "clear" while any allocation/issue blockers exist.
-    (!canViewWoPrepareProcurement || (allocationFirstPending?.length ?? 0) === 0) &&
-    (!canViewWoPrepareProcurement || (storeIssuePending?.length ?? 0) === 0) &&
-    (!canViewOperationalBlockers || (operationalBlockersReady && !hasOperationalBlockerCards));
+    // Phase B: Operations are not "clear" while any allocation/issue blockers exist (non-Admin desks).
+    (role === "ADMIN" || !canViewWoPrepareProcurement || (allocationFirstPending?.length ?? 0) === 0) &&
+    (role === "ADMIN" || !canViewWoPrepareProcurement || (storeIssuePending?.length ?? 0) === 0) &&
+    (!canViewOperationalBlockers || role === "ADMIN" || (operationalBlockersReady && !hasOperationalBlockerCards));
 
   const prodWoNeedsActionCount =
-    canViewProductionQueue && prodQueue != null ? prodAttention.activeWorkOrderCount : 0;
-
-  const displayWoNeedsActionCount =
     canViewProductionQueue && prodQueue != null
-      ? prodAttention.activeWorkOrderCount
-      : data?.pendingWorkOrders ?? 0;
+      ? role === "ADMIN"
+        ? factoryCounters.running + factoryCounters.paused + factoryCounters.blocked
+        : prodAttention.activeWorkOrderCount
+      : 0;
 
   const showRoleKpiStrip =
     !demo.enabled && !canViewOverallSummary && opsQueuesReady && noOperationalFetchErrors;
-
-  const qcRejMetricTone: "muted" | "warn" | "crit" =
-    data == null || data.qcRejectionPct <= 0 ? "muted" : data.qcRejectionPct >= 12 ? "crit" : "warn";
 
   const showOperationalLeftPanel =
     !demo.enabled && (hasOperationalQueueAttention || hasVisibleNoQtyContinuation);
@@ -1631,19 +1643,20 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
   const commercialQuotationsCapped = visibleQuotationsPendingSo.slice(0, DASH_COMMERCIAL_QUOTE_CAP);
   const commercialQuotationsTruncated = visibleQuotationsPendingSo.length > DASH_COMMERCIAL_QUOTE_CAP;
 
-  if (!phaseEOperatorFlow && actionVisibility.canSeeRmShortageOperational && canViewRmRisk && rmRisk != null && rmRisk.length > 0) {
+  if (!phaseEOperatorFlow && actionVisibility.canSeeRmShortageOperational && canViewRmRisk && rmShortageBlockerCount > 0) {
     // Avoid duplicate RM shortage CTAs: Store/admin see the deduped Operational Blockers list.
+    const shortageRows = (rmRisk ?? []).filter((r) => isAuthoritativeRmShortageRiskRow(r));
     const showRmBlockedWoCard = !canViewWoPrepareProcurement;
-    const blockedWoLines = rmRisk.length;
-    const affectedItemCount = new Set(rmRisk.map((r) => r.itemId)).size;
+    const blockedWoLines = shortageRows.length;
+    const affectedItemCount = new Set(shortageRows.map((r) => r.itemId)).size;
     const rmSeverity: "blocker" | "approval" = blockedWoLines >= 3 ? "blocker" : "approval";
     const rmBase =
       affectedItemCount > 0 && affectedItemCount !== blockedWoLines
-        ? `${blockedWoLines} WO line(s) blocked ? ${affectedItemCount} item(s) short`
+        ? `${blockedWoLines} WO line(s) blocked · ${affectedItemCount} item(s) short`
         : `${blockedWoLines} WO line(s) blocked on material`;
 
-    if (showRmBlockedWoCard && actionVisibility.canActOnRmShortageProcurement) {
-      const firstRmBlocker = rmRisk.find((r) => r.workOrderId && r.itemId) ?? rmRisk[0];
+    if (showRmBlockedWoCard && actionVisibility.canActOnRmShortageProcurement && blockedWoLines > 0) {
+      const firstRmBlocker = shortageRows.find((r) => r.workOrderId && r.itemId) ?? shortageRows[0];
       const rmHref =
         firstRmBlocker?.href ||
         (firstRmBlocker?.workOrderId && firstRmBlocker?.itemId
@@ -1670,7 +1683,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
                   firstRmBlocker.fgItemName,
                 ]
                   .filter(Boolean)
-                  .join(" ? ")
+                  .join(" · ")
               : undefined
           }
           blockerReason={firstRmBlocker?.blockerReason ?? rmBase}
@@ -1752,8 +1765,8 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
         tier="approval"
         title={
           prodWaitingForMaterial.waitingStoreIssueCount > 0
-            ? "Production blocked ? waiting for store issue"
-            : "Production blocked ? waiting for RM issue"
+            ? "Production blocked · waiting for store issue"
+            : "Production blocked · waiting for RM issue"
         }
         detail={waitingDetail}
         blockerReason={waitingDetail}
@@ -1817,7 +1830,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
       <OperationalDashCard
         key="next-rs"
         tier="supply"
-        title="Regular flow ? next requirement sheet"
+        title="Regular flow · next requirement sheet"
         detail={`${actionRequiredGroups.nextRs.length} regular order line(s) await the next RS before production`}
         actionLabel="Open Production Queue"
         href="/production?source=dashboard"
@@ -1858,7 +1871,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
         key="qc-batch"
         tier="ready"
         title={PRODUCTION_QA_TERMS.QA_BLOCKED_BATCHES}
-        detail={`${qcBatchCount} production ${batchWord} ? ${qcPendingQtyDisplay} qty ${PRODUCTION_QA_TERMS.QA_IN_PROGRESS.toLowerCase()}`}
+        detail={`${qcBatchCount} production ${batchWord} · ${qcPendingQtyDisplay} qty ${PRODUCTION_QA_TERMS.QA_IN_PROGRESS.toLowerCase()}`}
         actionLabel={PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}
         href="/qc-entry?source=dashboard#qc-production-pending"
       />,
@@ -1883,7 +1896,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
       <OperationalDashCard
         key="wo-prod-regular"
         tier="ready"
-        title="Production pending ? regular SO(s)"
+        title="Production pending · regular SO(s)"
         detail={`${woProdRegular.length} regular WO line(s) still on the shop floor`}
         actionLabel="Open Production Workspace"
         href={woProdRegular[0]?.href ?? "/production?source=dashboard"}
@@ -1909,8 +1922,8 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
         <OperationalDashCard
           key={`wo-prod-no-qty-${prodRow.key}`}
           tier="ready"
-          title="NO_QTY ? Production ready"
-          detail={`${soLabel} ? ${prodRow.customerName} ? Balance: ${qtyLabel}`}
+          title="NO_QTY · Production ready"
+          detail={`${soLabel} · ${prodRow.customerName} · Balance: ${qtyLabel}`}
           actionLabel="Open Production Workspace"
           href={prodHref}
         />,
@@ -1923,7 +1936,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
       <OperationalDashCard
         key="sales-bill-regular"
         tier="ready"
-        title="Sales bill pending ? regular"
+        title="Sales bill pending · regular"
         detail={`${salesBillRegular.length} regular line(s) ready to invoice`}
         actionLabel="Open Sales Bill Workspace"
         href={salesBillRegular[0]?.href ?? "/sales-bills?source=dashboard"}
@@ -1936,7 +1949,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
       <OperationalDashCard
         key="sales-bill-no-qty"
         tier="ready"
-        title="Sales bill pending ? NO_QTY"
+        title="Sales bill pending · NO_QTY"
         detail={`${salesBillNoQty.length} NO_QTY cycle line(s) ready to invoice`}
         actionLabel="Open Sales Bill Workspace"
         href={salesBillNoQty[0]?.href ?? "/sales-bills?source=dashboard"}
@@ -1966,14 +1979,14 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
                 ? "Regular"
                 : String(d.orderType);
         const detail = isNoQty
-          ? `${soLabel} ? ${d.customerName} ? ${d.itemName} ? NO_QTY ? Dispatch available: ${qtyLabel}`
-          : `${soLabel} ? ${d.customerName} ? ${d.itemName} ? ${qtyLabel} ready ? ${ot}`;
+          ? `${soLabel} · ${d.customerName} · ${d.itemName} · NO_QTY · Dispatch available: ${qtyLabel}`
+          : `${soLabel} · ${d.customerName} · ${d.itemName} · ${qtyLabel} ready · ${ot}`;
         const card = (
           <OperationalDashCard
             key={`store-dispatch-${d.key}`}
             tier="ready"
-            title={isNoQty ? "Waiting for dispatch ? NO_QTY" : "Waiting for dispatch"}
-            detail={`${detail} ? Store-owned dispatch`}
+            title={isNoQty ? "Waiting for dispatch · NO_QTY" : "Waiting for dispatch"}
+            detail={`${detail} · Store-owned dispatch`}
             actionLabel="Open Dispatch Workspace"
             href={d.href}
           />
@@ -1986,7 +1999,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
         <OperationalDashCard
           key="dispatch-prep"
           tier="ready"
-          title="Waiting for dispatch ? all flows"
+          title="Waiting for dispatch · all flows"
           detail={`${prepLines} line(s) with prepare headroom`}
           actionLabel="Open Dispatch Workspace"
           href="/dispatch?source=dashboard"
@@ -2005,7 +2018,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
           <OperationalDashCard
             key="dispatch-regular"
             tier="ready"
-            title="Waiting for dispatch ? regular SO(s)"
+            title="Waiting for dispatch · regular SO(s)"
             detail={dRegular}
             actionLabel="Open Dispatch Workspace"
             href={dispatchDashRegular[0]?.href ?? "/dispatch?source=dashboard"}
@@ -2020,7 +2033,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
       <OperationalDashCard
         key="purchase"
         tier="supply"
-        title="Procurement blocked ? waiting for GRN"
+        title="Procurement blocked · waiting for GRN"
         detail={`${purchaseLineCount} PO line(s) awaiting GRN`}
         actionLabel="Continue RM Resolution"
         href={purchaseContinueHref}
@@ -2036,8 +2049,8 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
         <OperationalDashCard
           key={row.key}
           tier="approval"
-          title={`${row.quotationNo} ? ${row.customerName}`}
-          detail={`${flowLabel} ? Next step: ${row.nextStep}`}
+          title={`${row.quotationNo} · ${row.customerName}`}
+          detail={`${flowLabel} · Next step: ${row.nextStep}`}
           actionLabel="Continue"
           href={row.href}
         />,
@@ -2077,7 +2090,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
     <DashboardControlColumn
       variant="operational"
       title="Operational Control"
-      subtitle="Factory execution ? production QA ? dispatch ? production"
+      subtitle="Factory execution · Production · QA · Dispatch"
     >
           {neutralDashAlertNodes.length > 0 ? (
             <div className={dashActionGrid}>{neutralDashAlertNodes}</div>
@@ -2147,7 +2160,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
       {commercialWorkflowDashNodes.length > 0 ? (
         <div className={dashCommercialGrid}>{commercialWorkflowDashNodes}</div>
       ) : !quotationsPendingSoError ? (
-        <DashboardTableEmpty compact title="Commercial pipeline clear ?" />
+        <DashboardTableEmpty compact title="Commercial pipeline clear" />
       ) : null}
       {quotationsPendingSoError ? (
         <ErpWorkflowBanner tone="warning" className="text-[12px] leading-snug" role="alert">
@@ -2174,6 +2187,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
         qcReworkCount={qcWqRework}
         qcRejectionPct={data.qcRejectionPct}
         rmRisk={rmRiskSecondary}
+        compactCountersOnly={role === "ADMIN"}
       />
     ) : null;
 
@@ -2198,7 +2212,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-sky-200/90 bg-sky-50/95 px-2 py-1.5 text-[12px] text-sky-950">
               <div className="min-w-0">
                 <span className="font-semibold">DEMO MODE</span>{" "}
-                <span className="text-sky-900/90">Guided workflow ? sample data</span>
+                <span className="text-sky-900/90">Guided workflow · sample data</span>
               </div>
               <Button
                 type="button"
@@ -2216,7 +2230,13 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
               count={pendingActionsDeskProps.count}
               loading={pendingActionsDeskProps.loading}
               error={pendingActionsDeskProps.error}
-              description={role === "PRODUCTION" ? PENDING_ACTIONS_PRODUCTION_HELPER : undefined}
+              description={
+                role === "PRODUCTION"
+                  ? PENDING_ACTIONS_PRODUCTION_HELPER
+                  : role === "ADMIN"
+                    ? "Admin-owned decisions only — Ready-to-Start production is not listed here."
+                    : undefined
+              }
             />
           ) : null}
           {!demo.enabled && continueWorkingError ? (
@@ -2239,30 +2259,53 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
 
           {!demo.enabled && canViewOverallSummary && data ? (
             <div className="erp-dash-ops-metrics max-w-full overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <ErpKpiStrip className={erpKpi.stripCompact} role="toolbar" aria-label="Operational metrics">
+              <ErpKpiStrip className={erpKpi.stripCompact} role="toolbar" aria-label="Admin operational metrics">
                 <ErpKpiSegment
                   type="button"
-                  title="Counts sales order lines with dispatch backlog: Regular (NORMAL) by customer PO commitment, plus NO_QTY (cycle-driven) and replacement flows."
-                  {...clickTo("/dispatch")}
-                  aria-label="Open Dispatch ? dispatch prep (regular, No Qty, and replacement)"
+                  title="Admin-owned pending decisions (same contract as Pending Actions inbox)."
+                  {...clickTo("/pending-actions?source=dashboard")}
+                  aria-label="Open pending admin actions"
                 >
-                  <ErpKpiLabel>Dispatch prep</ErpKpiLabel>
-                  <ErpKpiValue tone={data.pendingDispatchCount > 0 ? "warn" : "muted"}>{data.pendingDispatchCount}</ErpKpiValue>
-                </ErpKpiSegment>
-                <ErpKpiSegment
-                  type="button"
-                  title="Work orders with shop-floor action still pending (excludes carried-forward history)."
-                  {...clickTo("/work-orders?woStatus=OPEN")}
-                  aria-label="Open work orders needing action"
-                >
-                  <ErpKpiLabel>WO needs action</ErpKpiLabel>
-                  <ErpKpiValue tone={displayWoNeedsActionCount > 0 ? "warn" : "muted"}>
-                    {displayWoNeedsActionCount}
+                  <ErpKpiLabel>Pending Admin Actions</ErpKpiLabel>
+                  <ErpKpiValue tone={(pendingActionsDeskProps?.count ?? 0) > 0 ? "warn" : "muted"}>
+                    {pendingActionsDeskProps?.loading ? "…" : pendingActionsDeskProps?.count ?? 0}
                   </ErpKpiValue>
                 </ErpKpiSegment>
+                <ErpKpiSegment
+                  type="button"
+                  title="Canonical running / continue work orders (Ready to Start is excluded)."
+                  {...clickTo(controlTowerHref({ group: "PRODUCTION", status: "PRODUCTION_PENDING" }))}
+                  aria-label="Open running production in Control Tower"
+                >
+                  <ErpKpiLabel>Running Production</ErpKpiLabel>
+                  <ErpKpiValue tone={factoryCounters.running > 0 ? "warn" : "muted"}>{factoryCounters.running}</ErpKpiValue>
+                </ErpKpiSegment>
+                <ErpKpiSegment
+                  type="button"
+                  title="Work orders Ready to Start (RM ready; Production has not started)."
+                  {...clickTo(controlTowerHref({ group: "PRODUCTION", status: "READY_TO_START" }))}
+                  aria-label="Open ready to start in Control Tower"
+                >
+                  <ErpKpiLabel>Ready to Start</ErpKpiLabel>
+                  <ErpKpiValue tone={factoryCounters.readyToStart > 0 ? "warn" : "muted"}>
+                    {factoryCounters.readyToStart}
+                  </ErpKpiValue>
+                </ErpKpiSegment>
+                <ErpKpiSegment
+                  type="button"
+                  {...clickTo(controlTowerHref({ group: "PRODUCTION", status: "PRODUCTION_ON_HOLD" }))}
+                  aria-label="Open paused production in Control Tower"
+                >
+                  <ErpKpiLabel>Paused Production</ErpKpiLabel>
+                  <ErpKpiValue tone={factoryCounters.paused > 0 ? "warn" : "muted"}>{factoryCounters.paused}</ErpKpiValue>
+                </ErpKpiSegment>
                 {canViewProductionQaQueue ? (
-                  <ErpKpiSegment type="button" {...clickTo("/qc-entry?source=dashboard")} aria-label={PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}>
-                    <ErpKpiLabel>{PRODUCTION_QA_TERMS.QA_IN_PROGRESS_LABEL}</ErpKpiLabel>
+                  <ErpKpiSegment
+                    type="button"
+                    {...clickTo(controlTowerHref({ group: "QUALITY", status: "QA_PENDING" }))}
+                    aria-label="Open pending QC in Control Tower"
+                  >
+                    <ErpKpiLabel>Pending QC</ErpKpiLabel>
                     <ErpKpiValue tone={(qcQueue?.length ?? 0) > 0 ? "warn" : "muted"}>
                       {qcQueue ? qcQueue.length : 0}
                     </ErpKpiValue>
@@ -2270,11 +2313,21 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
                 ) : null}
                 <ErpKpiSegment
                   type="button"
-                  title={REGULAR_TERMS.DASHBOARD_STOCK_REPLENISHMENT_TOOLTIP}
-                  {...clickTo("/stock?source=dashboard")}
-                  aria-label={REGULAR_TERMS.REVIEW_RM_STATUS}
+                  {...clickTo(controlTowerHref({ group: "DISPATCH" }))}
+                  aria-label="Open Dispatch ready in Control Tower"
                 >
-                  <ErpKpiLabel>{REGULAR_TERMS.DASHBOARD_RM_CRITICAL_LABEL}</ErpKpiLabel>
+                  <ErpKpiLabel>Dispatch Ready</ErpKpiLabel>
+                  <ErpKpiValue tone={data.pendingDispatchCount > 0 ? "warn" : "muted"}>
+                    {data.pendingDispatchCount}
+                  </ErpKpiValue>
+                </ErpKpiSegment>
+                <ErpKpiSegment
+                  type="button"
+                  title={REGULAR_TERMS.DASHBOARD_STOCK_REPLENISHMENT_TOOLTIP}
+                  {...clickTo(controlTowerHref({ focus: "factory", blockedOnly: true }))}
+                  aria-label="Open stock critical in Control Tower"
+                >
+                  <ErpKpiLabel>Stock Critical</ErpKpiLabel>
                   <ErpKpiValue
                     tone={
                       (data.rmStockCriticalCount ?? data.rmStockCritical?.length ?? 0) > 0 ? "crit" : "muted"
@@ -2282,34 +2335,6 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
                   >
                     {data.rmStockCriticalCount ?? data.rmStockCritical?.length ?? 0}
                   </ErpKpiValue>
-                </ErpKpiSegment>
-                <ErpKpiSegment
-                  type="button"
-                  title={REGULAR_TERMS.DASHBOARD_STOCK_REPLENISHMENT_TOOLTIP}
-                  {...clickTo("/stock?source=dashboard")}
-                  aria-label="Review replenishment low stock"
-                >
-                  <ErpKpiLabel>{REGULAR_TERMS.DASHBOARD_RM_WARNING_LABEL}</ErpKpiLabel>
-                  <ErpKpiValue
-                    tone={
-                      (data.rmStockWarningCount ?? data.rmStockWarning?.length ?? 0) > 0 ? "warn" : "muted"
-                    }
-                  >
-                    {data.rmStockWarningCount ?? data.rmStockWarning?.length ?? 0}
-                  </ErpKpiValue>
-                </ErpKpiSegment>
-                <ErpKpiSegment type="button" {...clickTo("/stock")} aria-label="Open Stock">
-                  <ErpKpiLabel>FG usable</ErpKpiLabel>
-                  <ErpKpiValue>{fgStockTotal.toFixed(2)}</ErpKpiValue>
-                </ErpKpiSegment>
-                <ErpKpiSegment
-                  type="button"
-                  title="View rejection details"
-                  {...clickTo("/qc-report?source=dashboard")}
-                  aria-label="View QC rejection details in QC Report"
-                >
-                  <ErpKpiLabel>Rejection %</ErpKpiLabel>
-                  <ErpKpiValue tone={qcRejMetricTone}>{data.qcRejectionPct.toFixed(1)}%</ErpKpiValue>
                 </ErpKpiSegment>
               </ErpKpiStrip>
             </div>
@@ -2350,7 +2375,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
                         aria-label={REGULAR_TERMS.DASHBOARD_WO_RM_BLOCKED_LABEL}
                       >
                         <ErpKpiLabel>{REGULAR_TERMS.DASHBOARD_WO_RM_BLOCKED_LABEL}</ErpKpiLabel>
-                        <ErpKpiValue tone={rmRiskCount > 0 ? "crit" : "muted"}>{rmRiskCount}</ErpKpiValue>
+                        <ErpKpiValue tone={rmShortageBlockerCount > 0 ? "crit" : "muted"}>{rmShortageBlockerCount}</ErpKpiValue>
                       </ErpKpiSegment>
                     ) : null}
                   </>
@@ -2377,12 +2402,67 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
               </ErpKpiStrip>
             </div>
           ) : null}
-            {canViewOperationalBlockers && !demo.enabled ? (
+            {role === "ADMIN" && !demo.enabled ? (
+              <section
+                aria-label="Critical exceptions"
+                className="overflow-hidden rounded-lg border border-amber-200/80 bg-white shadow-sm"
+              >
+                <header className="border-b border-amber-100 bg-amber-50/50 px-3 py-1.5">
+                  <h2 className="text-[13px] font-bold text-slate-900">Critical Exceptions</h2>
+                  <p className="text-[12px] text-slate-600">Top cross-functional exceptions · open in Control Tower</p>
+                </header>
+                {(() => {
+                  const exceptions = buildAdminCriticalExceptions({
+                    blockedWoCount: factoryCounters.blocked,
+                    rmCriticalCount: data?.rmStockCriticalCount ?? data?.rmStockCritical?.length ?? 0,
+                    qcPendingCount: qcBatchCount,
+                    dispatchPendingCount: data?.pendingDispatchCount ?? 0,
+                    recoveryOpenCount:
+                      noQtyRecoverySnapshot?.admin?.blockedNoQtySoClosures ??
+                      noQtyRecoverySnapshot?.kpis?.soWaitingForWaiver ??
+                      0,
+                    exportPendingCount: 0,
+                    firstBlockedDoc:
+                      pickLiveFactoryHighlights(prodQueue, 5).find((r) => r.status === "BLOCKED")
+                        ?.workOrderNo ?? null,
+                  });
+                  if (exceptions.length === 0) {
+                    return (
+                      <p className="px-3 py-2 text-[13px] text-slate-600">No critical exceptions right now.</p>
+                    );
+                  }
+                  return (
+                    <ul className="divide-y divide-slate-100">
+                      {exceptions.map((ex) => (
+                        <li key={ex.key} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+                          <div className="min-w-0 text-[13px]">
+                            <p className="font-semibold text-slate-900">{ex.document}</p>
+                            <p className="text-slate-700">{ex.issue}</p>
+                            <p className="text-[12px] text-slate-500">
+                              Owner: {ex.owner} · {ex.ageLabel}
+                            </p>
+                          </div>
+                          <Link
+                            to={ex.href}
+                            className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 shrink-0 text-[12px]")}
+                          >
+                            View in Control Tower
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  );
+                })()}
+              </section>
+            ) : null}
+
+            {canViewOperationalBlockers && role !== "ADMIN" && !demo.enabled ? (
               <OperationalBlockersCard
                 procurementPending={canViewWoPrepareProcurement ? procurementPendingSecondary : []}
                 storeIssuePending={canViewWoPrepareProcurement ? storeIssuePending : []}
                 allocationFirstPending={canViewWoPrepareProcurement ? allocationFirstPending : []}
                 woPrepareQueues={woPrepareQueues}
+                audience="default"
                 loading={
                   (canViewWoPrepareProcurement &&
                     (procurementPending === null ||
@@ -2392,8 +2472,9 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
                 }
               />
             ) : null}
-            {!demo.enabled ? operationalActionQueue : null}
+            {!demo.enabled && role !== "ADMIN" ? operationalActionQueue : null}
             {!demo.enabled &&
+            role !== "ADMIN" &&
             !operationalActionCardsPresent &&
             !hasVisibleNoQtyContinuation &&
             operationalBlockersReady &&
@@ -2401,21 +2482,25 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
               <DashboardTableEmpty
                 compact
                 title="Operations clear"
-                description="Operations clear ? No shop-floor actions pending right now."
+                description="Operations clear. No shop-floor actions pending right now."
               />
             ) : null}
-          {!demo.enabled && !showOperationsClearStrip && roleShortcuts.length > 0 ? (
+          {!demo.enabled && !showOperationsClearStrip && roleShortcuts.length > 0 && role !== "ADMIN" ? (
             <DashboardRoleShortcuts items={roleShortcuts} />
           ) : null}
           </div>
           {canShowCommercialColumn ? (
-            <div className="erp-dash-commercial-col flex min-w-0 flex-col self-start">
+            <div className="erp-dash-commercial-col flex min-w-0 flex-col gap-2 self-start">
               {commercialActionQueue}
             </div>
           ) : null}
         </div>
 
-        {!demo.enabled && canViewProductionQueue ? (
+        {role === "ADMIN" && !demo.enabled && canViewProductionQueue ? (
+          <AdminLiveFactoryStatus prodQueue={prodQueue} className="shrink-0" />
+        ) : null}
+
+        {!demo.enabled && canViewProductionQueue && role !== "ADMIN" ? (
           <div className="erp-dash-live-workspace min-h-0 shrink-0 space-y-2">
             <DashboardPausedWorkOrders
               rows={pausedWorkOrders}
@@ -2439,7 +2524,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
           </div>
         ) : null}
 
-        {liveFactorySection}
+        {role !== "ADMIN" ? liveFactorySection : null}
       </div>
 
     </div>

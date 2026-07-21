@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { Badge } from "../components/ui/badge";
 import { useAuth } from "../hooks/useAuth";
 import {
@@ -257,15 +258,12 @@ export function SalesPipelinePage() {
                     </select>
                   </td>
                   <td className="py-1">
-                    <Input
-                      type="number"
+                    <DecimalInput
                       className="h-9"
-                      step="any"
-                      inputMode="decimal"
                       value={l.qty}
                       onFocus={(e) => e.target.select()}
-                      onChange={(e) => {
-                        setEnqLines((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)));
+                      onValueChange={(next) => {
+                        setEnqLines((p) => p.map((x, j) => (j === i ? { ...x, qty: next } : x)));
                       }}
                     />
                   </td>
@@ -363,52 +361,40 @@ export function SalesPipelinePage() {
                             </select>
                           </td>
                           <td className="p-0.5">
-                            <Input
+                            <DecimalInput
                               className="h-8 w-16"
-                              type="number"
-                              step="any"
-                              inputMode="decimal"
                               value={l.qty}
-                              onChange={(e) => {
-                                setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)));
+                              onValueChange={(next) => {
+                                setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, qty: next } : x)));
                               }}
                             />
                           </td>
                           <td className="p-0.5">
-                            <Input
+                            <DecimalInput
                               className="h-8 w-20"
-                              type="number"
-                              step="any"
-                              inputMode="decimal"
                               value={l.isFree ? "0" : l.rate}
                               disabled={l.isFree}
-                              onChange={(e) => {
-                                setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, rate: e.target.value } : x)));
+                              onValueChange={(next) => {
+                                setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, rate: next } : x)));
                               }}
                             />
                             {l.isFree ? <span className="block text-[10px] text-emerald-800">(Free)</span> : null}
                           </td>
                           <td className="p-0.5">
-                            <Input
+                            <DecimalInput
                               className="h-8 w-14"
-                              type="number"
-                              step="any"
-                              inputMode="decimal"
                               value={l.discountPct}
-                              onChange={(e) => {
-                                setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, discountPct: e.target.value } : x)));
+                              onValueChange={(next) => {
+                                setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, discountPct: next } : x)));
                               }}
                             />
                           </td>
                           <td className="p-0.5">
-                            <Input
+                            <DecimalInput
                               className="h-8 w-14"
-                              type="number"
-                              step="any"
-                              inputMode="decimal"
                               value={l.gstPct}
-                              onChange={(e) => {
-                                setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, gstPct: e.target.value } : x)));
+                              onValueChange={(next) => {
+                                setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, gstPct: next } : x)));
                               }}
                             />
                           </td>

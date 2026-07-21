@@ -6,6 +6,7 @@ const { prisma } = require("../utils/prisma");
 const { signAccessToken } = require("../utils/jwt");
 const { requireAuth } = require("../middleware/auth");
 const auditLog = require("../services/auditLog");
+const { accessForRole } = require("../constants/roleAccess");
 
 const authRouter = express.Router();
 
@@ -83,7 +84,7 @@ authRouter.post("/login", async (req, res, next) => {
         actorRole: user.role,
         ...meta,
       });
-      return res.status(401).json({ error: { message: "Account is disabled" } });
+      return res.status(403).json({ error: { message: "Account is disabled", code: "ACCOUNT_DISABLED" } });
     }
 
     const ok = await bcrypt.compare(password, user.passwordHash);
@@ -98,6 +99,14 @@ authRouter.post("/login", async (req, res, next) => {
         ...meta,
       });
       return res.status(401).json({ error: { message: "Invalid email or password" } });
+    }
+
+    const access = accessForRole(user.role);
+    if (!access) {
+      const err = new Error("Account role is not configured");
+      err.statusCode = 403;
+      err.code = "ROLE_NOT_CONFIGURED";
+      throw err;
     }
 
     const token = signAccessToken({
@@ -119,7 +128,14 @@ authRouter.post("/login", async (req, res, next) => {
 
     return res.json({
       token,
-      user: { id: user.id, email: user.email, role: user.role, name: user.name },
+      user: {
+        id: user.id,
+        email: user.email.trim().toLowerCase(),
+        role: access.role,
+        name: user.name,
+        permissions: access.permissions,
+        landingPath: access.landingPath,
+      },
     });
   } catch (err) {
     if (err?.name === "ZodError") {

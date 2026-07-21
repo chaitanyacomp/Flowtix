@@ -185,10 +185,10 @@ test("buildSalesBillTallyXml — party ledger remains customer and XML is struct
   const xml = buildSalesBillTallyXml(payload);
   assert.match(xml, /^<\?xml version="1.0" encoding="UTF-8"\?>/);
   assert.match(xml, /<VOUCHER VCHTYPE="Sales" ACTION="Create" OBJVIEW="Invoice Voucher View">/);
+  assert.match(xml, /<REMOTEID>FLOWTIX-SB-101<\/REMOTEID>/);
   assert.match(xml, /<PARTYLEDGERNAME>Acme Pvt Ltd<\/PARTYLEDGERNAME>/);
   assert.match(xml, /<PLACEOFSUPPLY>Maharashtra<\/PLACEOFSUPPLY>/);
   assert.match(xml, /<LEDGERNAME>Local Sales @18%<\/LEDGERNAME>/);
-  assert.match(xml, /<BASEUNITS>Nos<\/BASEUNITS>/);
   assert.match(xml, /<STOCKITEMNAME>Widget<\/STOCKITEMNAME>/);
   assert.match(xml, /<RATE>100\/Nos<\/RATE>/);
   assert.match(xml, /<ACTUALQTY>10 Nos<\/ACTUALQTY>/);
@@ -197,6 +197,28 @@ test("buildSalesBillTallyXml — party ledger remains customer and XML is struct
   assert.match(xml, /<BATCHALLOCATIONS\.LIST>/);
   assert.match(xml, /<GODOWNNAME>Main Location<\/GODOWNNAME>/);
   assert.doesNotMatch(xml, /GST Total \(Info\)/i);
+  // Normal voucher export must not create/alter stock masters (imported items already exist in Tally).
+  assert.doesNotMatch(xml, /<STOCKITEM\b[^>]*ACTION="Create"/i);
+  assert.doesNotMatch(xml, /<STOCKITEM\b[^>]*ACTION="Alter"/i);
+  assert.doesNotMatch(xml, /<BASEUNITS>/);
+});
+
+test("mapSalesBillToTallyExportPayload prefers customer.tallyName for party ledger", () => {
+  const bill = baseBill({
+    customer: {
+      id: 5,
+      name: "Acme Mailing Name",
+      tallyName: "ACME PVT LTD (TALLY)",
+      tallyGuid: "abc-guid",
+      gst: "27LIVEGST0000",
+      address: "Live address",
+      stateRef: { stateName: "Maharashtra", stateCode: "27" },
+    },
+  });
+  const payload = mapSalesBillToTallyExportPayload({ bill, companyState });
+  assert.equal(payload.customer.partyLedgerName, "ACME PVT LTD (TALLY)");
+  assert.equal(payload.customer.customerName, "ACME PVT LTD (TALLY)");
+  assert.equal(payload.billTo.name, "Acme Pvt Ltd");
 });
 
 test("buildSalesBillTallyXml — Square Box qty, rate, and amount appear in inventory allocation", () => {
@@ -256,7 +278,7 @@ test("buildSalesBillTallyXml — legacy bill without snapshots still exports", (
   assert.match(xml, /<PARTYLEDGERNAME>Acme Live Name<\/PARTYLEDGERNAME>/);
 });
 
-test("buildSalesBillTallyBulkXml — combines multiple vouchers and stock masters in one envelope", () => {
+test("buildSalesBillTallyBulkXml — combines multiple vouchers in one envelope (voucher-only)", () => {
   const payloadA = mapSalesBillToTallyExportPayload({ bill: baseBill({ id: 201, billNo: "SB-A" }), companyState });
   const payloadB = mapSalesBillToTallyExportPayload({
     bill: baseBill({
@@ -268,7 +290,7 @@ test("buildSalesBillTallyBulkXml — combines multiple vouchers and stock master
   });
   const singleA = buildSalesBillTallyXml(payloadA);
   const messagesA = (singleA.match(/<TALLYMESSAGE>/g) || []).length;
-  assert.ok(messagesA >= 1);
+  assert.equal(messagesA, 1);
 
   const xml = buildSalesBillTallyBulkXml([payloadA, payloadB]);
   assert.match(xml, /^<\?xml version="1.0" encoding="UTF-8"\?>/);
@@ -278,8 +300,8 @@ test("buildSalesBillTallyBulkXml — combines multiple vouchers and stock master
   assert.match(xml, /SB-B/);
   assert.match(xml, /<STOCKITEMNAME>Widget<\/STOCKITEMNAME>/);
   assert.match(xml, /<STOCKITEMNAME>Gadget<\/STOCKITEMNAME>/);
-  // Bulk must keep stock-item masters from each bill (not only the first TALLYMESSAGE).
-  assert.ok((xml.match(/<TALLYMESSAGE>/g) || []).length >= messagesA + 1);
+  assert.doesNotMatch(xml, /<STOCKITEM\b[^>]*ACTION="Create"/i);
+  assert.equal((xml.match(/<TALLYMESSAGE>/g) || []).length, 2);
 });
 
 test("buildSalesBillTallyBulkXml — single payload matches single-bill builder", () => {

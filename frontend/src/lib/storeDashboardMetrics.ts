@@ -17,7 +17,12 @@ export type StoreDashboardKpiMetrics = {
   readyForWo: number;
   materialIssuePending: number;
   rmccCases: number;
+  /** Awaiting procurement (PR/PO / inbox await). */
   awaitProcurement: number;
+  /** GRN lines waiting receive. */
+  grnPending: number;
+  /** Combined Await Procurement / GRN KPI. */
+  awaitProcurementOrGrn: number;
 };
 
 export type StoreRmccSummaryMetrics = {
@@ -106,10 +111,14 @@ export function computeStoreDashboardKpiMetrics(input: {
   const monitor = computeStoreProcurementMonitorMetrics(input.procurementWorkspace, input.inboxRows);
   const rmcc = computeStoreRmccSummaryMetrics(input.rmccSummary);
 
+  const awaitProcurement = monitor.awaitProcurement;
+  const grnPending = monitor.grnPending;
   return {
     readyForWo: execution.readyForWo,
     materialIssuePending: input.materialIssuePendingCount,
     rmccCases: rmcc.openCases,
-    awaitProcurement: monitor.awaitProcurement,
+    awaitProcurement,
+    grnPending,
+    awaitProcurementOrGrn: awaitProcurement + grnPending,
   };
 }

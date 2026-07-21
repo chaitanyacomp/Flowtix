@@ -2,6 +2,7 @@ import * as React from "react";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { PageActions } from "../components/PageHeader";
@@ -470,7 +471,7 @@ export function OpeningStockPage() {
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div className="erp-form-field">
                         <span className="erp-form-label">Opening Qty</span>
-                        <Input type="number" min={0} step="any" value={qtyStr} onChange={(e) => setQtyStr(e.target.value)} placeholder="0" />
+                        <DecimalInput value={qtyStr} onValueChange={setQtyStr} placeholder="0" />
                       </div>
                       <div className="erp-form-field">
                         <span className="erp-form-label">Bucket</span>

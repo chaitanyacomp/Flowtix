@@ -138,6 +138,7 @@ export function DispatchCompactExecutionPanel({
       ) : (
         <OperatorMainSplit
           balancedWorkbench
+          lgGridClassName="lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.25fr)]"
           className="lg:max-h-[min(calc(100dvh-8.5rem),30rem)] lg:min-h-0"
           panelClassName="!p-2 min-h-0 h-full"
           queue={
@@ -151,19 +152,18 @@ export function DispatchCompactExecutionPanel({
               </div>
               <div
                 className={cn(
-                  "min-h-0 flex-1 overflow-auto rounded-md border border-slate-200/80 bg-white",
+                  "min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-md border border-slate-200/80 bg-white",
                   DISPATCH_COMPACT_QUEUE_MAX_H,
-                  queue.length > 8 ? "lg:overflow-y-auto" : "",
                 )}
               >
-                <table className="w-full text-left text-[12px]">
+                <table className="w-full table-fixed text-left text-[12px]">
                   <thead className="sticky top-0 z-[1] border-b border-slate-200 bg-slate-50">
                     <tr className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                      <th className="px-2 py-1.5 font-medium">Item</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Dispatchable</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Draft</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Dispatched</th>
-                      <th className="px-2 py-1.5 font-medium">Status</th>
+                      <th className="w-[36%] px-2 py-1.5 font-medium">Item</th>
+                      <th className="w-[16%] px-1.5 py-1.5 text-right font-medium">Qty</th>
+                      <th className="w-[14%] px-1.5 py-1.5 text-right font-medium">Draft</th>
+                      <th className="w-[16%] px-1.5 py-1.5 text-right font-medium">Done</th>
+                      <th className="w-[18%] px-1.5 py-1.5 font-medium">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -182,19 +182,19 @@ export function DispatchCompactExecutionPanel({
                           onClick={() => onSelectItem(row.itemId)}
                           data-testid={`dispatch-compact-queue-row-${row.itemId}`}
                         >
-                          <td className="max-w-[10rem] truncate px-2 py-1 font-medium text-slate-900" title={row.itemName}>
+                          <td className="truncate px-2 py-1 font-medium text-slate-900" title={row.itemName}>
                             {row.itemName}
                           </td>
-                          <td className="px-2 py-1 text-right tabular-nums font-semibold text-emerald-900">
+                          <td className="px-1.5 py-1 text-right tabular-nums font-semibold text-emerald-900">
                             {formatDispatchCompactQty(row.readyQty)}
                           </td>
-                          <td className="px-2 py-1 text-right tabular-nums text-amber-900">
+                          <td className="px-1.5 py-1 text-right tabular-nums text-amber-900">
                             {formatDispatchCompactQty(row.draftQty)}
                           </td>
-                          <td className="px-2 py-1 text-right tabular-nums text-slate-700">
+                          <td className="px-1.5 py-1 text-right tabular-nums text-slate-700">
                             {formatDispatchCompactQty(row.dispatchedQty)}
                           </td>
-                          <td className="px-2 py-1 text-slate-700">{row.statusLabel}</td>
+                          <td className="truncate px-1.5 py-1 text-slate-700">{row.statusLabel}</td>
                         </tr>
                       );
                     })}
@@ -287,17 +287,27 @@ export function DispatchCompactExecutionPanel({
                     </div>
                   ) : null}
 
-                  <div>
-                    <label className="text-[11px] font-medium text-slate-600" htmlFor="dispatch-compact-qty">
-                      {hasOpenDraft ? "Edit dispatch qty" : "Dispatch qty"}
-                    </label>
-                    <Input
-                      id="dispatch-compact-qty"
-                      className="mt-1 h-9 max-w-full tabular-nums"
-                      value={dispatchQtyStr}
-                      disabled={dispatchReadOnly || dispatching}
-                      onChange={(e) => onDispatchQtyChange(e.target.value)}
-                    />
+                  <div className="flex flex-wrap items-end gap-2" data-testid="dispatch-compact-qty-row">
+                    <div className="min-w-0">
+                      <label className="text-[11px] font-medium text-slate-600" htmlFor="dispatch-compact-qty">
+                        {hasOpenDraft ? "Edit dispatch qty" : "Dispatch Qty"}
+                      </label>
+                      <Input
+                        id="dispatch-compact-qty"
+                        type="text"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        className={cn(
+                          "mt-1 h-9 w-[8rem] text-right tabular-nums",
+                          "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none",
+                        )}
+                        value={dispatchQtyStr}
+                        disabled={dispatchReadOnly || dispatching}
+                        onChange={(e) => onDispatchQtyChange(e.target.value)}
+                        data-testid="dispatch-qty-input"
+                      />
+                    </div>
+                    <span className="mb-2 text-[11px] font-medium text-slate-600">Nos</span>
                   </div>
 
                   {!draftSavedIdle ? (

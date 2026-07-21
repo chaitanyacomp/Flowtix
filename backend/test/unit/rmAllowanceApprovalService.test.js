@@ -125,6 +125,7 @@ test("resolveApprovedRequestForIssue rejects quantity exceeding approved issue q
 });
 
 test("resolveApprovedRequestForIssue invalidates when Add Qty changed", async () => {
+  let supersededId = null;
   await assert.rejects(
     () =>
       resolveApprovedRequestForIssue(
@@ -138,22 +139,32 @@ test("resolveApprovedRequestForIssue invalidates when Add Qty changed", async ()
         },
         {
           rmAllowanceApprovalRequest: {
-            findUnique: async () => ({
-              id: 5,
-              status: "APPROVED",
-              pmrLineId: 10,
-              addQty: 4,
-              issueQty: 76,
-              applicableBomQty: 72,
-              alreadyIssuedQty: 0,
-              allowancePct: 5.5556,
-            }),
+            findUnique: async ({ where }) => {
+              if (where?.id === 5) {
+                return {
+                  id: 5,
+                  status: "APPROVED",
+                  pmrLineId: 10,
+                  addQty: 4,
+                  issueQty: 76,
+                  applicableBomQty: 72,
+                  alreadyIssuedQty: 0,
+                  allowancePct: 5.5556,
+                };
+              }
+              return null;
+            },
             findFirst: async () => null,
+            update: async ({ where, data }) => {
+              supersededId = where.id;
+              return { id: where.id, status: data.status };
+            },
           },
         },
       ),
     (err) => err && err.code === "APPROVAL_INVALIDATED",
   );
+  assert.equal(supersededId, 5);
 });
 
 test("resolveApprovedRequestForIssue rejects non-APPROVED / forged status payload", async () => {

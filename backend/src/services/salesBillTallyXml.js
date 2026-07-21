@@ -209,7 +209,7 @@ function buildStockItemMasterXml(line, { todayDateYYYYMMDD, action }) {
   }
 }
 
-function buildStockItemMasterMessages(payload) {
+function buildStockItemMasterMessages(payload, { onlyMissing = false } = {}) {
   let stockXml = "";
   try {
     const lines = Array.isArray(payload?.lines) ? payload.lines : [];
@@ -217,16 +217,18 @@ function buildStockItemMasterMessages(payload) {
     // PREVENT DUPLICATES
     const uniqueItems = new Map();
     lines.forEach((l) => {
-      if (l?.itemName) uniqueItems.set(String(l.itemName), l);
+      if (!l?.itemName) return;
+      // Never emit Create/Alter for stock items that already carry Tally identity.
+      if (onlyMissing && (l.tallyImportedAt || l.tallyGuid || l.tallyName)) return;
+      uniqueItems.set(String(l.itemName), l);
     });
 
     const todayDateYYYYMMDD = fmtDateYYYYMMDD(new Date());
 
     stockXml = Array.from(uniqueItems.values())
       .map((ln) => {
-        const createXml = buildStockItemMasterXml(ln, { todayDateYYYYMMDD, action: "Create" });
-        const alterXml = buildStockItemMasterXml(ln, { todayDateYYYYMMDD, action: "Alter" });
-        return createXml + alterXml;
+        // Create-only for explicit masters package (no Alter) — avoids silent duplicate Alter noise.
+        return buildStockItemMasterXml(ln, { todayDateYYYYMMDD, action: "Create" });
       })
       .join("");
   } catch (e) {
@@ -237,13 +239,46 @@ function buildStockItemMasterMessages(payload) {
 }
 
 /**
+ * Masters-only package for "Create Missing Master in Tally".
+ * Never mixed into the normal Sales Bill voucher export.
+ */
+function buildSalesBillTallyMastersXml(payload) {
+  const bodies = buildStockItemMasterMessages(payload, { onlyMissing: true });
+  if (!bodies) {
+    throw new Error(
+      "No missing stock-item masters to create. Imported/mapped items are referenced by the voucher only.",
+    );
+  }
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    "<ENVELOPE>",
+    "<HEADER>",
+    "<TALLYREQUEST>Import Data</TALLYREQUEST>",
+    "</HEADER>",
+    "<BODY>",
+    "<IMPORTDATA>",
+    "<REQUESTDESC>",
+    "<REPORTNAME>All Masters</REPORTNAME>",
+    "</REQUESTDESC>",
+    "<REQUESTDATA>",
+    bodies,
+    "</REQUESTDATA>",
+    "</IMPORTDATA>",
+    "</BODY>",
+    "</ENVELOPE>",
+  ].join("");
+}
+
+/**
  * Sales voucher XML (invoice-style).
  * Keeps it operational + minimal: party ledger + inventory lines + tax ledgers.
  */
 function buildSalesBillTallyXml(payload) {
   const voucherNo = payload?.voucherNo || `SB-${payload?.salesBillId ?? ""}`;
   const voucherDate = fmtDateYYYYMMDD(payload?.billDate);
-  const partyName = payload?.customer?.customerName || "Customer";
+  const partyName =
+    payload?.customer?.partyLedgerName || payload?.customer?.customerName || "Customer";
+  const remoteId = `FLOWTIX-SB-${payload?.salesBillId ?? voucherNo}`;
 
   // Sales voucher sign convention (as required):
   // - Party ledger: +net (debit)
@@ -275,7 +310,10 @@ function buildSalesBillTallyXml(payload) {
     if (bucket.igstLedger) assertAllowedLedgerName(bucket.igstLedger);
   }
   if (freight > 0) {
-    if (!freightLedger) throw new Error(`Sales Tally XML: transportation ledger mapping is missing for ${payload?.salesBillId}.`);
+    if (!freightLedger) {
+      const { formatMissingTransportationLedgerError } = require("./salesBillTallyExportReadiness");
+      throw new Error(formatMissingTransportationLedgerError(payload));
+    }
     assertAllowedLedgerName(freightLedger);
   }
   if (Math.abs(roundOff) > 0.0001) assertAllowedLedgerName(roundOffLedger);
@@ -431,9 +469,10 @@ function buildSalesBillTallyXml(payload) {
     "<REPORTNAME>Vouchers</REPORTNAME>",
     "</REQUESTDESC>",
     "<REQUESTDATA>",
-    buildStockItemMasterMessages(payload),
+    // Voucher-only: do not prepend STOCKITEM Create/Alter. Masters are exported separately.
     "<TALLYMESSAGE>",
     '<VOUCHER VCHTYPE="Sales" ACTION="Create" OBJVIEW="Invoice Voucher View">',
+    `<REMOTEID>${xmlEscape(remoteId)}</REMOTEID>`,
     "<VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>",
     "<ISINVOICE>Yes</ISINVOICE>",
     "<PERSISTEDVIEW>Invoice Voucher View</PERSISTEDVIEW>",
@@ -529,6 +568,8 @@ function buildSalesBillTallyBulkXml(payloads) {
 module.exports = {
   buildSalesBillTallyXml,
   buildSalesBillTallyBulkXml,
+  buildSalesBillTallyMastersXml,
+  buildStockItemMasterMessages,
   buildCommercialVoucherXml,
   splitAddressLines,
 };

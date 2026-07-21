@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { apiFetch, getApiUrl } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { Badge } from "../components/ui/badge";
 import { useToast } from "../contexts/ToastContext";
 import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
@@ -689,29 +690,21 @@ export function QuotationsPage() {
                       {(editQ.flowTypeSnapshot ?? "REGULAR") === "NO_QTY" ? null : (
                         <div className="erp-form-field">
                           <span className="erp-form-label">Qty</span>
-                          <Input
-                            type="number"
-                            step="any"
-                            min={0}
-                            inputMode="decimal"
+                          <DecimalInput
                             value={l.qty}
-                            onChange={(e) => {
-                              setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)));
+                            onValueChange={(next) => {
+                              setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, qty: next } : x)));
                             }}
                           />
                         </div>
                       )}
                       <div className="erp-form-field">
                         <span className="erp-form-label">Rate</span>
-                        <Input
-                          type="number"
-                          step="any"
-                          min={0}
-                          inputMode="decimal"
+                        <DecimalInput
                           value={l.isFree ? "0" : l.rate}
                           disabled={l.isFree || (editQ.flowTypeSnapshot ?? "REGULAR") === "NO_QTY"}
-                          onChange={(e) => {
-                            setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, rate: e.target.value } : x)));
+                          onValueChange={(next) => {
+                            setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, rate: next } : x)));
                           }}
                         />
                         {l.isFree ? (
@@ -720,26 +713,20 @@ export function QuotationsPage() {
                       </div>
                       <div className="erp-form-field">
                         <span className="erp-form-label">Disc %</span>
-                        <Input
-                          type="number"
-                          step="any"
-                          inputMode="decimal"
+                        <DecimalInput
                           value={l.discountPct}
-                          onChange={(e) => {
-                            setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, discountPct: e.target.value } : x)));
+                          onValueChange={(next) => {
+                            setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, discountPct: next } : x)));
                           }}
                         />
                       </div>
                       <div className="erp-form-field">
                         <span className="erp-form-label">GST %</span>
-                        <Input
-                          type="number"
-                          step="any"
-                          inputMode="decimal"
+                        <DecimalInput
                           value={l.gstPct}
                           disabled={(editQ.flowTypeSnapshot ?? "REGULAR") === "NO_QTY"}
-                          onChange={(e) => {
-                            setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, gstPct: e.target.value } : x)));
+                          onValueChange={(next) => {
+                            setQuoteLines((p) => p.map((x, j) => (j === i ? { ...x, gstPct: next } : x)));
                           }}
                         />
                       </div>

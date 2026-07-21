@@ -7,6 +7,7 @@ import { Loader2, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { DecimalInput } from "../ui/DecimalInput";
 import { apiFetch } from "../../services/api";
 import { cn } from "../../lib/utils";
 import { ErpModal } from "./ErpModal";
@@ -88,7 +89,7 @@ type Props = {
   /** Preview finished (success, empty, or terminal error) — clear banner Approve loading. */
   onPreviewSettled?: () => void;
   approvalExtras?: {
-    remainingDisposition?: "CONTINUE" | "PAUSE" | "END_WITH_SHORTAGE";
+    remainingDisposition?: "PAUSE" | "END_WITH_SHORTAGE";
     pauseReason?: string;
     dispositionRemarks?: string | null;
   };
@@ -395,15 +396,12 @@ export function ProductionRmConsumptionReviewModal({
                             {fmtQty(ln.standardQty, ln.unit)}
                           </td>
                           <td className="px-2 py-1">
-                            <Input
-                              type="number"
-                              step="any"
-                              min={0}
+                            <DecimalInput
                               value={ln.actualQty}
-                              onChange={(e) =>
+                              onValueChange={(next) =>
                                 setLines((prev) =>
                                   prev.map((r) =>
-                                    r.itemId === ln.itemId ? { ...r, actualQty: e.target.value } : r,
+                                    r.itemId === ln.itemId ? { ...r, actualQty: next } : r,
                                   ),
                                 )
                               }

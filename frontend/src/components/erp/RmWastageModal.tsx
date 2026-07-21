@@ -5,6 +5,7 @@ import * as React from "react";
 import { apiFetch } from "../../services/api";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { DecimalInput } from "../ui/DecimalInput";
 import { useToast } from "../../contexts/ToastContext";
 import { RM_WASTAGE_REASON_OPTIONS, validateWastageQtyInput } from "../../lib/rmWastageUx";
 
@@ -107,13 +108,9 @@ export function RmWastageModal({ open, onClose, onSuccess, workOrderId, pmrId, f
           </label>
           <label className="grid gap-0.5">
             <span className="font-medium text-slate-600">Wastage qty *</span>
-            <Input
-              type="number"
-              step="any"
-              min={0}
-              max={available}
+            <DecimalInput
               value={qty}
-              onChange={(e) => setQty(e.target.value)}
+              onValueChange={setQty}
               className="h-8 text-[13px]"
               required
             />

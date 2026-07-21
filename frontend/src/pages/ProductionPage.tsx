@@ -4,8 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { ApiRequestError, apiFetch } from "../services/api";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { useAuth } from "../hooks/useAuth";
-import { isValidNumberDraft, type NumberDraft, toNumberDraft } from "../lib/numberDraft";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
 import { useDependentFieldFocus } from "../hooks/useDependentFieldFocus";
 import { useMandatoryPositiveQtyDraft } from "../hooks/useMandatoryPositiveQtyDraft";
@@ -58,10 +58,18 @@ import {
 import { buildProductionWorkspaceOverviewHref } from "../lib/productionWorkspaceRouteContract";
 import {
   isProductionReportCloseDecision,
+  productionStageLabelForReportPending,
   shouldClearProductionReportTransition,
   shouldForceProductionReportTransition,
+  shouldHideContinueWhileProductionReportPending,
   shouldIgnoreClearedExecutionSummaryDuringReportTransition,
 } from "../lib/productionReportTransition";
+import {
+  isReviewFinalizeDispositionReady,
+  REVIEW_FINALIZE_REMAINING_OPTIONS,
+  reviewFinalizePrimaryButtonLabel,
+  type ReviewFinalizeDisposition,
+} from "../lib/productionReviewFinalizeDisposition";
 import { buildProductionScopedHref } from "../lib/productionNavigation";
 import {
   materialRequestsQueueHref,
@@ -786,17 +794,18 @@ export function ProductionPage() {
   }, [demo.enabled, prodDemoHl, woId, wolId, producedQtyStr, setProducedQtyStr]);
 
   const [editing, setEditing] = React.useState<ProdEntryRow | null>(null);
-  const [editQty, setEditQty] = React.useState<NumberDraft>("");
+  const [editQty, setEditQty] = React.useState("");
   const [editDate, setEditDate] = React.useState(todayYmd);
   const [editSaving, setEditSaving] = React.useState(false);
   const [rowBusy, setRowBusy] = React.useState<number | null>(null);
   const [reverseModalEntry, setReverseModalEntry] = React.useState<ProdEntryRow | null>(null);
   const [consumptionApproveId, setConsumptionApproveId] = React.useState<number | null>(null);
-  type RemainingDisposition = "CONTINUE" | "PAUSE" | "END_WITH_SHORTAGE";
+  type RemainingDisposition = ReviewFinalizeDisposition;
   type ApprovalExtras = { remainingDisposition?: RemainingDisposition; pauseReason?: string; dispositionRemarks?: string | null };
   const [consumptionApprovalExtras, setConsumptionApprovalExtras] = React.useState<ApprovalExtras>({});
   const [reviewFinalizeEntryId, setReviewFinalizeEntryId] = React.useState<number | null>(null);
-  const [reviewDisposition, setReviewDisposition] = React.useState<RemainingDisposition>("CONTINUE");
+  /** Null until the operator deliberately chooses Pause or End — never preselect Continue/Pause. */
+  const [reviewDisposition, setReviewDisposition] = React.useState<RemainingDisposition | null>(null);
   const [reviewPauseReason, setReviewPauseReason] = React.useState("MACHINE_BREAKDOWN");
   const [reviewRemarks, setReviewRemarks] = React.useState("");
   /** Sticky gate: End/Equal/Extra finalize → report. Blocks Continue/runner flash until report layout mounts. */
@@ -2893,6 +2902,16 @@ export function ProductionPage() {
   const showOpeningProductionReportGate =
     forceProductionReportTransition && !productionReportClosureReady;
 
+  /** Hide header/strip Continue while mandatory Production Report is open or pending. */
+  const hideContinueForProductionReport = shouldHideContinueWhileProductionReportPending({
+    showProductionReport,
+    showCompactClosureLayout: showProductionWorkspaceCompactLayout,
+    forceProductionReportTransition,
+    showOpeningProductionReportGate,
+    pendingShortfallDecision: noQtyPendingShortfallDecision,
+    executionStatus: scopedExecutionSummary?.executionStatus,
+  });
+
   React.useEffect(() => {
     if (
       shouldClearProductionReportTransition({
@@ -3417,7 +3436,7 @@ export function ProductionPage() {
 
   function openEdit(e: ProdEntryRow) {
     setEditing(e);
-    setEditQty(Number(e.producedQty));
+    setEditQty(String(Number(e.producedQty)));
     setEditDate(toYmd(e.date));
   }
 
@@ -3492,7 +3511,8 @@ export function ProductionPage() {
   async function saveEditDraft() {
     if (!editing) return;
     setError(null);
-    if (!isValidNumberDraft(editQty) || editQty <= 0) {
+    const editQtyNum = Number(editQty);
+    if (!Number.isFinite(editQtyNum) || editQtyNum <= 0) {
       setError("Produced qty is required.");
       return;
     }
@@ -3511,7 +3531,7 @@ export function ProductionPage() {
     if (
       showRegularRmReadiness &&
       rmEntryQtyCap != null &&
-      editQty > rmEntryQtyCap + 1e-6
+      editQtyNum > rmEntryQtyCap + 1e-6
     ) {
       setError(
         `Production entry cannot exceed ${rmEntryQtyCap} based on issued RM at production location.`,
@@ -3522,7 +3542,7 @@ export function ProductionPage() {
     try {
       await apiFetch(`/api/production/production-entries/${editing.id}`, {
         method: "PUT",
-        body: JSON.stringify({ producedQty: editQty, date: editDate }),
+        body: JSON.stringify({ producedQty: editQtyNum, date: editDate }),
       });
       setEditing(null);
       await refresh();
@@ -3809,7 +3829,7 @@ export function ProductionPage() {
     const hardened = navigateNoQtyContext || navigateGreenLevelContext || isGreenLevelProductionEntry(review?.row);
     if (review && hardened) {
       setReviewFinalizeEntryId(id);
-      setReviewDisposition("CONTINUE");
+      setReviewDisposition(null);
       setReviewPauseReason("MACHINE_BREAKDOWN");
       setReviewRemarks("");
       return;
@@ -4088,7 +4108,17 @@ export function ProductionPage() {
                 if (!(id > 0) || resumeWoBusy) return;
                 setResumeWoBusy(true);
                 void resumeWorkOrderApi(id)
-                  .then(() => refresh())
+                  .then(() => {
+                    refresh();
+                    navigate(
+                      buildProductionWorkspaceOverviewHref({
+                        productionBucket: "inProgress",
+                        pwSection: "active",
+                        pwFocus: id,
+                      }),
+                      { replace: true },
+                    );
+                  })
                   .catch((e) => setError(e instanceof Error ? e.message : "Resume failed"))
                   .finally(() => setResumeWoBusy(false));
               },
@@ -4183,8 +4213,7 @@ export function ProductionPage() {
       }
       if (
         noQtyShowContinueProductionCta &&
-        !noQtyPendingShortfallDecision &&
-        !forceProductionReportTransition &&
+        !hideContinueForProductionReport &&
         selectedMetrics &&
         selectedMetrics.remainingQty > 1e-6 &&
         canProd &&
@@ -4254,6 +4283,7 @@ export function ProductionPage() {
       !rmProductionEntryBlocked &&
       !regularCreateFormLockedByDraft &&
       !woProductionLifecycleBlocked &&
+      !hideContinueForProductionReport &&
       selectedMetrics &&
       selectedMetrics.remainingQty > 1e-6 &&
       canProd &&
@@ -4283,8 +4313,7 @@ export function ProductionPage() {
       !regularCreateFormLockedByDraft &&
       !rmProductionEntryBlocked &&
       !woProductionLifecycleBlocked &&
-      !noQtyPendingShortfallDecision &&
-      !forceProductionReportTransition
+      !hideContinueForProductionReport
     ) {
       const rmCap =
         showRegularRmReadiness && rmReadiness
@@ -4347,8 +4376,7 @@ export function ProductionPage() {
     selectedWoForLifecycle,
     resumeWoBusy,
     noQtyShowContinueProductionCta,
-    noQtyPendingShortfallDecision,
-    forceProductionReportTransition,
+    hideContinueForProductionReport,
   ]);
 
   const productionPrimaryStripCoversDraft = draftApprovalPendingRegular;
@@ -4573,6 +4601,11 @@ export function ProductionPage() {
 
   const regularWorkflowStageLabel = React.useMemo(() => {
     if (navigateNoQtyContext) return "";
+    if (hideContinueForProductionReport) {
+      return productionStageLabelForReportPending({
+        executionStatus: scopedExecutionSummary?.executionStatus,
+      });
+    }
     if (draftApprovalPendingRegular) return "Draft Pending";
     if (woProductionLifecycleBlocked && isWorkOrderPausedStatus(selectedWoForLifecycle?.status)) return "Paused";
     if (rmProductionEntryBlocked && showRegularRmReadiness) return "Waiting for RM issue";
@@ -4595,6 +4628,8 @@ export function ProductionPage() {
     return "Production";
   }, [
     navigateNoQtyContext,
+    hideContinueForProductionReport,
+    scopedExecutionSummary?.executionStatus,
     draftApprovalPendingRegular,
     latestDraftForSelectedWoLine,
     selectedWoQcPending,
@@ -4642,12 +4677,19 @@ export function ProductionPage() {
   }, [navigateGreenLevelContext, isGreenLevelFlow, navigateNoQtyContext, fromNoQtySo]);
 
   const productionOperatorStatusLabel = React.useMemo(() => {
+    if (hideContinueForProductionReport) {
+      return productionStageLabelForReportPending({
+        executionStatus: scopedExecutionSummary?.executionStatus,
+      });
+    }
     if (navigateGreenLevelContext && selectedGreenLevelQueueRow?.statusLabel) {
       return selectedGreenLevelQueueRow.statusLabel;
     }
     if (navigateNoQtyContext && noQtyCycleDisplayStatus?.label) return noQtyCycleDisplayStatus.label;
     return regularWorkflowStageLabel;
   }, [
+    hideContinueForProductionReport,
+    scopedExecutionSummary?.executionStatus,
     navigateGreenLevelContext,
     selectedGreenLevelQueueRow?.statusLabel,
     navigateNoQtyContext,
@@ -5042,7 +5084,17 @@ export function ProductionPage() {
                     if (!(id > 0)) return;
                     setResumeWoBusy(true);
                     void resumeWorkOrderApi(id)
-                      .then(() => refresh())
+                      .then(() => {
+                        refresh();
+                        navigate(
+                          buildProductionWorkspaceOverviewHref({
+                            productionBucket: "inProgress",
+                            pwSection: "active",
+                            pwFocus: id,
+                          }),
+                          { replace: true },
+                        );
+                      })
                       .catch((e) => setError(e instanceof Error ? e.message : "Resume failed"))
                       .finally(() => setResumeWoBusy(false));
                   }}
@@ -5915,13 +5967,10 @@ export function ProductionPage() {
                                         </label>
                                         <label className="grid gap-1 text-[12px]">
                                           <span className="text-slate-600">Produced qty</span>
-                                          <Input
+                                          <DecimalInput
                                             className={operatorInputClass}
-                                            type="number"
-                                            min={0.001}
-                                            step="any"
                                             value={editQty}
-                                            onChange={(e) => setEditQty(toNumberDraft(e.target.value))}
+                                            onValueChange={setEditQty}
                                           />
                                         </label>
                                         <div className="flex flex-wrap gap-2">
@@ -6445,13 +6494,10 @@ export function ProductionPage() {
                                 </label>
                                 <label className="grid gap-1 text-[12px]">
                                   <span className="text-slate-600">Produced qty</span>
-                                  <Input
+                                  <DecimalInput
                                     className={operatorInputClass}
-                                    type="number"
-                                    min={0.001}
-                                    step="any"
                                     value={editQty}
-                                    onChange={(e) => setEditQty(toNumberDraft(e.target.value))}
+                                    onValueChange={setEditQty}
                                   />
                                 </label>
                                 <div className="flex flex-wrap gap-2">
@@ -6847,13 +6893,10 @@ export function ProductionPage() {
                 </label>
                 <label className="grid gap-1 text-[12px]">
                   <span className="text-slate-600">Produced qty</span>
-                  <Input
+                  <DecimalInput
                     className={operatorInputClass}
-                    type="number"
-                    min={0.001}
-                    step="any"
                     value={editQty}
-                    onChange={(e) => setEditQty(toNumberDraft(e.target.value))}
+                    onValueChange={setEditQty}
                   />
                 </label>
                 <div className="flex flex-wrap gap-2">
@@ -7049,27 +7092,30 @@ export function ProductionPage() {
           <div><span className="text-slate-500">Unused RM-supported capacity</span><div className="font-semibold">{rmEntryQtyCap != null ? fmtProdQty(Math.max(0, Number(rmEntryQtyCap) - reviewFinalize.totalAfter)) : "—"}</div></div>
           <div><span className="text-slate-500">Approved tolerance</span><div className="font-semibold">WO plan + 5% where applicable</div></div>
         </div>
-        {reviewFinalize.remaining > 1e-6 ? <div className="grid gap-3 md:grid-cols-3" role="radiogroup" aria-label="Remaining work order disposition">
-          {([
-            ["CONTINUE", "Continue Production", "Finalize this entry and keep the balance active in the same WO."],
-            ["PAUSE", "Pause Production", "Finalize this entry and preserve the balance paused in the same WO. No Production Report yet."],
-            ["END_WITH_SHORTAGE", "End Production with Shortage", "Finalize this entry, then complete the mandatory RM Production Report. The shortage transfers only when that report closes production."],
-          ] as const).map(([id, title, description]) => (
-            <button
-              key={id}
-              type="button"
-              role="radio"
-              aria-checked={reviewDisposition === id}
-              onClick={() => setReviewDisposition(id)}
-              className={cn("min-h-32 rounded-lg border-2 p-4 text-left transition", reviewDisposition === id ? "border-emerald-600 bg-emerald-50" : "border-slate-200 bg-white hover:border-slate-400")}
-            >
-              <span className="block text-base font-semibold text-slate-900">{title}</span>
-              <span className="mt-2 block text-sm leading-relaxed text-slate-600">{description}</span>
-            </button>
-          ))}
-        </div> : (
+        {reviewFinalize.remaining > 1e-6 ? (
+          <div className="grid gap-3 md:grid-cols-2" role="radiogroup" aria-label="Remaining work order disposition">
+            {REVIEW_FINALIZE_REMAINING_OPTIONS.map(({ id, title, description }) => (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={reviewDisposition === id}
+                onClick={() => setReviewDisposition(id)}
+                className={cn(
+                  "min-h-32 rounded-lg border-2 p-4 text-left transition",
+                  reviewDisposition === id
+                    ? "border-emerald-600 bg-emerald-50"
+                    : "border-slate-200 bg-white hover:border-slate-400",
+                )}
+              >
+                <span className="block text-base font-semibold text-slate-900">{title}</span>
+                <span className="mt-2 block text-sm leading-relaxed text-slate-600">{description}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
           <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-            <p className="font-medium">WO quantity balance is complete — Production Report is still required.</p>
+            <p className="font-medium">Complete Production — Production Report is still required.</p>
             <p className="text-amber-900/90">
               Finalizing confirms this batch and sends it to QC. It does <span className="font-semibold">not</span> close the
               work order. Unused RM-supported capacity is not wastage until you allocate material in the Production Report
@@ -7090,8 +7136,25 @@ export function ProductionPage() {
         </label>
         <div className="flex justify-end gap-2">
           <Button type="button" variant="outline" onClick={() => setReviewFinalizeEntryId(null)}>Back to Draft</Button>
-          <Button type="button" variant={reviewDisposition === "END_WITH_SHORTAGE" ? "destructive" : "default"} onClick={() => {
+          <Button
+            type="button"
+            variant={reviewDisposition === "END_WITH_SHORTAGE" ? "destructive" : "default"}
+            disabled={
+              !isReviewFinalizeDispositionReady({
+                remainingAfterEntry: reviewFinalize.remaining,
+                disposition: reviewDisposition,
+              })
+            }
+            onClick={() => {
             const id = reviewFinalizeEntryId;
+            if (
+              !isReviewFinalizeDispositionReady({
+                remainingAfterEntry: reviewFinalize.remaining,
+                disposition: reviewDisposition,
+              })
+            ) {
+              return;
+            }
             const closeDecision = isProductionReportCloseDecision({
               remainingAfterEntry: reviewFinalize.remaining,
               disposition: reviewDisposition,
@@ -7107,7 +7170,7 @@ export function ProductionPage() {
             if (id != null) {
               executeDraftFinalization(
                 id,
-                reviewFinalize.remaining > 1e-6
+                reviewFinalize.remaining > 1e-6 && reviewDisposition
                   ? {
                       remainingDisposition: reviewDisposition,
                       pauseReason: reviewDisposition === "PAUSE" ? reviewPauseReason : undefined,
@@ -7117,11 +7180,10 @@ export function ProductionPage() {
               );
             }
           }}>
-            {reviewFinalize.remaining <= 1e-6
-              ? "Finalize & Open Production Report"
-              : reviewDisposition === "END_WITH_SHORTAGE"
-                ? "End & Open Production Report"
-                : "Finalize Production"}
+            {reviewFinalizePrimaryButtonLabel({
+              remainingAfterEntry: reviewFinalize.remaining,
+              disposition: reviewDisposition,
+            })}
           </Button>
         </div>
       </div>
@@ -7378,8 +7440,7 @@ export function ProductionPage() {
               !draftApprovalPendingRegular &&
               canProd &&
               !rmProductionEntryBlocked &&
-              !noQtyPendingShortfallDecision &&
-              !forceProductionReportTransition ? (
+              !hideContinueForProductionReport ? (
                 <button
                   type="button"
                   className="text-left text-sky-900 underline-offset-2 hover:underline"

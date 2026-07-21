@@ -181,4 +181,33 @@ describe("materialIssueDeepLink", () => {
     expect(parsed.invalidBucketRequested).toBe(true);
     expect(parsed.filterKey).toBe("READY");
   });
+
+  it("stale rejected deep-link reports STALE_ALLOWANCE with clear message", () => {
+    const result = resolveMaterialIssueDeepLinkTarget({
+      requestedBucket: "rejected",
+      workOrderId: 3,
+      pmrId: 3,
+      pmrs: [],
+      fromAllowanceAction: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("STALE_ALLOWANCE");
+      expect(result.message).toContain("no longer pending");
+      expect(result.message).toContain("already been completed");
+    }
+  });
+
+  it("generic missing WO keeps NOT_FOUND wording for non-allowance buckets", () => {
+    const result = resolveMaterialIssueDeepLinkTarget({
+      requestedBucket: "readyToIssue",
+      workOrderId: 99,
+      pmrs: [],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("NOT_FOUND");
+      expect(result.message).toContain("no longer available for Material Issue");
+    }
+  });
 });

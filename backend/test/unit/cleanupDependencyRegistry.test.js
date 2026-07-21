@@ -6,7 +6,9 @@ const assert = require("node:assert/strict");
 
 const {
   assertCleanupRegistryValid,
+  assertFullDemoResetCoverageValid,
   validateCleanupRegistryAgainstSchema,
+  validateFullDemoResetCoverage,
   describeCarryForwardPendingDependencyGraph,
 } = require("../../src/services/cleanup/cleanupDependencyValidator");
 const {
@@ -20,6 +22,13 @@ describe("cleanup dependency registry", () => {
   it("passes schema validation (fails CI when new Restrict FK/model is unregistered)", () => {
     assert.doesNotThrow(() => assertCleanupRegistryValid());
     const result = validateCleanupRegistryAgainstSchema();
+    assert.equal(result.ok, true);
+    assert.equal(result.issues.length, 0);
+  });
+
+  it("passes Full Demo coverage validation (fails when Item/Customer children are unclassified)", () => {
+    assert.doesNotThrow(() => assertFullDemoResetCoverageValid());
+    const result = validateFullDemoResetCoverage();
     assert.equal(result.ok, true);
     assert.equal(result.issues.length, 0);
   });

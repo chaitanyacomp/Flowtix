@@ -242,6 +242,38 @@ async function setGreenLevelSource(source) {
   return v;
 }
 
+async function getTallyLedgerMappings() {
+  await ensureAppSettings();
+  const row = await prisma.appSetting.findUnique({
+    where: { id: 1 },
+    select: { tallyTransportationLedger: true },
+  });
+  const { TALLY_TRANSPORTATION_LEDGER } = require("../config/tally");
+  const { resolveConfiguredTransportationLedger } = require("./salesBillTallyExportReadiness");
+  const stored = row?.tallyTransportationLedger?.trim() ? row.tallyTransportationLedger.trim() : null;
+  return {
+    tallyTransportationLedger: stored,
+    effectiveTransportationLedger: resolveConfiguredTransportationLedger({
+      tallyTransportationLedger: stored,
+      envLedger: TALLY_TRANSPORTATION_LEDGER,
+    }),
+    envTransportationLedgerFallback: TALLY_TRANSPORTATION_LEDGER || null,
+  };
+}
+
+/**
+ * @param {string | null | undefined} raw — empty/null clears the stored mapping (env fallback may still apply)
+ */
+async function setTallyTransportationLedger(raw) {
+  await ensureAppSettings();
+  const next = raw == null || String(raw).trim() === "" ? null : String(raw).trim().slice(0, 160);
+  await prisma.appSetting.update({
+    where: { id: 1 },
+    data: { tallyTransportationLedger: next },
+  });
+  return getTallyLedgerMappings();
+}
+
 module.exports = {
   ensureAppSettings,
   getMaxRegularSoBufferPercent,
@@ -259,4 +291,6 @@ module.exports = {
   getCompanyStateDetails,
   setCompanyStateDetails,
   setCompanyGstDetails,
+  getTallyLedgerMappings,
+  setTallyTransportationLedger,
 };

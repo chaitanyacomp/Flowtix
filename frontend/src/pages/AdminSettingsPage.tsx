@@ -5,7 +5,7 @@ import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { useToast } from "../contexts/ToastContext";
 import { useIsAdmin } from "../hooks/useIsAdmin";
-import { Link, Navigate } from "react-router-dom";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import type { StockAdjustmentPolicyDto } from "../lib/stockAdjustmentPolicyText";
 import { REGULAR_TERMS } from "../lib/flowTerminology";
 
@@ -14,6 +14,14 @@ type StateRow = { id: number; stateName: string; stateCode: string };
 export function AdminSettingsPage() {
   const toast = useToast();
   const isAdmin = useIsAdmin();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const section = searchParams.get("section") || "";
+  const focus = searchParams.get("focus") || "";
+  const returnTo = searchParams.get("returnTo") || "";
+  const tallySectionRef = React.useRef<HTMLDivElement | null>(null);
+  const transportInputRef = React.useRef<HTMLInputElement | null>(null);
+
   const [strict, setStrict] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -26,6 +34,9 @@ export function AdminSettingsPage() {
   const [greenLevelHistoryMonths, setGreenLevelHistoryMonths] = React.useState<3 | 6 | 12>(6);
   const [greenLevelSource, setGreenLevelSource] = React.useState<"MANUAL" | "AUTOMATIC">("MANUAL");
   const [savingGreenLevelHistory, setSavingGreenLevelHistory] = React.useState(false);
+  const [tallyTransportationLedger, setTallyTransportationLedger] = React.useState("");
+  const [effectiveTransportationLedger, setEffectiveTransportationLedger] = React.useState<string | null>(null);
+  const [savingTallyLedgers, setSavingTallyLedgers] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   const [sa, setSa] = React.useState<StockAdjustmentPolicyDto>({
@@ -49,8 +60,12 @@ export function AdminSettingsPage() {
       }>("/api/settings/company-state"),
       apiFetch<StateRow[]>("/api/states"),
       apiFetch<{ greenLevelHistoryMonths: number; greenLevelSource?: string }>("/api/settings/green-level-history"),
+      apiFetch<{
+        tallyTransportationLedger: string | null;
+        effectiveTransportationLedger: string | null;
+      }>("/api/settings/tally-ledgers"),
     ])
-      .then(([inv, ctrl, co, st, greenHist]) => {
+      .then(([inv, ctrl, co, st, greenHist, tally]) => {
         setStrict(Boolean(inv.strictInventoryControl));
         setSa(ctrl);
         setStates(st);
@@ -60,10 +75,21 @@ export function AdminSettingsPage() {
         const m = Number(greenHist.greenLevelHistoryMonths);
         setGreenLevelHistoryMonths(m === 3 || m === 12 ? m : 6);
         setGreenLevelSource(greenHist.greenLevelSource === "AUTOMATIC" ? "AUTOMATIC" : "MANUAL");
+        setTallyTransportationLedger(tally.tallyTransportationLedger?.trim() ? tally.tallyTransportationLedger : "");
+        setEffectiveTransportationLedger(tally.effectiveTransportationLedger);
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load settings"))
       .finally(() => setLoading(false));
   }, []);
+
+  React.useEffect(() => {
+    if (loading) return;
+    if (section !== "tally-ledgers") return;
+    tallySectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (focus === "transportation") {
+      window.setTimeout(() => transportInputRef.current?.focus(), 120);
+    }
+  }, [loading, section, focus]);
 
   if (!isAdmin) {
     return <Navigate to="/dashboard" replace />;
@@ -158,6 +184,34 @@ export function AdminSettingsPage() {
       toast.showError(msg);
     } finally {
       setSavingGreenLevelHistory(false);
+    }
+  }
+
+  async function onSaveTallyLedgers() {
+    setSavingTallyLedgers(true);
+    setError(null);
+    try {
+      const saved = await apiFetch<{
+        tallyTransportationLedger: string | null;
+        effectiveTransportationLedger: string | null;
+      }>("/api/settings/tally-ledgers", {
+        method: "PUT",
+        body: JSON.stringify({
+          tallyTransportationLedger: tallyTransportationLedger.trim() === "" ? null : tallyTransportationLedger.trim(),
+        }),
+      });
+      setTallyTransportationLedger(saved.tallyTransportationLedger?.trim() ? saved.tallyTransportationLedger : "");
+      setEffectiveTransportationLedger(saved.effectiveTransportationLedger);
+      toast.showSuccess("Tally transportation ledger mapping saved");
+      if (returnTo.startsWith("/")) {
+        navigate(returnTo);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Save failed";
+      setError(msg);
+      toast.showError(msg);
+    } finally {
+      setSavingTallyLedgers(false);
     }
   }
 
@@ -378,6 +432,7 @@ export function AdminSettingsPage() {
                 <span className="font-medium text-slate-800">
                   {sa.stockAdjustmentReverseWindowType === "HOURS" ? "Number of hours" : "Number of days"}
                 </span>
+                {/* Intentional type=number: integer admin config counter (not qty/rate). */}
                 <input
                   type="number"
                   min={1}
@@ -398,6 +453,61 @@ export function AdminSettingsPage() {
           <Button type="button" disabled={loading || savingStockAdj} onClick={() => void onSaveStockAdjustment()}>
             {savingStockAdj ? "Saving…" : "Save stock adjustment rules"}
           </Button>
+        </CardContent>
+      </Card>
+
+      <Card
+        id="tally-ledgers"
+        ref={tallySectionRef}
+        className={
+          section === "tally-ledgers"
+            ? "border-amber-300 shadow-sm ring-2 ring-amber-200"
+            : "border-slate-200 shadow-sm"
+        }
+        data-testid="tally-ledger-mapping-settings"
+      >
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Tally ledger mapping</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4 text-sm text-slate-700">
+          <p className="text-slate-600">
+            Map ERP Sales Bill transportation charges to the exact ledger name used in Tally. Do not guess — use the
+            ledger already created in Tally (for example Transportation Charges, Freight Outward, Carriage Outward, or
+            Freight &amp; Forwarding).
+          </p>
+          <label className="grid max-w-xl gap-1">
+            <span className="font-medium text-slate-800">Transportation / Freight ledger (Tally name)</span>
+            <input
+              ref={transportInputRef}
+              type="text"
+              data-testid="tally-transportation-ledger-input"
+              className="h-9 rounded-md border border-slate-200 px-2 text-sm"
+              disabled={loading || savingTallyLedgers}
+              value={tallyTransportationLedger}
+              onChange={(e) => setTallyTransportationLedger(e.target.value)}
+              placeholder="Exact Tally ledger name"
+              aria-label="Transportation Tally ledger name"
+            />
+            {effectiveTransportationLedger ? (
+              <span className="text-[12px] text-slate-500">
+                Effective for export: <span className="font-medium text-slate-800">{effectiveTransportationLedger}</span>
+              </span>
+            ) : (
+              <span className="text-[12px] text-amber-800">
+                Not mapped — Sales Bills with seller-charged transportation cannot export Tally XML until this is set.
+              </span>
+            )}
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" disabled={loading || savingTallyLedgers} onClick={() => void onSaveTallyLedgers()}>
+              {savingTallyLedgers ? "Saving…" : "Save transportation mapping"}
+            </Button>
+            {returnTo.startsWith("/") ? (
+              <Button type="button" variant="outline" disabled={savingTallyLedgers} onClick={() => navigate(returnTo)}>
+                Return to Sales Bill
+              </Button>
+            ) : null}
+          </div>
         </CardContent>
       </Card>
     </div>

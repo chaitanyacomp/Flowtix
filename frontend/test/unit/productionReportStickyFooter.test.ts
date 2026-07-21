@@ -2,59 +2,72 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-describe("ProductionReportPanel sticky close action", () => {
+describe("ProductionReportPanel header close action", () => {
   const source = readFileSync(
     resolve(__dirname, "../../src/components/erp/production/ProductionReportPanel.tsx"),
     "utf8",
   );
 
-  it("keeps Confirm outside the scrollable wastage/middle body in compact mode", () => {
-    expect(source).toContain('data-testid="production-report-sticky-footer"');
-    expect(source).toContain('data-testid="production-report-scroll-body"');
+  it("places Confirm Report & Close WO in the report header (not a bottom duplicate)", () => {
+    expect(source).toContain('data-testid="production-report-header"');
+    expect(source).toContain('data-testid="production-report-header-actions"');
+    expect(source).toContain('data-testid="production-report-header-status"');
     expect(source).toContain('data-testid="confirm-report-close-wo-btn"');
-    expect(source).toContain('data-testid="production-report-footer-status"');
     expect(source).toContain('data-testid="production-report-summary-strip"');
+    expect(source).not.toContain('data-testid="production-report-sticky-footer"');
+    expect(source).not.toContain('data-testid="production-report-footer-status"');
 
-    const compactFooterBlock = source.slice(
-      source.indexOf('data-testid="production-report-sticky-footer"'),
-      source.indexOf("/* Non-compact"),
+    const headerBlock = source.slice(
+      source.indexOf('data-testid="production-report-header"'),
+      source.indexOf('data-testid="production-report-scroll-body"'),
     );
-    expect(compactFooterBlock).toContain("{confirmButton}");
-    expect(compactFooterBlock).toContain("{footerStatusText}");
-    expect(compactFooterBlock).not.toContain("production-report-scroll-body");
+    expect(headerBlock).toContain("{confirmButton}");
+    expect(headerBlock).toContain("{headerReadinessText}");
+    expect(headerBlock).toContain("production-report-header-actions");
 
     const scrollBodyBlock = source.slice(
       source.indexOf('data-testid="production-report-scroll-body"'),
-      source.indexOf('data-testid="production-report-sticky-footer"'),
+      source.indexOf("/* Non-compact"),
     );
     expect(scrollBodyBlock).toContain("ProductionReportWastageDetails");
     expect(scrollBodyBlock).toContain("{remarksField}");
     expect(scrollBodyBlock).not.toContain("{confirmButton}");
+    expect(scrollBodyBlock).toContain("scrollableRows");
+  });
+
+  it("keeps enable rules and double-submit guard on Confirm", () => {
+    expect(source).toContain("confirmBlockedByUnexplained");
+    expect(source).toContain("confirmBlockedByWastage");
+    expect(source).toContain("disabled={saving || confirmBlocked}");
+    expect(source).toContain("if (!report || saving) return");
+    expect(source).toContain("Ready to close");
+    expect(source).toContain("headerReadinessText");
+    expect(source).toContain("`Balance ${fmtQty(Math.abs(rmTotals.unexplained))} ${rmTotals.unit}`");
   });
 
   it("uses compact viewport workbench labels and unexplained-balance terminology", () => {
     expect(source).toContain("production-report-header");
     expect(source).toContain("production-report-rm-zone");
     expect(source).toContain("Unexplained Balance");
-    expect(source).toContain("Ready to close");
-    expect(source).toContain("confirmBlockedByUnexplained");
     expect(source).toContain("computeRmLineWastageAllocation");
-    expect(source).toContain("shrink-0 border-t border-slate-200 bg-white");
   });
 });
 
-describe("ProductionReportWastageDetails no internal scrollbar", () => {
+describe("ProductionReportWastageDetails internal scroll", () => {
   const source = readFileSync(
     resolve(__dirname, "../../src/components/erp/production/ProductionReportWastageDetails.tsx"),
     "utf8",
   );
 
-  it("disables Add when classified and does not use wastage-rows-scroll", () => {
+  it("scrolls wastage rows internally without expanding the page to reach Confirm", () => {
     expect(source).toContain("canAddWastageReason");
     expect(source).toContain("disabled={!canAddWastageReason}");
     expect(source).toContain("Required wastage:");
-    expect(source).not.toContain("production-wastage-rows-scroll");
-    expect(source).not.toContain("overflow-y-auto");
+    expect(source).toContain("production-wastage-rows-scroll");
+    expect(source).toContain("overflow-y-auto");
+    expect(source).toContain("overflow-x-hidden");
+    expect(source).toContain("scrollableRows");
+    expect(source).toContain("fillAvailableHeight");
   });
 });
 
@@ -86,7 +99,6 @@ describe("ProductionPage post-close navigation", () => {
     expect(source).toContain("buildPostProductionReportCloseHref");
     expect(source).toContain("shouldRedirectLegacyOrphanNoQtyProductionSearch");
     expect(source).toContain("returnToProductionWorkspaceDashboard({ refreshAfter: true })");
-    // Post-close handler must not rewrite orphan NO_QTY Select-WO URLs.
     const closeHandler = source.slice(
       source.indexOf("const handleProductionReportConfirmed"),
       source.indexOf("const executableProductionQueueLines"),
@@ -94,6 +106,17 @@ describe("ProductionPage post-close navigation", () => {
     expect(closeHandler).toContain("closedByConfirm");
     expect(closeHandler).toContain("returnToProductionWorkspaceDashboard({ refreshAfter: true })");
     expect(closeHandler).not.toContain('params.set("source", "no_qty_so")');
+  });
+
+  it("hides generic Continue while mandatory Production Report is pending", () => {
+    expect(source).toContain("shouldHideContinueWhileProductionReportPending");
+    expect(source).toContain("hideContinueForProductionReport");
+    expect(source).toContain("productionStageLabelForReportPending");
+    expect(source).toContain("!hideContinueForProductionReport");
+    // Header Continue production link must be gated by report-pending hide flag.
+    expect(source).toMatch(
+      /!hideContinueForProductionReport \? \(\s*<button[\s\S]*?>\s*Continue production\s*<\/button>/,
+    );
   });
 });
 

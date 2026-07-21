@@ -14,7 +14,9 @@ import { DashboardViewAllLink } from "./DashboardControlColumn";
 import { productionHrefFromDashboardRow } from "../../../lib/operationalWorkspaceLinks";
 
 const STATUS_TONE_CLASS: Record<ProductionOperationalStatusTone, string> = {
+  ready: "bg-sky-100 text-sky-950 ring-sky-200/80",
   running: "bg-emerald-100 text-emerald-950 ring-emerald-200/80",
+  paused: "bg-amber-100 text-amber-950 ring-amber-200/80",
   qc: "bg-amber-100 text-amber-950 ring-amber-200/80",
   partial: "bg-sky-100 text-sky-950 ring-sky-200/80",
   carryForward: "bg-amber-100 text-amber-950 ring-amber-300/80",
@@ -24,7 +26,9 @@ const STATUS_TONE_CLASS: Record<ProductionOperationalStatusTone, string> = {
 };
 
 const PROGRESS_TONE_CLASS: Record<ProductionOperationalStatusTone, string> = {
+  ready: "bg-sky-500",
   running: "bg-emerald-600",
+  paused: "bg-amber-500",
   qc: "bg-amber-500",
   partial: "bg-sky-600",
   carryForward: "bg-amber-500",
@@ -33,10 +37,10 @@ const PROGRESS_TONE_CLASS: Record<ProductionOperationalStatusTone, string> = {
   idle: "bg-slate-400",
 };
 
-export const ACTIVE_PRODUCTION_STATUS_TITLE = "Active Production Status";
+export const ACTIVE_PRODUCTION_STATUS_TITLE = "Current Production Monitor";
 
 export const ACTIVE_PRODUCTION_STATUS_HELPER =
-  "Live status of work orders already opened or in progress.";
+  "Read-only work-order status. Ready to Start is not Running.";
 
 export function DashboardCurrentProductionStatus({
   rows,

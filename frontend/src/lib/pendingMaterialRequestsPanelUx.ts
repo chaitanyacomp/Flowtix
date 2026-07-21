@@ -2,6 +2,17 @@ import { PROCUREMENT_TERMS } from "./procurementTerminology";
 
 export const RM_PO_MODAL_DISCARD_CONFIRM = "Discard unsaved PO entry?";
 
+/** Shared header control sizing — Supplier + Supplier PO Number stay aligned. */
+export const RM_PO_MODAL_HEADER_GRID_CLASS = "grid grid-cols-1 items-start gap-3 md:grid-cols-2";
+export const RM_PO_MODAL_HEADER_FIELD_CLASS =
+  "h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm";
+
+/** Compact right-aligned decimal fields in the PO lines table. */
+export const RM_PO_MODAL_QTY_INPUT_CLASS =
+  "ml-auto h-8 w-full max-w-[7.5rem] text-right tabular-nums";
+export const RM_PO_MODAL_RATE_INPUT_CLASS =
+  "ml-auto h-8 w-full max-w-[7.5rem] text-right tabular-nums";
+
 export type RmPoModalEntryBaseline = {
   supplierPoNumber: string;
   poRemarks: string;

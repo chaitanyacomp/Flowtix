@@ -41,8 +41,8 @@ export function dashboardWorkspaceHeadline(role: string): { title: string; subti
       };
     case "ADMIN":
       return {
-        title: "Dual Control Center",
-        subtitle: "Operational control · commercial workflow",
+        title: "Admin Dashboard",
+        subtitle: "Daily overview · Admin decisions · Critical exceptions",
       };
     default:
       return { title: "Control Center", subtitle: "Operational & commercial workspace" };

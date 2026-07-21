@@ -706,4 +706,35 @@ export function buildDispatchSoCompleteMessage(soLabel: string): string {
 
 }
 
+/**
+ * After Save Draft Qty consumes remaining headroom, open-list filters may treat the line as
+ * non-selectable. Preserve SO/line selection while an UNLOCKED draft still exists so the UI
+ * does not flash empty → reselect → finalize.
+ */
+export function shouldPreserveDispatchSelectionWithOpenDraft(input: {
+  openDraftQtyOnSelectedLine: number;
+  openDraftQtyOnSalesOrder: number;
+  reopenedPreparedDraft?: boolean;
+  eps?: number;
+}): boolean {
+  const eps = input.eps ?? 1e-9;
+  if (input.reopenedPreparedDraft) return true;
+  if (Number(input.openDraftQtyOnSelectedLine) > eps) return true;
+  if (Number(input.openDraftQtyOnSalesOrder) > eps) return true;
+  return false;
+}
+
+/**
+ * Save Draft must not bump live refresh AND also await the same fetches — that double-loads
+ * sales-orders + ledger and paints 2–3 intermediate screens. Prefer one Promise.all refresh,
+ * then optionally notify other pages after the workspace is stable.
+ */
+export function shouldDeferErpRefreshUntilAfterDraftSaveSettle(): boolean {
+  return true;
+}
+
+export function resolveDispatchDraftSaveBusyLabel(saving: boolean): string {
+  return saving ? "Saving…" : "Save Draft Qty";
+}
+
 

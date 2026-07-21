@@ -105,6 +105,48 @@ function assertSingleDemandPoolFromSourceTypes(sourceTypes, contextLabel = "proc
   return pools.size === 1 ? [...pools][0] : null;
 }
 
+/**
+ * Commercial RM PO may combine MPRS + Stock Replenishment (+ Regular SO) on one supplier PO.
+ * Source allocations / stock pools remain separate via RmPoLineProcurementLink — this only
+ * validates that every sourceType is a known active pool (firewall intact for PR create).
+ *
+ * @param {Iterable<string|null|undefined>} sourceTypes
+ * @returns {string[]} sorted unique pool keys present on the PO
+ */
+function assertKnownDemandPoolsForCommercialRmPo(sourceTypes) {
+  const pools = new Set();
+  const legacy = [];
+  const unknown = [];
+  for (const sourceType of sourceTypes || []) {
+    const st = String(sourceType ?? "").trim();
+    if (!st) continue;
+    if (st === LEGACY_REGULAR_SO_PROCUREMENT_SOURCE) {
+      legacy.push(st);
+      continue;
+    }
+    const pool = resolveDemandPoolForSourceType(st);
+    if (pool) pools.add(pool);
+    else unknown.push(st);
+  }
+  if (legacy.length && !pools.size && !unknown.length) {
+    const err = new Error(
+      "Legacy WORK_ORDER_PLANNING material requirements cannot be placed on an RM PO. " +
+        "Raise or migrate demand under an active procurement pool first.",
+    );
+    err.statusCode = 400;
+    err.code = LEGACY_DEMAND_POOL_EXCLUDED_CODE;
+    throw err;
+  }
+  if (unknown.length) {
+    const err = new Error(
+      `Unsupported procurement source type for RM purchase order: ${[...new Set(unknown)].join(", ")}.`,
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  return [...pools].sort();
+}
+
 function filterMrsByDemandPool(mrs, demandPool) {
   const types = sourceTypesForDemandPool(demandPool);
   if (!types?.length) return mrs || [];
@@ -122,6 +164,7 @@ module.exports = {
   resolveDemandPoolForSourceType,
   demandPoolLabel,
   assertSingleDemandPoolFromSourceTypes,
+  assertKnownDemandPoolsForCommercialRmPo,
   filterMrsByDemandPool,
   ALL_DEMAND_POOL_KEYS,
 };

@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Trash2 } from "lucide-react";
 import { Button } from "../../ui/button";
+import { DecimalInput } from "../../ui/DecimalInput";
 import { cn } from "../../../lib/utils";
 import type { WastageDetailDraft } from "../../../lib/productionWastageClassification";
 import {
@@ -20,11 +21,11 @@ type Props = {
   unit?: string;
   readOnly?: boolean;
   compact?: boolean;
-  /** When true, validation feedback is rendered by the parent sticky footer (compact report panel). */
+  /** When true, validation feedback is rendered by the parent header readiness (compact report panel). */
   hideInlineValidation?: boolean;
-  /** @deprecated Wastage list no longer uses an internal vertical scrollbar. */
+  /** When true, wastage rows scroll inside a compact bounded region (header Confirm stays visible). */
   scrollableRows?: boolean;
-  /** @deprecated Wastage list no longer fills/scrolls a bounded region. */
+  /** When true with scrollableRows, wastage fills remaining middle-zone height. */
   fillAvailableHeight?: boolean;
   validationMessage?: string | null;
   onChange: (rows: WastageDetailDraft[]) => void;
@@ -42,6 +43,8 @@ export function ProductionReportWastageDetails({
   readOnly = false,
   compact = false,
   hideInlineValidation = false,
+  scrollableRows = false,
+  fillAvailableHeight = false,
   validationMessage = null,
   onChange,
 }: Props) {
@@ -134,7 +137,11 @@ export function ProductionReportWastageDetails({
 
   return (
     <div
-      className={cn("min-w-0", compact ? "space-y-1" : "space-y-2")}
+      className={cn(
+        "min-w-0",
+        compact ? "space-y-1" : "space-y-2",
+        fillAvailableHeight && "flex min-h-0 flex-1 flex-col",
+      )}
       data-testid="production-report-wastage-details"
     >
       <div className="flex shrink-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
@@ -154,7 +161,20 @@ export function ProductionReportWastageDetails({
       ) : null}
 
       {rows.length > 0 ? (
-        <div className="overflow-x-auto rounded border border-slate-100" data-testid="production-wastage-rows">
+        <div
+          className={cn(
+            "min-w-0 rounded border border-slate-100",
+            scrollableRows
+              ? cn(
+                  "overflow-x-hidden overflow-y-auto",
+                  fillAvailableHeight
+                    ? "min-h-0 flex-1"
+                    : "max-h-[min(12rem,28vh)]",
+                )
+              : "overflow-x-hidden",
+          )}
+          data-testid={scrollableRows ? "production-wastage-rows-scroll" : "production-wastage-rows"}
+        >
           <table className={cn("w-full border-collapse text-slate-800", compact ? "table-fixed text-[11px]" : "text-[12px]")}>
             <thead>
               <tr className="border-b border-slate-200 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">
@@ -201,16 +221,13 @@ export function ProductionReportWastageDetails({
                         <span className="tabular-nums">{fmtWastageQty(Number(row.qty), unit)}</span>
                       ) : (
                         <div className="inline-flex flex-col items-end gap-0.5">
-                          <input
+                          <DecimalInput
                             className={cn(
                               "rounded border border-slate-200 px-1.5 text-right tabular-nums",
                               compact ? "h-8 w-[4.25rem] text-[12px]" : "h-8 w-[5.5rem] text-[12px]",
                             )}
-                            type="number"
-                            min="0"
-                            step="0.001"
                             value={row.qty}
-                            onChange={(e) => updateRow(row.key, { qty: e.target.value })}
+                            onValueChange={(next) => updateRow(row.key, { qty: next })}
                           />
                           {showRowRemaining ? (
                             <span

@@ -10,16 +10,19 @@
 
 const {
   validateCleanupRegistryAgainstSchema,
+  validateFullDemoResetCoverage,
   describeCarryForwardPendingDependencyGraph,
 } = require("../src/services/cleanup/cleanupDependencyValidator");
 const {
   getTransactionalRegistryEntries,
   getRecoveryClusterClientKeys,
   PRESERVED_MASTER_MODELS,
+  FULL_DEMO_PRESERVED_MODELS,
 } = require("../src/services/cleanup/cleanupRegistry");
 
 function main() {
   const result = validateCleanupRegistryAgainstSchema();
+  const fullDemo = validateFullDemoResetCoverage();
   const registered = getTransactionalRegistryEntries();
 
   console.log("=== Cleanup dependency verification ===\n");
@@ -58,13 +61,24 @@ function main() {
     for (const i of result.unknownRegistryModels) console.log(`\n${i.message}`);
   }
 
-  if (!result.ok) {
+  console.log("\n=== Full Demo Reset coverage (wiped masters + children) ===\n");
+  console.log(`Preserved on Full Demo: ${FULL_DEMO_PRESERVED_MODELS.join(", ")}`);
+  if (fullDemo.missingModels.length) {
+    console.log(`\nFull Demo missing models (${fullDemo.missingModels.length}):`);
+    for (const i of fullDemo.missingModels) console.log(`\n${i.message}`);
+  }
+
+  if (!result.ok || !fullDemo.ok) {
     console.error("\nFAILED: update backend/src/services/cleanup/cleanupRegistry.js");
+    if (!fullDemo.ok) {
+      console.error("Also classify new Item/Customer Restrict children for Full Demo Reset.");
+    }
     process.exitCode = 1;
     return;
   }
 
   console.log("\nPASSED: cleanup registry matches schema Restrict dependencies.");
+  console.log("PASSED: Full Demo Reset covers every Restrict FK into wiped parents.");
 }
 
 main();

@@ -68,7 +68,7 @@ export function SalesBillLinkedDocuments({
             <div className="min-w-0">
               <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">{link.label}</div>
               <div className="truncate font-mono text-[12px] font-semibold tabular-nums text-slate-900">{link.value}</div>
-              {link.key === "dispatch" && sources.length > 1 ? <div className="mt-0.5 text-[10px] text-slate-500">{salesBillDispatchDetails(sources).join(" Â· ")}</div> : null}
+              {link.key === "dispatch" && sources.length > 1 ? <div className="mt-0.5 text-[10px] text-slate-500">{salesBillDispatchDetails(sources).join(" · ")}</div> : null}
             </div>
             <Link
               to={link.href}

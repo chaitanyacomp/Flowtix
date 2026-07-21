@@ -19,8 +19,16 @@ const {
   recomputeRecoveryStatus,
 } = require("./noQtyRecoveryService");
 const { createNoQtyCloseSnapshot } = require("./noQtySoCloseSnapshotService");
-const { displayDispatchNo, displaySalesBillNo, displayRequirementSheetNo } = require("../utils/docNoLabels");
+const {
+  displayDispatchNo,
+  displaySalesBillNo,
+  displayRequirementSheetNo,
+  displayWorkOrderNo,
+  displayProductionEntryNo,
+} = require("../utils/docNoLabels");
 const auditLog = require("./auditLog");
+
+const UNKNOWN_ITEM_LABEL = "Unknown item — data correction required";
 
 const EPS = 1e-6;
 const CLOSED_STATUSES = new Set(["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"]);
@@ -114,6 +122,62 @@ function blocker(code, message, extra = {}) {
   return { code, message: message || BLOCK_MESSAGES[code] || code, ...extra };
 }
 
+function trimLabel(v) {
+  const s = v == null ? "" : String(v).trim();
+  return s || null;
+}
+
+function isItemIdentityResolved(item) {
+  return Boolean(item && trimLabel(item.itemName));
+}
+
+/**
+ * Business-facing item title. Never falls back to numeric database IDs.
+ * @param {{ itemName?: string | null; itemCode?: string | null; identityResolved?: boolean }} row
+ */
+function formatFgItemIdentityLabel(row) {
+  if (!row || row.identityResolved === false || !trimLabel(row.itemName)) {
+    return UNKNOWN_ITEM_LABEL;
+  }
+  const name = trimLabel(row.itemName);
+  const code = trimLabel(row.itemCode);
+  return code ? `${name} – ${code}` : name;
+}
+
+function uniqueNonEmpty(values) {
+  /** @type {string[]} */
+  const out = [];
+  const seen = new Set();
+  for (const v of values) {
+    const s = trimLabel(v);
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+function emptyItemSummaryShell(itemId) {
+  return {
+    itemId,
+    itemCode: null,
+    itemName: null,
+    unit: null,
+    identityResolved: false,
+    quantity: 0,
+    acceptedFgPendingDispositionQty: 0,
+    workOrderNumber: null,
+    productionBatchNumber: null,
+    cycleNo: null,
+    cycleReference: null,
+    workOrderNumbers: [],
+    productionBatchNumbers: [],
+    productionShortfallAvailableQty: 0,
+    qcRecoveryAvailableQty: 0,
+    proposedWaiverQty: 0,
+  };
+}
+
 async function hasExecutionAwareProductionPending(db, salesOrderId) {
   const summary = await summarizeNoQtyProductionQcPending(db, salesOrderId, { orderType: "NO_QTY" });
   if (summary.shortfallPendingWoCount > 0) {
@@ -144,12 +208,32 @@ async function computeAcceptedFgPendingByItem(db, salesOrderId) {
   const soId = Number(salesOrderId);
   const cycles = await db.salesOrderCycle.findMany({
     where: { salesOrderId: soId },
-    select: { id: true },
+    select: { id: true, cycleNo: true },
     orderBy: { cycleNo: "asc" },
   });
 
   /** @type {Map<number, number>} */
   const acceptedByItem = new Map();
+  /** @type {Map<number, { woLabels: string[]; batchLabels: string[]; cycleNos: number[] }>} */
+  const provenanceByItem = new Map();
+
+  function trackProvenance(itemId, qcRow) {
+    let cur = provenanceByItem.get(itemId);
+    if (!cur) {
+      cur = { woLabels: [], batchLabels: [], cycleNos: [] };
+      provenanceByItem.set(itemId, cur);
+    }
+    const pe = qcRow.production;
+    const wo = pe?.workOrderLine?.workOrder;
+    if (wo) {
+      cur.woLabels.push(displayWorkOrderNo(wo.id, wo.docNo));
+      const cycleNo = Number(wo.cycle?.cycleNo);
+      if (Number.isFinite(cycleNo) && cycleNo > 0) cur.cycleNos.push(cycleNo);
+    }
+    if (pe && (pe.id != null || pe.docNo)) {
+      cur.batchLabels.push(displayProductionEntryNo(pe.id, pe.docNo));
+    }
+  }
 
   for (const cyc of cycles) {
     const cycleId = Number(cyc.id);
@@ -166,7 +250,25 @@ async function computeAcceptedFgPendingByItem(db, salesOrderId) {
       },
       select: {
         acceptedQty: true,
-        production: { select: { workOrderLine: { select: { fgItemId: true } } } },
+        production: {
+          select: {
+            id: true,
+            docNo: true,
+            workOrderLine: {
+              select: {
+                fgItemId: true,
+                workOrder: {
+                  select: {
+                    id: true,
+                    docNo: true,
+                    cycleId: true,
+                    cycle: { select: { id: true, cycleNo: true } },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     });
     for (const q of qcRows) {
@@ -174,6 +276,7 @@ async function computeAcceptedFgPendingByItem(db, salesOrderId) {
       const qty = round3(n(q.acceptedQty));
       if (!(itemId > 0) || !(qty > EPS)) continue;
       acceptedByItem.set(itemId, round3((acceptedByItem.get(itemId) ?? 0) + qty));
+      trackProvenance(itemId, q);
     }
   }
 
@@ -211,7 +314,47 @@ async function computeAcceptedFgPendingByItem(db, salesOrderId) {
       totalPending = round3(totalPending + pending);
     }
   }
-  return { pendingByItem, totalPending };
+
+  /** @type {Map<number, ReturnType<typeof emptyItemSummaryShell>>} */
+  const pendingDetailsByItem = new Map();
+  const pendingItemIds = [...pendingByItem.keys()];
+  /** @type {Map<number, { id: number; itemName: string | null; unit: string | null; itemCode?: string | null }>} */
+  const itemById = new Map();
+  if (pendingItemIds.length > 0 && typeof db.item?.findMany === "function") {
+    const items = await db.item.findMany({
+      where: { id: { in: pendingItemIds } },
+      select: { id: true, itemName: true, unit: true },
+    });
+    for (const it of items || []) {
+      itemById.set(Number(it.id), it);
+    }
+  }
+
+  for (const [itemId, qty] of pendingByItem) {
+    const item = itemById.get(itemId) || null;
+    const identityResolved = isItemIdentityResolved(item);
+    const prov = provenanceByItem.get(itemId) || { woLabels: [], batchLabels: [], cycleNos: [] };
+    const workOrderNumbers = uniqueNonEmpty(prov.woLabels);
+    const productionBatchNumbers = uniqueNonEmpty(prov.batchLabels);
+    const cycleNos = [...new Set(prov.cycleNos.filter((c) => Number.isFinite(c) && c > 0))];
+    const cycleNo = cycleNos.length ? cycleNos[cycleNos.length - 1] : null;
+    const shell = emptyItemSummaryShell(itemId);
+    shell.itemCode = trimLabel(item?.itemCode) || null;
+    shell.itemName = identityResolved ? trimLabel(item.itemName) : null;
+    shell.unit = trimLabel(item?.unit) || null;
+    shell.identityResolved = identityResolved;
+    shell.quantity = qty;
+    shell.acceptedFgPendingDispositionQty = qty;
+    shell.workOrderNumbers = workOrderNumbers;
+    shell.productionBatchNumbers = productionBatchNumbers;
+    shell.workOrderNumber = workOrderNumbers.length ? workOrderNumbers.join(" · ") : null;
+    shell.productionBatchNumber = productionBatchNumbers.length ? productionBatchNumbers.join(" · ") : null;
+    shell.cycleNo = cycleNo;
+    shell.cycleReference = cycleNo != null ? `Cycle ${cycleNo}` : null;
+    pendingDetailsByItem.set(itemId, shell);
+  }
+
+  return { pendingByItem, totalPending, pendingDetailsByItem };
 }
 
 async function assessNoQtySoClosure(db, salesOrderId) {
@@ -338,8 +481,11 @@ async function assessNoQtySoClosure(db, salesOrderId) {
   }
 
   // 4) FG Disposition
-  const { pendingByItem: fgPendingByItem, totalPending: acceptedFgPendingDispositionQty } =
-    await computeAcceptedFgPendingByItem(db, soId);
+  const {
+    pendingByItem: fgPendingByItem,
+    totalPending: acceptedFgPendingDispositionQty,
+    pendingDetailsByItem: fgPendingDetailsByItem,
+  } = await computeAcceptedFgPendingByItem(db, soId);
   if (acceptedFgPendingDispositionQty > EPS) {
     blockers.push(
       blocker("FG_DISPOSITION_REQUIRED", fgDispositionBlockerMessage(acceptedFgPendingDispositionQty), {
@@ -361,14 +507,20 @@ async function assessNoQtySoClosure(db, salesOrderId) {
     }
   }
   const proposedWaiverQty = round3(pendingProductionShortfallQty + pendingQcRecoveryQty);
-  const proposedWaiverLines = available.map((r) => ({
-    recoverySourceId: r.recoverySourceId,
-    itemId: r.itemId,
-    itemName: r.itemName,
-    recoveryType: r.recoveryType,
-    availableQty: r.availableQty,
-    proposedWaivedQty: r.availableQty,
-  }));
+  const proposedWaiverLines = available.map((r) => {
+    const identityResolved = Boolean(trimLabel(r.itemName));
+    return {
+      recoverySourceId: r.recoverySourceId,
+      itemId: r.itemId,
+      itemCode: r.itemCode ?? null,
+      itemName: identityResolved ? trimLabel(r.itemName) : null,
+      unit: r.uom ?? null,
+      identityResolved,
+      recoveryType: r.recoveryType,
+      availableQty: r.availableQty,
+      proposedWaivedQty: r.availableQty,
+    };
+  });
 
   if (recoverySummary.sources.some((s) => s.migrationIncomplete)) {
     warnings.push({
@@ -415,9 +567,7 @@ async function assessNoQtySoClosure(db, salesOrderId) {
       } else if (dispatchCap.reason === "PENDING_DISPATCH_REMAINS") {
         const itemBit = dispatchCap.pendingItemName
           ? ` for ${dispatchCap.pendingItemName}`
-          : dispatchCap.pendingItemId
-            ? ` for item ${dispatchCap.pendingItemId}`
-            : "";
+          : "";
         message = `Cannot close SO: Cycle ${activeCycle.cycleNo} dispatch remaining vs locked RS ${rsLabel}${itemBit} — ${dispatchCap.pendingQty} of ${dispatchCap.capQty} still undispatched.`;
       }
       blockers.push(
@@ -499,14 +649,12 @@ async function assessNoQtySoClosure(db, salesOrderId) {
 
   const itemMap = new Map();
   for (const row of available) {
-    const cur = itemMap.get(row.itemId) || {
-      itemId: row.itemId,
-      itemName: row.itemName,
-      productionShortfallAvailableQty: 0,
-      qcRecoveryAvailableQty: 0,
-      acceptedFgPendingDispositionQty: 0,
-      proposedWaiverQty: 0,
-    };
+    const identityResolved = Boolean(trimLabel(row.itemName));
+    const cur = itemMap.get(row.itemId) || emptyItemSummaryShell(row.itemId);
+    cur.itemCode = row.itemCode ?? cur.itemCode ?? null;
+    cur.itemName = identityResolved ? trimLabel(row.itemName) : cur.itemName;
+    cur.unit = row.uom ?? cur.unit ?? null;
+    cur.identityResolved = cur.identityResolved || identityResolved;
     if (row.recoveryType === "PRODUCTION_SHORTFALL") {
       cur.productionShortfallAvailableQty = round3(cur.productionShortfallAvailableQty + row.availableQty);
     } else {
@@ -516,15 +664,23 @@ async function assessNoQtySoClosure(db, salesOrderId) {
     itemMap.set(row.itemId, cur);
   }
   for (const [itemId, qty] of fgPendingByItem) {
-    const cur = itemMap.get(itemId) || {
-      itemId,
-      itemName: null,
-      productionShortfallAvailableQty: 0,
-      qcRecoveryAvailableQty: 0,
-      acceptedFgPendingDispositionQty: 0,
-      proposedWaiverQty: 0,
-    };
+    const detail = fgPendingDetailsByItem?.get(itemId) || emptyItemSummaryShell(itemId);
+    const cur = itemMap.get(itemId) || emptyItemSummaryShell(itemId);
     cur.acceptedFgPendingDispositionQty = qty;
+    cur.quantity = qty;
+    cur.itemCode = detail.itemCode ?? cur.itemCode;
+    cur.itemName = detail.identityResolved ? detail.itemName : cur.itemName;
+    cur.unit = detail.unit ?? cur.unit;
+    cur.identityResolved = Boolean(detail.identityResolved || cur.identityResolved);
+    if (!cur.identityResolved) {
+      cur.itemName = null;
+    }
+    cur.workOrderNumber = detail.workOrderNumber;
+    cur.productionBatchNumber = detail.productionBatchNumber;
+    cur.cycleNo = detail.cycleNo;
+    cur.cycleReference = detail.cycleReference;
+    cur.workOrderNumbers = detail.workOrderNumbers || [];
+    cur.productionBatchNumbers = detail.productionBatchNumbers || [];
     itemMap.set(itemId, cur);
   }
 
@@ -600,10 +756,29 @@ async function recordAcceptedFgDisposition(
   const { pendingByItem } = await computeAcceptedFgPendingByItem(tx, soId);
   const pending = pendingByItem.get(iid) ?? 0;
   if (q > pending + EPS) {
-    throw closureError(`Disposition qty ${q} exceeds pending accepted FG ${pending} for item ${iid}.`, {
+    throw closureError(`Disposition qty ${q} exceeds pending accepted FG ${pending}.`, {
       code: "FG_DISPOSITION_OVER",
       reason: "FG_DISPOSITION_OVER",
     });
+  }
+
+  let itemRow = null;
+  if (typeof tx.item?.findUnique === "function") {
+    itemRow = await tx.item.findUnique({
+      where: { id: iid },
+      select: { id: true, itemName: true, unit: true },
+    });
+  }
+  const identityResolved = isItemIdentityResolved(itemRow);
+  if (String(dispositionType) === "TRANSFER_TO_GENERAL_STOCK" && !identityResolved) {
+    throw closureError(
+      `${UNKNOWN_ITEM_LABEL}. Transfer to general stock is blocked until item identity is corrected.`,
+      {
+        statusCode: 409,
+        code: "FG_ITEM_IDENTITY_UNRESOLVED",
+        reason: "FG_ITEM_IDENTITY_UNRESOLVED",
+      },
+    );
   }
 
   const row = await tx.noQtyAcceptedFgDisposition.create({
@@ -619,12 +794,16 @@ async function recordAcceptedFgDisposition(
   });
 
   if (typeof actorUserId === "number") {
+    const itemLabel = formatFgItemIdentityLabel({
+      itemName: itemRow?.itemName,
+      identityResolved,
+    });
     await auditLog.write(tx, {
       action: auditLog.AuditAction.CREATE,
       entityType: auditLog.AuditEntityType.SETTINGS,
       entityId: `NO_QTY_FG_DISPOSITION:${row.id}`,
       actorUserId,
-      summary: `Recorded accepted FG disposition ${dispositionType} qty ${q} for SO ${soId} item ${iid}`,
+      summary: `Recorded accepted FG disposition ${dispositionType} qty ${q} for SO ${soId} (${itemLabel})`,
       payload: { salesOrderId: soId, itemId: iid, qty: q, dispositionType },
     });
   }
@@ -888,10 +1067,13 @@ module.exports = {
   WAIVER_REASON_CODES,
   FG_DISPOSITION_TYPES,
   BLOCK_MESSAGES,
+  UNKNOWN_ITEM_LABEL,
   assessNoQtySoClosure,
   closeNoQtySoWithWaiver,
   closeNoQtySoComplete,
   recordAcceptedFgDisposition,
   computeAcceptedFgPendingByItem,
   hasExecutionAwareProductionPending,
+  formatFgItemIdentityLabel,
+  isItemIdentityResolved,
 };

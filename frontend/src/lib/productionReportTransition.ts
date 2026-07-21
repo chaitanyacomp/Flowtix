@@ -48,3 +48,36 @@ export function shouldIgnoreClearedExecutionSummaryDuringReportTransition(input:
   if (input.summary == null) return true;
   return false;
 }
+
+/**
+ * Hide generic Continue / Continue Production while a mandatory Production Report
+ * is open, settling, or pending (SHORTFALL_PENDING / REPORT_PENDING).
+ * Does not affect true Pause→Resume when no closure report is required.
+ */
+export function shouldHideContinueWhileProductionReportPending(input: {
+  showProductionReport?: boolean;
+  showCompactClosureLayout?: boolean;
+  forceProductionReportTransition?: boolean;
+  showOpeningProductionReportGate?: boolean;
+  pendingShortfallDecision?: boolean;
+  executionStatus?: string | null;
+}): boolean {
+  if (input.showCompactClosureLayout) return true;
+  if (input.showProductionReport) return true;
+  if (input.forceProductionReportTransition) return true;
+  if (input.showOpeningProductionReportGate) return true;
+  if (input.pendingShortfallDecision) return true;
+  const status = String(input.executionStatus ?? "").toUpperCase();
+  return status === "SHORTFALL_PENDING" || status === "REPORT_PENDING";
+}
+
+/** Operator stage chip while mandatory report must be completed. */
+export function productionStageLabelForReportPending(input?: {
+  executionStatus?: string | null;
+}): string {
+  const status = String(input?.executionStatus ?? "").toUpperCase();
+  if (status === "COMPLETED" || status === "CLOSED" || status === "CLOSED_WITH_SHORTFALL") {
+    return "Complete";
+  }
+  return "Report pending";
+}

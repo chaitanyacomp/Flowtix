@@ -240,21 +240,21 @@ export function openDraftRsButtonLabel(cycleNo?: number | null): string {
 
 
 
-/** Create RS for a specific cycle number. */
-
-export function createCycleRsButtonLabel(cycleNo: number): string {
-
-  return `Create Cycle ${cycleNo} RS`;
-
-}
-
-
-
 /** P8F-A14 — Store-owned cycle continuation CTA (full business label). */
 
 export function createCycleRequirementSheetButtonLabel(cycleNo: number): string {
 
   return `Create Cycle ${cycleNo} Requirement Sheet`;
+
+}
+
+
+
+/** Alias — always use the full Requirement Sheet wording (never short “Create Cycle N RS”). */
+
+export function createCycleRsButtonLabel(cycleNo: number): string {
+
+  return createCycleRequirementSheetButtonLabel(cycleNo);
 
 }
 

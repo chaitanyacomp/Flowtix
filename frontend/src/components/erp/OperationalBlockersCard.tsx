@@ -23,6 +23,8 @@ type Props = {
   }> | null;
   woPrepareQueues: WoPrepareDashboardQueues | null;
   loading?: boolean;
+  /** Admin desk hides Store/Production execution blockers. */
+  audience?: "admin" | "default";
 };
 
 export function OperationalBlockersCard({
@@ -31,12 +33,14 @@ export function OperationalBlockersCard({
   allocationFirstPending,
   woPrepareQueues,
   loading,
+  audience = "default",
 }: Props) {
   const actions = buildOperationalSoActions(
     procurementPending,
     woPrepareQueues,
     storeIssuePending,
     allocationFirstPending,
+    { audience },
   );
   const hasAny = actions.length > 0;
 

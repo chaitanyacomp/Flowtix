@@ -196,13 +196,21 @@ export function StockLedgerPage() {
 
           <OperatorTopBar className="mt-1 rounded border border-slate-200 bg-slate-50/90 p-2">
             <div className="erp-form-field min-w-[10rem]">
-              <span className="text-[12px] font-medium text-slate-600">Item ID</span>
+              <span className="text-[12px] font-medium text-slate-600">Item</span>
               <input
                 className={cn("erp-input mt-0.5 w-full text-[13px]", operatorInputClass)}
                 value={itemId > 0 ? String(itemId) : ""}
                 onChange={(e) => patch({ itemId: e.target.value.trim() || null, page: null })}
-                placeholder="Enter itemId…"
+                placeholder="Search item…"
+                aria-label="Item filter"
               />
+              {itemId > 0 ? (
+                <span className="mt-0.5 text-[11px] text-slate-600">
+                  {bucketRow?.item?.itemName?.trim() ||
+                    rows.find((r) => r.itemId === itemId)?.item?.itemName?.trim() ||
+                    "Unknown item — data correction required"}
+                </span>
+              ) : null}
             </div>
             <div className="erp-form-field min-w-[8rem]">
               <span className="text-[12px] font-medium text-slate-600">Sort</span>

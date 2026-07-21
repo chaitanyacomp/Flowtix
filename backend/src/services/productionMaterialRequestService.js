@@ -39,6 +39,7 @@ const {
 const {
   resolveApprovedRequestForIssue,
   markRmAllowanceApprovalIssued,
+  clearStaleAllowanceRequestsAfterNormalIssue,
 } = require("./rmAllowanceApprovalService");
 const { resolveWorkOrderOperationalStatus } = require("./workOrderOperationalStatus");
 
@@ -1119,6 +1120,7 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
         allowanceInputSource: "QUANTITY",
         theoreticalBomQty,
         alreadyIssuedQty,
+        issueQty: qty,
         enteredAllowanceQty,
         // Percentage is never client-authored; omit so only Extra Qty is authoritative.
         plannedAllowanceQty: enteredAllowanceQty,
@@ -1233,6 +1235,9 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
           { materialIssueNoteId: created.id, userId: actor.userId },
           tx,
         );
+      } else {
+        // ≤5% (or Admin direct) issue — clear leftover Rejected/Approved so PAs stay accurate.
+        await clearStaleAllowanceRequestsAfterNormalIssue(il.pmrLineId, tx);
       }
     }
     await recalcPmrStatus(tx, pmrId);

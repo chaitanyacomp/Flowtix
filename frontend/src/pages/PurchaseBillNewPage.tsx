@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useSearchParams } from "react-router-do
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { apiFetch } from "../services/api";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { withReportsReturnContextIfPresent } from "../lib/drillDownRoutes";
@@ -260,20 +261,19 @@ export function PurchaseBillNewPage() {
                         <td className="text-right tabular-nums">{ln.receivedQty}</td>
                         <td className="text-right tabular-nums">{ln.alreadyBilledQty}</td>
                         <td className="text-right">
-                          <Input
+                          <DecimalInput
                             ref={(el) => {
                               qtyRefs.current[i] = el;
                             }}
-                            type="number"
                             className="h-8 w-[5.5rem] text-right tabular-nums"
-                            min={0}
-                            step="any"
                             value={Number.isFinite(qtyByGrnLineId[ln.grnLineId]) ? String(qtyByGrnLineId[ln.grnLineId]) : ""}
+                            normalizeOnBlur={false}
                             onFocus={(e) => e.target.select()}
                             onKeyDown={(e) => onQtyKeyDown(i, e)}
-                            onChange={(e) => {
-                              const raw = (e.target as HTMLInputElement).value;
-                              const v = raw.trim() === "" ? Number.NaN : Number(raw);
+                            onValueChange={(raw) => {
+                              const trimmed = raw.trim();
+                              const parsed = trimmed === "" ? Number.NaN : Number(trimmed);
+                              const v = trimmed === "" || !Number.isFinite(parsed) ? Number.NaN : parsed;
                               const safe = Number.isFinite(v) ? Math.max(0, Math.min(ln.remainingQty, v)) : Number.NaN;
                               setQtyByGrnLineId((prev) => ({ ...prev, [ln.grnLineId]: safe }));
                             }}

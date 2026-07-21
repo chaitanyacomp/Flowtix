@@ -4,6 +4,8 @@ import {
   normalizeDecimalOnBlur,
   parseNonNegativeDecimal,
   sanitizeDecimalInput,
+  blockDecimalSpinnerKeys,
+  blockDecimalWheel,
 } from "../../src/lib/keyboardDecimalInput";
 
 describe("keyboardDecimalInput", () => {
@@ -22,10 +24,38 @@ describe("keyboardDecimalInput", () => {
     expect(parseNonNegativeDecimal("-3")).toBeNull();
   });
 
+  it("supports decimal keyboard entry for quantities and rates", () => {
+    expect(sanitizeDecimalInput("12.75")).toBe("12.75");
+    expect(sanitizeDecimalInput("0.001")).toBe("0.001");
+    expect(parseNonNegativeDecimal("12.75")).toBe(12.75);
+    expect(parseNonNegativeDecimal("0")).toBe(0);
+  });
+
   it("normalizes safely on blur", () => {
     expect(normalizeDecimalOnBlur("")).toBe("0");
     expect(normalizeDecimalOnBlur(".")).toBe("0");
     expect(normalizeDecimalOnBlur(".5")).toBe("0.5");
     expect(normalizeDecimalOnBlur("2.5000")).toBe("2.5");
+  });
+
+  it("blocks ArrowUp/ArrowDown so values cannot spin", () => {
+    let prevented = 0;
+    const preventDefault = () => {
+      prevented += 1;
+    };
+    blockDecimalSpinnerKeys({ key: "ArrowUp", preventDefault });
+    blockDecimalSpinnerKeys({ key: "ArrowDown", preventDefault });
+    blockDecimalSpinnerKeys({ key: "a", preventDefault });
+    expect(prevented).toBe(2);
+  });
+
+  it("blocks wheel events so values cannot spin", () => {
+    let prevented = false;
+    blockDecimalWheel({
+      preventDefault: () => {
+        prevented = true;
+      },
+    });
+    expect(prevented).toBe(true);
   });
 });

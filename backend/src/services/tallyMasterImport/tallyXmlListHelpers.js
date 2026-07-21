@@ -273,6 +273,37 @@ function masterDisplayName(node) {
 }
 
 /**
+ * Extract Tally GUID / Master ID when present on a master node.
+ * Prefers XML attributes, then GUID / MASTERID text children.
+ *
+ * @param {unknown} node
+ * @returns {string | null}
+ */
+function masterGuid(node) {
+  if (!node || typeof node !== "object") return null;
+  const o = /** @type {Record<string, unknown>} */ (node);
+  const attrCandidates = [o["@_GUID"], o["@_GUID"], o["@_MasterId"], o["@_MASTERID"], o["@_REMOTEID"]];
+  for (const c of attrCandidates) {
+    const t = normalizeTallyControlText(c == null ? "" : String(c));
+    if (t) return t.slice(0, 64);
+  }
+  const text = firstDirectText(o, ["GUID", "MASTERID", "REMOTEID", "ALTERID"]);
+  return text ? text.slice(0, 64) : null;
+}
+
+/**
+ * Case-normalized exact-name key for Tally master compare (collapse whitespace).
+ * @param {unknown} s
+ * @returns {string}
+ */
+function normalizeTallyMasterCompareKey(s) {
+  return normalizeTallyControlText(s == null ? "" : String(s))
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/**
  * Walk a parsed XML tree and collect master nodes by local tag.
  *
  * @param {unknown} node
@@ -309,6 +340,7 @@ function walkCollectTaggedMasters(node, collectTags, onMaster, opts, pathSegUppe
 module.exports = {
   strVal,
   normalizeTallyControlText,
+  normalizeTallyMasterCompareKey,
   xmlLocalTagNameUpper,
   asArray,
   getByLocalTag,
@@ -317,6 +349,7 @@ module.exports = {
   collectDirectTexts,
   joinAddressList,
   findFirstTextByTags,
+  masterGuid,
   findFirstNumberByTags,
   masterDisplayName,
   walkCollectTaggedMasters,

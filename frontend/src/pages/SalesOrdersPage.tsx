@@ -79,6 +79,15 @@ import {
   openDraftRsButtonLabel,
   resolveCreateRsButtonLabel,
 } from "../lib/noQtyRsActionLabels";
+import {
+  canTransferAcceptedFgToGeneralStock,
+  formatAcceptedFgDispositionConfirmSummary,
+  formatAcceptedFgItemHeadline,
+  formatAcceptedFgPendingQtyLine,
+  formatAcceptedFgSourceLine,
+  UNKNOWN_FG_ITEM_LABEL,
+  type AcceptedFgDispositionItemView,
+} from "../lib/noQtyFgDispositionDisplay";
 import { DemoFlowBanner } from "../components/demo/DemoFlowBanner";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
@@ -810,17 +819,16 @@ export function SalesOrdersPage() {
     proposedWaiverLines: {
       recoverySourceId: number;
       itemId: number;
+      itemCode?: string | null;
       itemName: string | null;
+      unit?: string | null;
+      identityResolved?: boolean;
       recoveryType: string;
       availableQty: number;
       proposedWaivedQty: number;
     }[];
     acceptedFgPendingDispositionQty: number;
-    itemSummaries?: {
-      itemId: number;
-      itemName: string | null;
-      acceptedFgPendingDispositionQty: number;
-    }[];
+    itemSummaries?: AcceptedFgDispositionItemView[];
   } | null>(null);
   const [waiverAdminPassword, setWaiverAdminPassword] = React.useState("");
   const [waiverReasonCode, setWaiverReasonCode] = React.useState("MANAGEMENT_DECISION");
@@ -837,8 +845,20 @@ export function SalesOrdersPage() {
   const [reopenPreviewLoading, setReopenPreviewLoading] = React.useState(false);
   const [reopenPreviewError, setReopenPreviewError] = React.useState<string | null>(null);
   const [reopenPreview, setReopenPreview] = React.useState<{
-    closedShortageLines: { itemId: number; closedShortageQty: number }[];
-    currentUsableByItem: { itemId: number; usableQty: number }[];
+    closedShortageLines: {
+      itemId: number;
+      closedShortageQty: number;
+      itemName?: string | null;
+      unit?: string | null;
+      identityResolved?: boolean;
+    }[];
+    currentUsableByItem: {
+      itemId: number;
+      usableQty: number;
+      itemName?: string | null;
+      unit?: string | null;
+      identityResolved?: boolean;
+    }[];
     pendingQcDispositionByItem: { itemId: number; pendingQty: number }[];
     stockMayHaveChangedWarning: boolean;
   } | null>(null);
@@ -935,25 +955,27 @@ export function SalesOrdersPage() {
       proposedWaiverLines: {
         recoverySourceId: number;
         itemId: number;
+        itemCode?: string | null;
         itemName: string | null;
+        unit?: string | null;
+        identityResolved?: boolean;
         recoveryType: string;
         availableQty: number;
         proposedWaivedQty: number;
       }[];
       acceptedFgPendingDispositionQty: number;
-      itemSummaries?: {
-        itemId: number;
-        itemName: string | null;
-        acceptedFgPendingDispositionQty: number;
-      }[];
+      itemSummaries?: AcceptedFgDispositionItemView[];
     }>(`/api/sales-orders/${noQtyCloseDialog.soId}/no-qty-closure-assessment`)
       .then((r) => {
         if (!cancelled) {
           setCloseAssessment(r);
-          const fgItem = (r.itemSummaries || []).find((s) => (s.acceptedFgPendingDispositionQty || 0) > 0);
+          const fgItem = (r.itemSummaries || []).find((s) => (s.acceptedFgPendingDispositionQty || s.quantity || 0) > 0);
           if (fgItem) {
             setFgDispItemId(String(fgItem.itemId));
-            setFgDispQty(String(fgItem.acceptedFgPendingDispositionQty));
+            setFgDispQty(String(fgItem.quantity ?? fgItem.acceptedFgPendingDispositionQty));
+            if (!canTransferAcceptedFgToGeneralStock(fgItem)) {
+              setFgDispType("SCRAP");
+            }
           }
         }
       })
@@ -3685,75 +3707,166 @@ export function SalesOrdersPage() {
                   </ul>
                   {closeAssessment.acceptedFgPendingDispositionQty > 0 ? (
                     <div className="space-y-2 rounded border border-amber-200 bg-amber-50 p-2">
-                      <p className="text-xs text-slate-700">
-                        Accepted FG pending disposition: {closeAssessment.acceptedFgPendingDispositionQty}. Record an
-                        approved disposition (audit only — no silent stock move; Green Level transfer is not allowed).
-                      </p>
-                      <label className="grid gap-1 text-xs">
-                        <span>Item id</span>
-                        <Input value={fgDispItemId} onChange={(e) => setFgDispItemId(e.target.value)} />
-                      </label>
-                      <label className="grid gap-1 text-xs">
-                        <span>Qty</span>
-                        <Input value={fgDispQty} onChange={(e) => setFgDispQty(e.target.value)} />
-                      </label>
-                      <label className="grid gap-1 text-xs">
-                        <span>Disposition type</span>
-                        <select
-                          className="rounded border border-slate-300 px-2 py-1.5 text-sm"
-                          value={fgDispType}
-                          onChange={(e) => setFgDispType(e.target.value)}
-                        >
-                          <option value="DISPATCH_BEFORE_CLOSE">Dispatch before close</option>
-                          <option value="TRANSFER_TO_GENERAL_STOCK">Transfer to general stock</option>
-                          <option value="RETAIN_AS_CUSTOMER_SPECIFIC_STOCK">Retain as customer-specific stock</option>
-                          <option value="SCRAP">Scrap</option>
-                          <option value="OTHER_APPROVED_DISPOSITION">Other approved disposition</option>
-                        </select>
-                      </label>
-                      <label className="grid gap-1 text-xs">
-                        <span>Remarks</span>
-                        <Input value={fgDispRemarks} onChange={(e) => setFgDispRemarks(e.target.value)} />
-                      </label>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        disabled={savingFgDisp}
-                        onClick={() => {
-                          void (async () => {
-                            const itemId = Number(fgDispItemId);
-                            const qty = Number(fgDispQty);
-                            if (!(itemId > 0) || !(qty > 0)) {
-                              toast.showError("Item and qty are required.");
-                              return;
-                            }
-                            setSavingFgDisp(true);
-                            try {
-                              await apiFetch(`/api/sales-orders/${noQtyCloseDialog.soId}/accepted-fg-dispositions`, {
-                                method: "POST",
-                                body: JSON.stringify({
-                                  itemId,
-                                  qty,
-                                  dispositionType: fgDispType,
-                                  remarks: fgDispRemarks.trim() || null,
-                                }),
-                              });
-                              toast.showSuccess("FG disposition recorded.");
-                              const r = await apiFetch<NonNullable<typeof closeAssessment>>(
-                                `/api/sales-orders/${noQtyCloseDialog.soId}/no-qty-closure-assessment`,
-                              );
-                              setCloseAssessment(r);
-                            } catch (e) {
-                              toast.showError(e instanceof Error ? e.message : "Failed to record disposition.");
-                            } finally {
-                              setSavingFgDisp(false);
-                            }
-                          })();
-                        }}
-                      >
-                        {savingFgDisp ? "Saving…" : "Record FG disposition"}
-                      </Button>
+                      {(() => {
+                        const fgItems = (closeAssessment.itemSummaries || []).filter(
+                          (s) => Number(s.acceptedFgPendingDispositionQty ?? s.quantity ?? 0) > 0,
+                        );
+                        const selected =
+                          fgItems.find((s) => String(s.itemId) === String(fgDispItemId)) || fgItems[0] || null;
+                        const identityOk = canTransferAcceptedFgToGeneralStock(selected);
+                        const dispositionLabels: Record<string, string> = {
+                          DISPATCH_BEFORE_CLOSE: "Dispatch before close",
+                          TRANSFER_TO_GENERAL_STOCK: "Transfer to general stock",
+                          RETAIN_AS_CUSTOMER_SPECIFIC_STOCK: "Retain as customer-specific stock",
+                          SCRAP: "Write off / scrap",
+                          OTHER_APPROVED_DISPOSITION: "Other approved disposition",
+                        };
+                        return (
+                          <>
+                            <p className="text-xs text-slate-700">
+                              Accepted FG pending disposition. Record an approved decision (audit only — no silent stock
+                              move; Green Level transfer is not allowed). Keep SO open by cancelling without recording a
+                              disposition.
+                            </p>
+                            {fgItems.length > 1 ? (
+                              <label className="grid gap-1 text-xs">
+                                <span>Stock line</span>
+                                <select
+                                  className="rounded border border-slate-300 px-2 py-1.5 text-sm"
+                                  value={fgDispItemId}
+                                  onChange={(e) => {
+                                    const nextId = e.target.value;
+                                    setFgDispItemId(nextId);
+                                    const hit = fgItems.find((s) => String(s.itemId) === nextId);
+                                    if (hit) {
+                                      setFgDispQty(
+                                        String(hit.quantity ?? hit.acceptedFgPendingDispositionQty ?? ""),
+                                      );
+                                    }
+                                  }}
+                                >
+                                  {fgItems.map((s) => (
+                                    <option key={s.itemId} value={String(s.itemId)}>
+                                      {formatAcceptedFgItemHeadline(s)}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            ) : null}
+                            {selected ? (
+                              <div className="rounded border border-amber-100 bg-white/80 px-2.5 py-2 text-xs text-slate-800">
+                                <div className="font-semibold text-slate-900">{formatAcceptedFgItemHeadline(selected)}</div>
+                                <div className="mt-0.5">{formatAcceptedFgPendingQtyLine(selected)}</div>
+                                {formatAcceptedFgSourceLine(selected) ? (
+                                  <div className="mt-0.5 text-slate-600">{formatAcceptedFgSourceLine(selected)}</div>
+                                ) : null}
+                                {!identityOk ? (
+                                  <div className="mt-1 font-medium text-amber-900">{UNKNOWN_FG_ITEM_LABEL}</div>
+                                ) : null}
+                              </div>
+                            ) : null}
+                            <label className="grid gap-1 text-xs">
+                              <span>Qty</span>
+                              <Input value={fgDispQty} onChange={(e) => setFgDispQty(e.target.value)} />
+                            </label>
+                            <label className="grid gap-1 text-xs">
+                              <span>Disposition type</span>
+                              <select
+                                className="rounded border border-slate-300 px-2 py-1.5 text-sm"
+                                value={fgDispType}
+                                onChange={(e) => setFgDispType(e.target.value)}
+                              >
+                                <option value="TRANSFER_TO_GENERAL_STOCK" disabled={!identityOk}>
+                                  Transfer to general stock
+                                </option>
+                                <option value="SCRAP">Write off / scrap</option>
+                                <option value="DISPATCH_BEFORE_CLOSE">Dispatch before close</option>
+                                <option value="RETAIN_AS_CUSTOMER_SPECIFIC_STOCK">
+                                  Retain as customer-specific stock
+                                </option>
+                                <option value="OTHER_APPROVED_DISPOSITION">Other approved disposition</option>
+                              </select>
+                            </label>
+                            {!identityOk && fgDispType === "TRANSFER_TO_GENERAL_STOCK" ? (
+                              <p className="text-[11px] text-amber-900">
+                                Transfer to general stock is unavailable until item identity is corrected.
+                              </p>
+                            ) : null}
+                            <label className="grid gap-1 text-xs">
+                              <span>Remarks</span>
+                              <Input value={fgDispRemarks} onChange={(e) => setFgDispRemarks(e.target.value)} />
+                            </label>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={
+                                savingFgDisp ||
+                                (fgDispType === "TRANSFER_TO_GENERAL_STOCK" && !identityOk)
+                              }
+                              onClick={() => {
+                                void (async () => {
+                                  const itemId = Number(fgDispItemId || selected?.itemId);
+                                  const qty = Number(fgDispQty);
+                                  if (!(itemId > 0) || !(qty > 0)) {
+                                    toast.showError("Item and qty are required.");
+                                    return;
+                                  }
+                                  if (fgDispType === "TRANSFER_TO_GENERAL_STOCK" && !identityOk) {
+                                    toast.showError(UNKNOWN_FG_ITEM_LABEL);
+                                    return;
+                                  }
+                                  const confirmMsg = formatAcceptedFgDispositionConfirmSummary(
+                                    selected,
+                                    dispositionLabels[fgDispType] || fgDispType,
+                                  );
+                                  if (!window.confirm(confirmMsg)) return;
+                                  setSavingFgDisp(true);
+                                  try {
+                                    await apiFetch(
+                                      `/api/sales-orders/${noQtyCloseDialog.soId}/accepted-fg-dispositions`,
+                                      {
+                                        method: "POST",
+                                        body: JSON.stringify({
+                                          itemId,
+                                          qty,
+                                          dispositionType: fgDispType,
+                                          remarks: fgDispRemarks.trim() || null,
+                                        }),
+                                      },
+                                    );
+                                    toast.showSuccess("FG disposition recorded.");
+                                    const r = await apiFetch<NonNullable<typeof closeAssessment>>(
+                                      `/api/sales-orders/${noQtyCloseDialog.soId}/no-qty-closure-assessment`,
+                                    );
+                                    setCloseAssessment(r);
+                                    const nextFg = (r.itemSummaries || []).find(
+                                      (s) => Number(s.acceptedFgPendingDispositionQty ?? s.quantity ?? 0) > 0,
+                                    );
+                                    if (nextFg) {
+                                      setFgDispItemId(String(nextFg.itemId));
+                                      setFgDispQty(
+                                        String(nextFg.quantity ?? nextFg.acceptedFgPendingDispositionQty ?? ""),
+                                      );
+                                    } else {
+                                      setFgDispItemId("");
+                                      setFgDispQty("");
+                                    }
+                                  } catch (e) {
+                                    toast.showError(
+                                      e instanceof Error ? e.message : "Failed to record disposition.",
+                                    );
+                                  } finally {
+                                    setSavingFgDisp(false);
+                                  }
+                                })();
+                              }}
+                            >
+                              {savingFgDisp ? "Saving…" : "Record FG disposition"}
+                            </Button>
+                          </>
+                        );
+                      })()}
                     </div>
                   ) : null}
                 </div>
@@ -3778,7 +3891,14 @@ export function SalesOrdersPage() {
                     <ul className="space-y-1">
                       {closeAssessment.proposedWaiverLines.map((ln) => (
                         <li key={ln.recoverySourceId}>
-                          {ln.itemName ?? `Item #${ln.itemId}`} · {ln.recoveryType} · {ln.availableQty}
+                          {formatAcceptedFgItemHeadline({
+                            itemId: ln.itemId,
+                            itemName: ln.itemName,
+                            itemCode: ln.itemCode,
+                            identityResolved: ln.identityResolved,
+                          })}{" "}
+                          · {ln.recoveryType} · {ln.availableQty}
+                          {ln.unit ? ` ${ln.unit}` : ""}
                         </li>
                       ))}
                     </ul>
@@ -3886,7 +4006,13 @@ export function SalesOrdersPage() {
                   <ul className="mt-1 list-inside list-disc">
                     {reopenPreview.closedShortageLines.map((ln) => (
                       <li key={ln.itemId}>
-                        Item #{ln.itemId}: {ln.closedShortageQty}
+                        {formatAcceptedFgItemHeadline({
+                          itemId: ln.itemId,
+                          itemName: ln.itemName,
+                          identityResolved: ln.identityResolved,
+                        })}
+                        : {ln.closedShortageQty}
+                        {ln.unit ? ` ${ln.unit}` : ""}
                       </li>
                     ))}
                   </ul>
@@ -3898,7 +4024,13 @@ export function SalesOrdersPage() {
                   <ul className="mt-1 list-inside list-disc">
                     {reopenPreview.currentUsableByItem.map((u) => (
                       <li key={u.itemId}>
-                        Item #{u.itemId}: {u.usableQty}
+                        {formatAcceptedFgItemHeadline({
+                          itemId: u.itemId,
+                          itemName: u.itemName,
+                          identityResolved: u.identityResolved,
+                        })}
+                        : {u.usableQty}
+                        {u.unit ? ` ${u.unit}` : ""}
                       </li>
                     ))}
                   </ul>

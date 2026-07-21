@@ -64,6 +64,49 @@ describe("qcWorkspaceUx", () => {
     expect(rows.map((r) => r.kind)).toEqual(["PENDING_QC", "REWORK_PENDING", "HOLD_DECISION", "CUSTOMER_RETURN"]);
     expect(rows[0]?.anchor).toBe("#qc-production-pending");
     expect(rows[1]?.anchor).toBe("#qc-rework-pending");
+    expect(rows[0]?.label).toContain("Widget");
+    expect(rows[0]?.label).toMatch(/PE-|9/);
+  });
+
+  it("dedupes identical production entry ids in the pending QC queue", () => {
+    const rows = buildQualityQueueRows({
+      pendingQc: [
+        {
+          productionId: 26,
+          productionDocNo: "PE-26-0003",
+          itemName: "Square Box",
+          workOrderLabel: "WO-26-0003",
+          pendingQty: 1000,
+          unit: "Nos",
+        },
+        {
+          productionId: 26,
+          productionDocNo: "PE-26-0003",
+          itemName: "Square Box",
+          workOrderLabel: "WO-26-0003",
+          pendingQty: 1000,
+          unit: "Nos",
+        },
+        {
+          productionId: 27,
+          productionDocNo: "PE-26-0004",
+          itemName: "Square Box",
+          workOrderLabel: "WO-26-0003",
+          pendingQty: 500,
+          unit: "Nos",
+        },
+      ],
+      dispositions: [],
+      customerReturns: [],
+      formatProductionEntryNo: (_id, docNo) => String(docNo ?? ""),
+    });
+    const pending = rows.filter((r) => r.kind === "PENDING_QC");
+    expect(pending).toHaveLength(2);
+    expect(pending.map((r) => r.productionId)).toEqual([26, 27]);
+    expect(pending[0]?.label).toContain("PE-26-0003");
+    expect(pending[1]?.label).toContain("PE-26-0004");
+    expect(pending[0]?.subtitle).toContain("WO-26-0003");
+    expect(pending[0]?.subtitle).toContain("Awaiting");
   });
 
   it("builds context-aware back links", () => {

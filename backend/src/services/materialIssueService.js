@@ -294,6 +294,7 @@ async function createMaterialIssueNote(input, actor = {}, outerTx = null) {
           allowanceInputSource: "QUANTITY",
           theoreticalBomQty,
           alreadyIssuedQty,
+          issueQty: line.issueQty,
           enteredAllowanceQty,
           plannedAllowanceQty: enteredAllowanceQty,
           recommendedIssueQty: line.recommendedIssueQty,

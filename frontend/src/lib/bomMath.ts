@@ -30,7 +30,7 @@ export type BomPlanningResult = {
 
 export type BomComputedLineInput = {
   rmItemId: number;
-  mixPercent: number | "" | null | undefined;
+  mixPercent: number | string | "" | null | undefined;
 };
 
 export type BomComputedLineSummary = {

@@ -5,6 +5,7 @@ import { PageContainer, ERPBackNavigation } from "../components/PageHeader";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { DecimalInput } from "../components/ui/DecimalInput";
 import { useIsAdmin } from "../hooks/useIsAdmin";
 import {
   computedBomSummary,
@@ -19,7 +20,6 @@ import { erpTable } from "../lib/erpFoundationTokens";
 import { Ban, CheckCircle2, Copy, MoreHorizontal, Pencil, Plus, Trash2, X } from "lucide-react";
 import { DependencyLifecycleModal, type DependencySummary } from "../components/masters/DependencyLifecycleModal";
 import { Badge } from "../components/ui/badge";
-import { type NumberDraft, toNumberDraft } from "../lib/numberDraft";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
 import { useToast } from "../contexts/ToastContext";
 import { ErpModal } from "../components/erp/ErpModal";
@@ -85,10 +85,10 @@ type BomRow = {
 };
 
 type HeaderDraft = {
-  fgWeight: NumberDraft;
+  fgWeight: string;
   fgWeightUnitId: number | "";
-  outputQty: NumberDraft;
-  runnerWeight: NumberDraft;
+  outputQty: string;
+  runnerWeight: string;
   bomType: BomType;
   effectiveFrom: string;
   remarks: string;
@@ -96,7 +96,7 @@ type HeaderDraft = {
 
 type LineDraft = {
   rmItemId: number;
-  mixPercent: number | "";
+  mixPercent: string;
   notes: string;
 };
 
@@ -203,8 +203,8 @@ function defaultHeaderDraft(): HeaderDraft {
   return {
     fgWeight: "",
     fgWeightUnitId: "",
-    outputQty: 1,
-    runnerWeight: 0,
+    outputQty: "1",
+    runnerWeight: "0",
     bomType: "STANDARD",
     effectiveFrom: "",
     remarks: "",
@@ -217,10 +217,10 @@ function headerFromBom(b: BomRow): HeaderDraft {
   const rw = Number(b.runnerWeight ?? 0);
   const eff = b.effectiveFrom ? String(b.effectiveFrom).slice(0, 10) : "";
   return {
-    fgWeight: Number.isFinite(fw) && fw > 0 ? fw : "",
+    fgWeight: Number.isFinite(fw) && fw > 0 ? String(fw) : "",
     fgWeightUnitId: b.fgWeightUnitId ?? "",
-    outputQty: Number.isFinite(oq) && oq > 0 ? oq : 1,
-    runnerWeight: Number.isFinite(rw) && rw >= 0 ? rw : 0,
+    outputQty: Number.isFinite(oq) && oq > 0 ? String(oq) : "1",
+    runnerWeight: Number.isFinite(rw) && rw >= 0 ? String(rw) : "0",
     bomType: b.bomType ?? "STANDARD",
     effectiveFrom: eff,
     remarks: b.remarks ?? "",
@@ -238,7 +238,7 @@ function lineFromBom(b: BomRow, line: BomLine): LineDraft {
       : null;
   return {
     rmItemId: line.rmItemId,
-    mixPercent: mixPercent != null && Number.isFinite(mixPercent) ? mixPercent : "",
+    mixPercent: mixPercent != null && Number.isFinite(mixPercent) ? String(mixPercent) : "",
     notes: line.notes ?? "",
   };
 }
@@ -254,7 +254,7 @@ function headerNums(h: HeaderDraft) {
 
 function mixPercentError(l: LineDraft, strict = true): string | null {
   if (l.mixPercent === "") return strict ? "Enter mix % for each line." : null;
-  const n = typeof l.mixPercent === "number" ? l.mixPercent : Number(l.mixPercent);
+  const n = Number(l.mixPercent);
   if (!Number.isFinite(n)) return "Mix % must be a valid number.";
   if (n <= 0) return "Mix % must be greater than 0.";
   if (n > 100) return "Mix % cannot exceed 100.";
@@ -549,26 +549,23 @@ function BomCompactForm({
           />
         </BomCell>
         <BomCell label="Output qty (info)">
-          <Input
-            type="number"
-            step="any"
+          <DecimalInput
             className={cn(opInputClass, "w-full text-right font-bold")}
             value={header.outputQty}
             readOnly={readOnly}
-            onChange={(e) => setHeader((h) => ({ ...h, outputQty: toNumberDraft(e.target.value) }))}
+            onValueChange={(next) => setHeader((h) => ({ ...h, outputQty: next }))}
           />
         </BomCell>
         <BomCell label="UOM">
           <Input className={cn(opInputClass, "bg-slate-50")} readOnly value={fgUnit} />
         </BomCell>
         <BomCell label="FG weight">
-          <Input
-            type="number"
-            step="any"
+          <DecimalInput
             className={cn(opInputClass, "w-full text-right")}
             value={header.fgWeight}
             readOnly={readOnly}
-            onChange={(e) => setHeader((h) => ({ ...h, fgWeight: toNumberDraft(e.target.value) }))}
+            normalizeOnBlur={false}
+            onValueChange={(next) => setHeader((h) => ({ ...h, fgWeight: next }))}
           />
         </BomCell>
         <BomCell label="Weight unit">
@@ -590,14 +587,11 @@ function BomCompactForm({
           </select>
         </BomCell>
         <BomCell label="Runner weight">
-          <Input
-            type="number"
-            step="any"
+          <DecimalInput
             className={cn(opInputClass, "w-full text-right")}
-            min={0}
             value={header.runnerWeight}
             readOnly={readOnly}
-            onChange={(e) => setHeader((h) => ({ ...h, runnerWeight: toNumberDraft(e.target.value) }))}
+            onValueChange={(next) => setHeader((h) => ({ ...h, runnerWeight: next }))}
           />
         </BomCell>
         <BomCell label="Notes" className="bom-compact-span-3">
@@ -739,35 +733,18 @@ function BomRmWorkspaceTable({
                     {itemDisplayCode(l.rmItemId)}
                   </td>
                   <td className="bom-col-qty text-right">
-                  <Input
-                    type="number"
+                  <DecimalInput
                       className={cn(
                         opInputClass,
                         "ml-auto w-full max-w-[5rem] text-right font-bold",
                         mixErr ? "border-red-300 bg-red-50 text-red-900 focus-visible:ring-red-200" : "",
                       )}
-                      step="any"
-                      inputMode="decimal"
-                      value={l.mixPercent === "" ? "" : l.mixPercent}
+                      value={l.mixPercent}
                       readOnly={readOnly}
-                    onChange={(e) => {
-                      const raw = e.target.value;
-                      if (raw === "") {
-                          setLines((p) => p.map((x, j) => (j === i ? { ...x, mixPercent: "" } : x)));
-                        return;
-                      }
-                        const v = Number(raw);
-                      setLines((p) =>
-                          p.map((x, j) =>
-                            j === i
-                              ? {
-                                  ...x,
-                                  mixPercent: Number.isFinite(v) ? v : "",
-                                }
-                              : x,
-                          ),
-                      );
-                    }}
+                      normalizeOnBlur={false}
+                      onValueChange={(next) => {
+                        setLines((p) => p.map((x, j) => (j === i ? { ...x, mixPercent: next } : x)));
+                      }}
                   />
                     {mixErr && !readOnly ? (
                       <div className="mt-1 max-w-[5rem] text-[10px] font-medium leading-tight text-red-700">

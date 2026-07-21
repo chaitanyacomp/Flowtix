@@ -1,4 +1,5 @@
-const { TALLY_LEDGER_PATTERNS, TALLY_TRANSPORTATION_LEDGER, TALLY_ROUND_OFF_LEDGER } = require("../config/tally");
+const { TALLY_LEDGER_PATTERNS, TALLY_TRANSPORTATION_LEDGER, TALLY_ROUND_OFF_LEDGER, TALLY_INVENTORY_DEFAULTS } = require("../config/tally");
+const { resolveConfiguredTransportationLedger } = require("./salesBillTallyExportReadiness");
 
 function safeStr(v) {
   if (v == null) return "";
@@ -29,10 +30,29 @@ function fmtTallyRate(v) {
 function resolveLineUnit(ln) {
   const item = ln?.item ?? null;
   return (
+    safeStrOrNull(item?.unitRef?.tallyName) ??
     safeStrOrNull(ln?.unitSnapshot) ??
+    safeStrOrNull(item?.unitRef?.unitCode) ??
     safeStrOrNull(item?.unitRef?.unitName) ??
     safeStrOrNull(item?.unit) ??
     null
+  );
+}
+
+function resolvePartyLedgerName(bill, customer) {
+  return (
+    safeStrOrNull(customer?.tallyName) ??
+    safeStrOrNull(bill?.customerNameSnapshot) ??
+    safeStrOrNull(customer?.name)
+  );
+}
+
+function resolveStockItemName(ln) {
+  const item = ln?.item ?? null;
+  return (
+    safeStrOrNull(item?.tallyName) ??
+    safeStrOrNull(ln?.itemNameSnapshot) ??
+    safeStrOrNull(item?.itemName)
   );
 }
 
@@ -143,12 +163,22 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
     const item = ln.item ?? null;
     const qtyRaw = ln.qty;
     const rateRaw = ln.rate;
+    const erpItemName = safeStrOrNull(ln.itemNameSnapshot) ?? safeStrOrNull(item?.itemName);
+    const stockItemName = resolveStockItemName(ln);
     return {
       itemId: ln.itemId,
-      itemName: safeStrOrNull(ln.itemNameSnapshot) ?? safeStrOrNull(item?.itemName),
+      itemName: stockItemName,
+      erpItemName,
+      tallyName: safeStrOrNull(item?.tallyName),
+      tallyGuid: safeStrOrNull(item?.tallyGuid),
+      tallyImportedAt: item?.tallyImportedAt ?? null,
       hsnCode: safeStrOrNull(ln.hsnCodeSnapshot) ?? safeStrOrNull(item?.hsnCode),
       gstRate: safeStrOrNull(ln.gstRate),
       unit: resolveLineUnit(ln),
+      erpUnit:
+        safeStrOrNull(ln?.unitSnapshot) ??
+        safeStrOrNull(item?.unitRef?.unitName) ??
+        safeStrOrNull(item?.unit),
       // Quantity must come from SalesBillLine.qty (dispatch-derived in our flow).
       quantity: fmtTallyQty(qtyRaw),
       rate: fmtTallyRate(rateRaw),
@@ -186,6 +216,9 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
   const sgstLedger = taxIntraState === true ? ledgerAt(TALLY_LEDGER_PATTERNS.outputSgstPrefix, halfRate) : null;
   const igstLedger = taxIntraState === false ? ledgerAt(TALLY_LEDGER_PATTERNS.outputIgstPrefix, billGstRate) : null;
 
+  const partyLedgerName = resolvePartyLedgerName(bill, customer);
+  const erpCustomerName = commercial.billTo.name;
+
   return {
     salesBillId: bill.id,
     voucherNo: safeStrOrNull(bill.billNo) ?? `SB-${bill.id}`,
@@ -207,7 +240,13 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
 
     customer: {
       customerId: bill.customerId,
-      customerName: commercial.billTo.name,
+      /** Exact party ledger NAME for Tally voucher references. */
+      customerName: partyLedgerName,
+      partyLedgerName,
+      erpDisplayName: erpCustomerName,
+      tallyName: safeStrOrNull(customer?.tallyName),
+      tallyGuid: safeStrOrNull(customer?.tallyGuid),
+      tallyImportedAt: customer?.tallyImportedAt ?? null,
       customerGstin: commercial.billTo.gstin,
       customerStateName: commercial.billTo.stateName,
       customerStateCode: commercial.billTo.stateCode,
@@ -216,6 +255,11 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
     billTo: commercial.billTo,
     shipTo: commercial.shipTo,
     placeOfSupply: commercial.placeOfSupply,
+
+    inventoryDefaults: {
+      godownName: TALLY_INVENTORY_DEFAULTS.godownName,
+      batchName: TALLY_INVENTORY_DEFAULTS.batchName,
+    },
 
     tax: {
       taxIntraState,
@@ -242,7 +286,11 @@ function mapSalesBillToTallyExportPayload({ bill, companyState }) {
       amount: safeStrOrNull(bill.transportationAmount),
       taxableAmount: safeStrOrNull(bill.transportationTaxableValue),
       chargedBy: safeStrOrNull(bill.transportationChargedBy),
-      ledger: TALLY_TRANSPORTATION_LEDGER,
+      transporterName: safeStrOrNull(bill.transporterName),
+      ledger: resolveConfiguredTransportationLedger({
+        tallyTransportationLedger: companyState?.tallyTransportationLedger,
+        envLedger: TALLY_TRANSPORTATION_LEDGER,
+      }),
       roundOffLedger: TALLY_ROUND_OFF_LEDGER,
     },
     taxBuckets: distinctGstRates.map((rateText) => {

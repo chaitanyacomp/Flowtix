@@ -28,7 +28,7 @@
 
 /**
  * Master / auth data preserved by Reset Transaction Data.
- * Full Demo Reset may still wipe some of these — see full-demo entry points.
+ * Full Demo Reset may still wipe some of these — see FULL_DEMO_WIPED_MASTERS.
  */
 const PRESERVED_MASTER_MODELS = Object.freeze([
   "User",
@@ -47,6 +47,38 @@ const PRESERVED_MASTER_MODELS = Object.freeze([
   "AuditLog",
   "ActivityLog",
   "DocSequence",
+  "WastageType",
+  "State",
+]);
+
+/**
+ * Masters wiped by Full Demo Reset (in addition to all TRANSACTIONAL rows).
+ * Children that Restrict-reference these must be deleted earlier in the Full Demo plan.
+ */
+const FULL_DEMO_WIPED_MASTERS = Object.freeze([
+  "Item",
+  "Unit",
+  "Customer",
+  "Supplier",
+  "Bom",
+  "BomLine",
+  "OpeningStockEntry",
+  "RateContractLine",
+  "CustomerPO",
+  "CustomerPOLine",
+]);
+
+/**
+ * Intentionally preserved on Full Demo Reset (users, settings, reference masters).
+ */
+const FULL_DEMO_PRESERVED_MODELS = Object.freeze([
+  "User",
+  "AppSetting",
+  "State",
+  "Location",
+  "AuditLog",
+  "ActivityLog",
+  "WastageType",
 ]);
 
 /**
@@ -74,6 +106,14 @@ const CLEANUP_REGISTRY = Object.freeze([
   // —— Commercial out ——
   { prismaModel: "SalesBillReceipt", clientKey: "salesBillReceipt", kind: "TRANSACTIONAL", phase: 10, parentDeps: ["SalesBill"] },
   { prismaModel: "SalesBillLine", clientKey: "salesBillLine", kind: "TRANSACTIONAL", phase: 20, parentDeps: ["SalesBill", "Item"] },
+  {
+    prismaModel: "SalesBillDispatchAllocation",
+    clientKey: "salesBillDispatchAllocation",
+    kind: "TRANSACTIONAL",
+    phase: 25,
+    parentDeps: ["SalesBill", "SalesBillLine", "Dispatch"],
+    notes: "Restrict → Dispatch; must delete before Dispatch (Cascade from SalesBill alone is not enough).",
+  },
   { prismaModel: "SalesBill", clientKey: "salesBill", kind: "TRANSACTIONAL", phase: 30, parentDeps: ["Dispatch", "SalesOrder"] },
   { prismaModel: "CustomerReturn", clientKey: "customerReturn", kind: "TRANSACTIONAL", phase: 40, parentDeps: ["SalesOrder"] },
   { prismaModel: "Dispatch", clientKey: "dispatch", kind: "TRANSACTIONAL", phase: 50, parentDeps: ["SalesOrder", "WorkOrder", "Item"] },
@@ -108,6 +148,14 @@ const CLEANUP_REGISTRY = Object.freeze([
     kind: "TRANSACTIONAL",
     phase: 120,
     parentDeps: ["WorkOrder", "ProductionWorkOrderReport"],
+  },
+  {
+    prismaModel: "ProductionWorkOrderReportWastageDetail",
+    clientKey: "productionWorkOrderReportWastageDetail",
+    kind: "TRANSACTIONAL",
+    phase: 125,
+    parentDeps: ["ProductionWorkOrderReport", "Item", "WastageType"],
+    notes: "Item Restrict FK (20260718120000); delete before report/Item. Cascade from report is not enough for Item wipe order certainty.",
   },
   {
     prismaModel: "ProductionWorkOrderReportLine",
@@ -192,6 +240,14 @@ const CLEANUP_REGISTRY = Object.freeze([
   { prismaModel: "MaterialIssueLine", clientKey: "materialIssueLine", kind: "TRANSACTIONAL", phase: 240, parentDeps: ["MaterialIssueNote", "Item"] },
   { prismaModel: "MaterialIssueNote", clientKey: "materialIssueNote", kind: "TRANSACTIONAL", phase: 250, parentDeps: ["WorkOrder"] },
   { prismaModel: "MaterialWastageNote", clientKey: "materialWastageNote", kind: "TRANSACTIONAL", phase: 260, parentDeps: ["WorkOrder", "Item"] },
+  {
+    prismaModel: "RmAllowanceApprovalRequest",
+    clientKey: "rmAllowanceApprovalRequest",
+    kind: "TRANSACTIONAL",
+    phase: 265,
+    parentDeps: ["WorkOrder", "ProductionMaterialRequest", "ProductionMaterialRequestLine", "Item", "MaterialIssueNote"],
+    notes: "Must delete before PMR lines / Item (Restrict FKs). Introduced 20260719110000.",
+  },
   { prismaModel: "MaterialAllocation", clientKey: "materialAllocation", kind: "TRANSACTIONAL", phase: 270, parentDeps: ["WorkOrder", "Item"] },
   {
     prismaModel: "ProductionMaterialRequestLine",
@@ -383,6 +439,8 @@ function findRegistryEntryByPrismaModel(prismaModel) {
 module.exports = {
   CLEANUP_REGISTRY,
   PRESERVED_MASTER_MODELS,
+  FULL_DEMO_WIPED_MASTERS,
+  FULL_DEMO_PRESERVED_MODELS,
   RECOVERY_CLUSTER_CLIENT_KEYS,
   getTransactionalRegistryEntries,
   getTransactionalDeleteClientKeys,

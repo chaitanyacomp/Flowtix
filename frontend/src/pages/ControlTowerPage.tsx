@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { PageContainer, PageHeader, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue, ErpPageContentGate } from "../components/erp/foundation";
@@ -23,11 +23,19 @@ import {
   formatControlTowerOwner,
   formatControlTowerStatus,
 } from "../lib/controlTowerDisplay";
+import {
+  parseControlTowerSearchParams,
+  rowMatchesControlTowerFilters,
+  type ControlTowerFilterParams,
+} from "../lib/controlTowerNavigation";
 import { cn } from "../lib/utils";
 import { noQtySoListHref } from "../lib/noQtyRsActionLabels";
 import { NO_QTY_TERMS } from "../lib/flowTerminology";
 import { formatQuantityWithUnit } from "../lib/quantityDisplay";
 import { salesOrdersFocusHref } from "../lib/drillDownRoutes";
+import { ControlTowerFactoryMonitor } from "../components/erp/ControlTowerFactoryMonitor";
+
+const IS_DEV = Boolean(import.meta.env?.DEV);
 
 type EndpointDebug = {
   status: "ok" | "error" | "skipped";
@@ -69,14 +77,6 @@ function GroupEmptyState({ groupCount }: { groupCount: number }) {
   return <p className="px-3 py-2 text-sm text-slate-600">Nothing pending in this group</p>;
 }
 
-function MyWorkEmptyState({ role }: { role: string }) {
-  return (
-    <p className="px-1 py-2 text-sm text-slate-600">
-      {role ? `No work assigned to ${role}.` : "No work assigned to your role."}
-    </p>
-  );
-}
-
 function WorkItemCard({
   row,
   showOwner = false,
@@ -107,6 +107,7 @@ function WorkItemCard({
 
 function BoardGroupSection({ group }: { group: ControlTowerBoardGroup }) {
   const hasRows = group.rows.length > 0;
+  if (!hasRows && group.count === 0) return null;
   return (
     <Card>
       <CardHeader className="border-b border-slate-100 px-4 py-3">
@@ -156,18 +157,23 @@ function KpiStrip({ metrics, isAdmin }: { metrics: ControlTowerPanelMetricsData;
   const alerts = metrics.criticalAlerts;
   const noQty = metrics.noQtyControlPanel;
   const commercial = metrics.commercialControl;
+  const ready = lf.readyToStartCount ?? 0;
+  const running = lf.productionRunningCount ?? 0;
+  const paused = lf.productionPausedCount ?? 0;
+  const blocked = lf.productionBlockedCount ?? 0;
 
   return (
     <ErpKpiStrip role="region" aria-label="Control Tower KPI strip">
       <ErpKpiSegment as="div">
-        <ErpKpiLabel>Live Factory</ErpKpiLabel>
-        <ErpKpiValue>
-          RM {fmtCount(lf.rmShortageCount)} · Prod {fmtCount(lf.productionPendingCount)} · QA{" "}
-          {fmtCount(lf.qaPendingCount)}
+        <ErpKpiLabel>Factory status</ErpKpiLabel>
+        <ErpKpiValue className="text-[15px] leading-snug">
+          Ready {fmtCount(ready)} · Running {fmtCount(running)} · Paused {fmtCount(paused)} · Blocked{" "}
+          {fmtCount(blocked)}
         </ErpKpiValue>
-        <span className="mt-0.5 block text-[11px] text-slate-500">
-          Dispatch {fmtCount(lf.dispatchPendingLineCount)} lines · SO {fmtCount(lf.activeSalesOrders)} · WO{" "}
-          {fmtCount(lf.activeWorkOrders)}
+        <span className="mt-0.5 block text-[12px] text-slate-500">
+          Report {fmtCount(lf.awaitingReportCount)} · QC {fmtCount(lf.pendingQcCount ?? lf.qaPendingCount)} · RM
+          shortage {fmtCount(lf.rmShortageCount)} · Dispatch {fmtCount(lf.dispatchPendingLineCount)} lines · SO{" "}
+          {fmtCount(lf.activeSalesOrders)} · WO {fmtCount(lf.activeWorkOrders)}
         </span>
       </ErpKpiSegment>
 
@@ -181,7 +187,7 @@ function KpiStrip({ metrics, isAdmin }: { metrics: ControlTowerPanelMetricsData;
       <ErpKpiSegment as="div">
         <ErpKpiLabel>Critical Alerts</ErpKpiLabel>
         <ErpKpiValue tone={alerts.alertTotal > 0 ? "warn" : "default"}>{fmtCount(alerts.alertTotal)}</ErpKpiValue>
-        <span className="mt-0.5 block text-[11px] text-slate-500">
+        <span className="mt-0.5 block text-[12px] text-slate-500">
           RM {fmtCount(alerts.rmCriticalCount)} · Blocked WO {fmtCount(alerts.blockedWorkOrders)} · Exceptions{" "}
           {fmtCount(alerts.systemExceptions)}
         </span>
@@ -194,7 +200,7 @@ function KpiStrip({ metrics, isAdmin }: { metrics: ControlTowerPanelMetricsData;
             <ErpKpiValue>
               Bill ready {fmtCount(commercial.billingReady)} · pending {fmtCount(commercial.billingPending)}
             </ErpKpiValue>
-            <span className="mt-0.5 block text-[11px] text-slate-500">
+            <span className="mt-0.5 block text-[12px] text-slate-500">
               Export {fmtCount(commercial.exportPending)} · Payment {fmtCount(commercial.paymentPending)}
             </span>
           </>
@@ -204,15 +210,14 @@ function KpiStrip({ metrics, isAdmin }: { metrics: ControlTowerPanelMetricsData;
       </ErpKpiSegment>
 
       <ErpKpiSegment as="div">
-        <ErpKpiLabel>NO_QTY</ErpKpiLabel>
+        <ErpKpiLabel>NO_QTY Recovery</ErpKpiLabel>
         <ErpKpiValue>
-          Active {fmtCount(noQty.activeNoQtyOrders)} · Planning {fmtCount(noQty.planningPending)}
+          Active {fmtCount(noQty.activeNoQtyOrders)} · Open {fmtCount(noQty.openRecoverySources)}
         </ErpKpiValue>
-        <span className="mt-0.5 block text-[11px] text-slate-500">
+        <span className="mt-0.5 block text-[12px] text-slate-500">
           Shortfall {fmtCount(noQty.productionShortfallPendingQty)} · QC recovery{" "}
-          {fmtCount(noQty.qcRecoveryAvailableQty)} · Waiver {fmtCount(noQty.soWaitingForWaiver)} · FG disp{" "}
-          {fmtCount(noQty.acceptedFgDispositionPending)} · Blocked {fmtCount(noQty.blockedClosures)} · Closed
-          waiver {fmtCount(noQty.closedWithWaiver)}
+          {fmtCount(noQty.qcRecoveryAvailableQty)} · Waiver {fmtCount(noQty.soWaitingForWaiver)} · Blocked{" "}
+          {fmtCount(noQty.blockedClosures)}
         </span>
       </ErpKpiSegment>
     </ErpKpiStrip>
@@ -346,6 +351,8 @@ export function ControlTowerPage() {
   const { user } = useAuth();
   const role = String(user?.role ?? "").trim().toUpperCase();
   const isAdmin = role === "ADMIN";
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filters = React.useMemo(() => parseControlTowerSearchParams(searchParams), [searchParams]);
 
   const [panelMetrics, setPanelMetrics] = React.useState<ControlTowerPanelMetricsData | null>(null);
   const [boardGroups, setBoardGroups] = React.useState<ControlTowerBoardGroup[]>([]);
@@ -426,7 +433,7 @@ export function ControlTowerPage() {
 
   const orderedBoardGroups = React.useMemo(() => {
     const byKey = new Map(boardGroups.map((g) => [g.groupKey, g]));
-    return sortControlTowerBoardGroups(
+    const base = sortControlTowerBoardGroups(
       CONTROL_TOWER_BOARD_GROUP_ORDER.map((key) => {
         const existing = byKey.get(key);
         if (existing) return existing;
@@ -440,12 +447,58 @@ export function ControlTowerPage() {
         };
       }),
     );
-  }, [boardGroups]);
+
+    return base
+      .filter((g) => !filters.group || g.groupKey === filters.group)
+      .map((g) => {
+        const rows = (g.rows ?? []).filter((row) =>
+          rowMatchesControlTowerFilters(
+            {
+              currentStatus: row.currentStatus,
+              currentOwner: row.currentOwner,
+              documentNo: row.documentNo,
+              orderType: (row as ControlTowerRow & { orderType?: string }).orderType,
+            },
+            filters,
+          ),
+        );
+        const filtered =
+          filters.status || filters.owner || filters.search || filters.blockedOnly || filters.flow
+            ? { ...g, rows, count: rows.length > 0 ? rows.length : filters.group === g.groupKey ? g.count : rows.length }
+            : g;
+        return filtered;
+      })
+      .filter((g) => g.count > 0 || g.rows.length > 0);
+  }, [boardGroups, filters]);
+
+  const updateFilter = React.useCallback(
+    (patch: Partial<ControlTowerFilterParams>) => {
+      const next = { ...filters, ...patch };
+      const q = new URLSearchParams();
+      if (next.group) q.set("group", next.group);
+      if (next.status) q.set("status", next.status);
+      if (next.owner) q.set("owner", next.owner);
+      if (next.flow && next.flow !== "ALL") q.set("flow", next.flow);
+      if (next.blockedOnly) q.set("blockedOnly", "1");
+      if (next.search) q.set("q", next.search);
+      if (next.focus) q.set("focus", next.focus);
+      setSearchParams(q, { replace: true });
+    },
+    [filters, setSearchParams],
+  );
 
   const myWorkVisibleGroups = myWorkGroups.filter((g) => g.count > 0 || g.rows.length > 0);
   const myWorkHasItems =
     myWorkVisibleGroups.some((g) => g.rows.length > 0) ||
     myWorkGroups.some((g) => g.count > 0);
+
+  const factoryFocus = filters.focus === "factory";
+
+  React.useEffect(() => {
+    if (!factoryFocus || !firstLoadDone) return;
+    const el = document.getElementById("control-tower-factory-monitor");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [factoryFocus, firstLoadDone]);
 
   const boardTotalRows =
     boardMeta.totalRows ?? (boardError ? null : sumGroupCounts(orderedBoardGroups));
@@ -492,23 +545,71 @@ export function ControlTowerPage() {
     <PageContainer className="space-y-4">
       <StickyWorkspaceHead lead={<ERPBackNavigation defaultTo="/dashboard" defaultLabel="Back to Dashboard" />}>
         <PageHeader
-          title="Control Tower (Beta)"
-          subtitle="Read-only verification view — panel metrics, process board, and role queue."
+          title="Operations Control Tower"
+          subtitle="Read-only end-to-end workflow monitoring and exception diagnosis"
         />
-        <div className="flex flex-wrap items-center gap-3 px-1 pb-2 text-[12px]">
-          <Link
-            to={noQtySoListHref()}
-            className="font-semibold text-sky-800 underline underline-offset-2"
-          >
-            Open NO_QTY Agreements
+        <div className="flex flex-wrap items-center gap-2 px-1 pb-2 text-[13px]">
+          <label className="inline-flex items-center gap-1.5 text-slate-600">
+            Group
+            <select
+              className="h-8 rounded-md border border-slate-200 bg-white px-2 text-[13px]"
+              value={filters.group ?? ""}
+              onChange={(e) => updateFilter({ group: e.target.value || undefined })}
+              aria-label="Filter by process group"
+            >
+              <option value="">All</option>
+              {CONTROL_TOWER_BOARD_GROUP_ORDER.map((key) => (
+                <option key={key} value={key}>
+                  {CONTROL_TOWER_BOARD_GROUP_LABELS[key]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-1.5 text-slate-600">
+            Owner
+            <select
+              className="h-8 rounded-md border border-slate-200 bg-white px-2 text-[13px]"
+              value={filters.owner ?? ""}
+              onChange={(e) => updateFilter({ owner: e.target.value || undefined })}
+              aria-label="Filter by owner role"
+            >
+              <option value="">All</option>
+              {["STORE", "PURCHASE", "PRODUCTION", "QA", "ADMIN"].map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-1.5 text-slate-600">
+            Status
+            <select
+              className="h-8 rounded-md border border-slate-200 bg-white px-2 text-[13px]"
+              value={filters.status ?? ""}
+              onChange={(e) => updateFilter({ status: e.target.value || undefined })}
+              aria-label="Filter by status"
+            >
+              <option value="">All</option>
+              <option value="READY_TO_START">Ready to Start</option>
+              <option value="PRODUCTION_PENDING">Production pending</option>
+              <option value="PRODUCTION_ON_HOLD">Paused / Hold</option>
+              <option value="QA_PENDING">QA pending</option>
+              <option value="DISPATCH_PENDING">Dispatch pending</option>
+              <option value="WAITING_RM">Waiting RM</option>
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-1.5 text-slate-600">
+            <input
+              type="checkbox"
+              checked={Boolean(filters.blockedOnly)}
+              onChange={(e) => updateFilter({ blockedOnly: e.target.checked || undefined })}
+            />
+            Blocked only
+          </label>
+          <Link to={noQtySoListHref()} className="font-semibold text-sky-800 underline underline-offset-2">
+            NO_QTY Agreements
           </Link>
-          <span className="text-slate-300" aria-hidden>
-            ·
-          </span>
-          <Link
-            to="/planning-dashboard"
-            className="font-semibold text-sky-800 underline underline-offset-2"
-          >
+          <Link to="/planning-dashboard" className="font-semibold text-sky-800 underline underline-offset-2">
             {NO_QTY_TERMS.PLANNING_HUB_TITLE}
           </Link>
         </div>
@@ -525,8 +626,13 @@ export function ControlTowerPage() {
       {panelMetrics ? <KpiStrip metrics={panelMetrics} isAdmin={isAdmin} /> : null}
 
       {panelMetrics?.noQtyControlPanel?.monitoringRows &&
-      panelMetrics.noQtyControlPanel.monitoringRows.length > 0 ? (
-        <Card className="border-slate-200 shadow-sm" aria-label="NO_QTY recovery monitoring">
+      panelMetrics.noQtyControlPanel.monitoringRows.length > 0 &&
+      (filters.focus === "recovery" || !filters.focus) ? (
+        <Card
+          id="control-tower-recovery"
+          className="border-slate-200 shadow-sm"
+          aria-label="NO_QTY recovery monitoring"
+        >
           <CardHeader className="border-b border-slate-100 bg-slate-50/50 px-3 py-2">
             <CardTitle className="text-sm font-semibold text-slate-900">
               NO_QTY recovery monitor
@@ -602,10 +708,6 @@ export function ControlTowerPage() {
         </Card>
       ) : null}
 
-      <p className="text-[11px] text-slate-500">
-        KPI counts and board counts may differ during beta validation.
-      </p>
-
       {firstLoadDone ? (
         <DataStatusBar
           boardTotalRows={boardTotalRows}
@@ -617,49 +719,59 @@ export function ControlTowerPage() {
         />
       ) : null}
 
-      <details className="group rounded-md border border-slate-200 bg-white">
-        <summary className="cursor-pointer select-none px-3 py-2 text-[12px] font-medium text-slate-600 marker:content-none [&::-webkit-details-marker]:hidden">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="text-slate-400 transition group-open:rotate-90">▸</span>
-            API debug
-          </span>
-        </summary>
-        <div className="border-t border-slate-100 px-1 pb-1">
-          <ApiDebugPanel panel={panelDebug} board={boardDebug} roleQueue={roleQueueDebug} />
-        </div>
-      </details>
+      {IS_DEV ? (
+        <details className="group rounded-md border border-slate-200 bg-white">
+          <summary className="cursor-pointer select-none px-3 py-2 text-[12px] font-medium text-slate-600 marker:content-none [&::-webkit-details-marker]:hidden">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="text-slate-400 transition group-open:rotate-90">▸</span>
+              API debug
+            </span>
+          </summary>
+          <div className="border-t border-slate-100 px-1 pb-1">
+            <ApiDebugPanel panel={panelDebug} board={boardDebug} roleQueue={roleQueueDebug} />
+          </div>
+        </details>
+      ) : null}
 
-      <section className="space-y-3" aria-labelledby="control-tower-board-heading">
+      <ControlTowerFactoryMonitor emphasized={factoryFocus} />
+
+      <section className="space-y-3" aria-labelledby="control-tower-board-heading" id="control-tower-board">
         <h2 id="control-tower-board-heading" className="text-lg font-semibold text-slate-900">
           Process Board
         </h2>
         {boardError ? <ErrorPanel title="Process board failed" message={boardError} /> : null}
         {!boardError ? (
-          <div className={cn("grid gap-3", "grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3")}>
-            {orderedBoardGroups.map((group) => (
-              <BoardGroupSection key={group.groupKey} group={group} />
-            ))}
-          </div>
+          orderedBoardGroups.length === 0 ? (
+            <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[13px] text-slate-600">
+              No active process groups for the current filters.
+            </p>
+          ) : (
+            <div className={cn("grid gap-3", "grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3")}>
+              {orderedBoardGroups.map((group) => (
+                <BoardGroupSection key={group.groupKey} group={group} />
+              ))}
+            </div>
+          )
         ) : null}
       </section>
 
-      <section className="space-y-3" aria-labelledby="control-tower-my-work-heading">
-        <h2 id="control-tower-my-work-heading" className="text-lg font-semibold text-slate-900">
-          {role ? `My Work – ${role}` : "My Work"}
-        </h2>
-        {roleQueueError ? <ErrorPanel title="Role queue failed" message={roleQueueError} /> : null}
-        {!roleQueueError ? (
-          <Card>
-            <CardContent className="space-y-4 px-4 py-4">
-              {!myWorkHasItems ? (
-                <MyWorkEmptyState role={role} />
-              ) : (
-                myWorkVisibleGroups.map((group) => <MyWorkGroupSection key={group.groupKey} group={group} />)
-              )}
-            </CardContent>
-          </Card>
-        ) : null}
-      </section>
+      {myWorkHasItems || roleQueueError ? (
+        <section className="space-y-3" aria-labelledby="control-tower-my-work-heading">
+          <h2 id="control-tower-my-work-heading" className="text-lg font-semibold text-slate-900">
+            {role ? `My Work – ${role}` : "My Work"}
+          </h2>
+          {roleQueueError ? <ErrorPanel title="Role queue failed" message={roleQueueError} /> : null}
+          {!roleQueueError ? (
+            <Card>
+              <CardContent className="space-y-4 px-4 py-4">
+                {myWorkVisibleGroups.map((group) => (
+                  <MyWorkGroupSection key={group.groupKey} group={group} />
+                ))}
+              </CardContent>
+            </Card>
+          ) : null}
+        </section>
+      ) : null}
       </ErpPageContentGate>
     </PageContainer>
   );

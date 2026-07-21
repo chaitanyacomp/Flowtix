@@ -108,8 +108,39 @@ describe("PendingMaterialRequestsPanel PO prep visibility", () => {
     expect(panelSource).toContain("requestClosePoModal");
     expect(panelSource).toContain("RM_PO_MODAL_DISCARD_CONFIRM");
     expect(panelSource).not.toContain("rounded-lg border border-slate-200 p-3");
-    expect(panelSource).toContain("Excess to stock");
     expect(panelSource).toContain("Still to order");
+    expect(panelSource).toMatch(/\+\{fmtQty\(excess/);
+  });
+});
+
+describe("Create RM PO modal layout + decimal inputs", () => {
+  it("has no native number spinners on Order Qty / Rate", () => {
+    expect(panelSource).not.toMatch(/type=["']number["']/);
+    expect(panelSource).toContain("DecimalInput");
+    expect(panelSource).toContain("onValueChange");
+  });
+
+  it("aligns Supplier and Supplier PO Number with shared field classes", () => {
+    expect(panelSource).toContain("RM_PO_MODAL_HEADER_GRID_CLASS");
+    expect(panelSource).toContain("RM_PO_MODAL_HEADER_FIELD_CLASS");
+    expect(panelSource).toContain('data-testid="rm-po-supplier-row"');
+    expect(panelSource).toContain('data-testid="rm-po-supplier-po-number"');
+    expect(panelSource).toContain('data-testid="rm-po-supplier-select"');
+    expect(panelSource).toContain('placeholder="e.g. PO/26-001"');
+  });
+
+  it("places compact remarks beside commercial summary, supply location full-width", () => {
+    expect(panelSource).toContain('data-testid="rm-po-supply-location-row"');
+    expect(panelSource).toContain('data-testid="rm-po-remarks-commercial-row"');
+    expect(panelSource).toContain('data-testid="rm-po-remarks"');
+    expect(panelSource).toContain("compact");
+    expect(panelSource).not.toContain("max-w-xl");
+  });
+
+  it("keeps Order Qty and Rate widths consistent and right-aligned", () => {
+    expect(panelSource).toContain("RM_PO_MODAL_QTY_INPUT_CLASS");
+    expect(panelSource).toContain("RM_PO_MODAL_RATE_INPUT_CLASS");
+    expect(panelSource).toContain("table-fixed");
   });
 });
 

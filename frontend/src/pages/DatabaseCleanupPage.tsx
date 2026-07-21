@@ -630,9 +630,19 @@ export function DatabaseCleanupPage() {
       setFullModalOpen(false);
     } catch (e) {
       if (e instanceof ApiRequestError && e.step) {
-        const msg = `Full reset failed at: ${e.step}\n${e.backendError ?? e.message}`;
+        const errorCode =
+          (typeof e.body?.errorCode === "string" && e.body.errorCode) ||
+          e.code ||
+          "FULL_DEMO_RESET_ROLLED_BACK";
+        const msg = [
+          e.message?.trim() ||
+            "Full reset could not be completed. No data was deleted because the transaction was rolled back.",
+          `Failed stage: ${e.step}`,
+          `Reference: ${errorCode}`,
+          "Retry only after the underlying issue is corrected.",
+        ].join("\n");
         setFullError(msg);
-        toast.showError(`Full reset failed at: ${e.step}`);
+        toast.showError("Full reset rolled back — no data was deleted.");
       } else {
         const msg = e instanceof ApiRequestError ? e.message : e instanceof Error ? e.message : "Request failed";
         setFullError(msg);

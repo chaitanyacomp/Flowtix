@@ -43,6 +43,12 @@ export type ControlTowerPanelMetricsData = {
     rmShortageCount: number;
     rmReadyCount: number;
     productionPendingCount: number;
+    readyToStartCount?: number;
+    productionRunningCount?: number;
+    productionPausedCount?: number;
+    productionBlockedCount?: number;
+    awaitingReportCount?: number;
+    pendingQcCount?: number;
     qaPendingCount: number;
     dispatchPendingLineCount: number;
     dispatchPendingQty: number;

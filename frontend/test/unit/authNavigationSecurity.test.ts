@@ -19,6 +19,7 @@ import {
   SESSION_EXPIRED_STORAGE_KEY,
 } from "../../src/lib/authSession";
 import { LIST_SCROLL_SESSION_PREFIX } from "../../src/lib/listNavigationState";
+import { apiFetch } from "../../src/services/api";
 
 function b64url(obj: object): string {
   const json = JSON.stringify(obj);
@@ -102,6 +103,15 @@ describe("auth return path security", () => {
     expect(isReturnPathAllowedForRole("/account", "ADMIN")).toBe(true);
     expect(resolvePostLoginDestination("/account", { role: "QA" })).toBe(ROLE_LANDING_PATH);
     expect(resolvePostLoginDestination("/dispatch", { role: "STORE" })).toBe("/dispatch");
+  });
+
+  it("uses an authorized API landing when the requested default route is unavailable", () => {
+    expect(
+      resolvePostLoginDestination("/admin/settings", {
+        role: "STORE",
+        landingPath: "/dashboard",
+      }),
+    ).toBe("/dashboard");
   });
 
   it("prefers query returnTo then session then role landing", () => {
@@ -189,5 +199,24 @@ describe("auth session wipe and 401", () => {
     expect(window.location.replace).toHaveBeenCalledWith(
       "/login?returnTo=%2Fdispatch%3FsalesOrderId%3D3",
     );
+  });
+
+  it("permission-loading 403 reports authorization accurately and keeps the session", async () => {
+    localStorage.setItem("token", "still-valid");
+    localStorage.setItem("user", JSON.stringify({ id: 2, email: "store@example.com", role: "STORE", name: "Store" }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: { message: "Permission data unavailable for this role" } }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      })),
+    );
+
+    await expect(apiFetch("/api/permissions")).rejects.toMatchObject({
+      status: 403,
+      message: "Permission data unavailable for this role",
+    });
+    expect(localStorage.getItem("token")).toBe("still-valid");
+    expect(window.location.replace).not.toHaveBeenCalled();
   });
 });

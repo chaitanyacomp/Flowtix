@@ -371,6 +371,11 @@ function buildResetTransactionDataCleanupSteps(tx) {
   return [
     { table: "salesBillReceipt", delete: () => tx.salesBillReceipt.deleteMany({}), count: () => tx.salesBillReceipt.count() },
     { table: "salesBillLine", delete: () => tx.salesBillLine.deleteMany({}), count: () => tx.salesBillLine.count() },
+    {
+      table: "salesBillDispatchAllocation",
+      delete: () => tx.salesBillDispatchAllocation.deleteMany({}),
+      count: () => tx.salesBillDispatchAllocation.count(),
+    },
     { table: "salesBill", delete: () => tx.salesBill.deleteMany({}), count: () => tx.salesBill.count() },
     { table: "customerReturn", delete: () => tx.customerReturn.deleteMany({}), count: () => tx.customerReturn.count() },
     { table: "STORE", delete: () => tx.dispatch.deleteMany({}), count: () => tx.dispatch.count() },
@@ -566,6 +571,11 @@ function buildProductionRmFlowCleanupSteps(tx) {
       count: () => tx.materialWastageNote.count(),
     },
     {
+      table: "rmAllowanceApprovalRequest",
+      delete: () => tx.rmAllowanceApprovalRequest.deleteMany({}),
+      count: () => tx.rmAllowanceApprovalRequest.count(),
+    },
+    {
       table: "materialAllocation",
       delete: () => tx.materialAllocation.deleteMany({}),
       count: () => tx.materialAllocation.count(),
@@ -599,6 +609,11 @@ function buildProductionReportCleanupSteps(tx) {
       table: "productionRmReturnPending",
       delete: () => tx.productionRmReturnPending.deleteMany({}),
       count: () => tx.productionRmReturnPending.count(),
+    },
+    {
+      table: "productionWorkOrderReportWastageDetail",
+      delete: () => tx.productionWorkOrderReportWastageDetail.deleteMany({}),
+      count: () => tx.productionWorkOrderReportWastageDetail.count(),
     },
     {
       table: "productionWorkOrderReportLine",
@@ -699,6 +714,15 @@ async function deleteProductionReportsForWorkOrders(tx, deletedCounts, { workOrd
   );
 
   if (productionReportIds.length > 0) {
+    if (await tableExists(tx, ["productionworkorderreportwastagedetail", "ProductionWorkOrderReportWastageDetail"])) {
+      await addDeleteCountStep(deletedCounts, "productionWorkOrderReportWastageDetail", () =>
+        tx.productionWorkOrderReportWastageDetail.deleteMany({
+          where: { productionReportId: { in: productionReportIds } },
+        }),
+      );
+    } else {
+      deletedCounts.productionWorkOrderReportWastageDetail = 0;
+    }
     await addDeleteCountStep(deletedCounts, "productionWorkOrderReportLine", () =>
       tx.productionWorkOrderReportLine.deleteMany({ where: { productionReportId: { in: productionReportIds } } }),
     );
@@ -706,6 +730,7 @@ async function deleteProductionReportsForWorkOrders(tx, deletedCounts, { workOrd
       tx.productionWorkOrderReport.deleteMany({ where: { id: { in: productionReportIds } } }),
     );
   } else {
+    deletedCounts.productionWorkOrderReportWastageDetail = 0;
     deletedCounts.productionWorkOrderReportLine = 0;
     deletedCounts.productionWorkOrderReport = 0;
   }
@@ -725,6 +750,7 @@ async function deleteProductionRmFlowForWorkOrders(tx, deletedCounts, { workOrde
     deletedCounts.materialReturnLine = 0;
     deletedCounts.materialReturnNote = 0;
     deletedCounts.materialWastageNote = 0;
+    deletedCounts.rmAllowanceApprovalRequest = 0;
     deletedCounts.productionMaterialRequestLine = 0;
     deletedCounts.productionMaterialRequest = 0;
     deletedCounts.materialAllocation = 0;
@@ -756,6 +782,21 @@ async function deleteProductionRmFlowForWorkOrders(tx, deletedCounts, { workOrde
     );
   } else {
     deletedCounts.materialWastageNote = 0;
+  }
+
+  if (await tableExists(tx, ["rmallowanceapprovalrequest", "RmAllowanceApprovalRequest"])) {
+    await addDeleteCountStep(deletedCounts, "rmAllowanceApprovalRequest", () =>
+      tx.rmAllowanceApprovalRequest.deleteMany({
+        where: {
+          OR: [
+            { workOrderId: { in: workOrderIds } },
+            ...(pmrIds.length > 0 ? [{ productionMaterialRequestId: { in: pmrIds } }] : []),
+          ],
+        },
+      }),
+    );
+  } else {
+    deletedCounts.rmAllowanceApprovalRequest = 0;
   }
 
   const allocationWhere = {
@@ -988,12 +1029,20 @@ async function runResetNoQtyTransactionalDeletes(tx) {
     await addDeleteCountStep(deletedCounts, "salesBillReceipt", () =>
       tx.salesBillReceipt.deleteMany({ where: { salesBillId: { in: salesBillIds } } }),
     );
+    if (await tableExists(tx, ["salesbilldispatchallocation", "SalesBillDispatchAllocation"])) {
+      await addDeleteCountStep(deletedCounts, "salesBillDispatchAllocation", () =>
+        tx.salesBillDispatchAllocation.deleteMany({ where: { salesBillId: { in: salesBillIds } } }),
+      );
+    } else {
+      deletedCounts.salesBillDispatchAllocation = 0;
+    }
     await addDeleteCount(deletedCounts, "salesBillLine", () =>
       tx.salesBillLine.deleteMany({ where: { salesBillId: { in: salesBillIds } } }),
     );
     await addDeleteCount(deletedCounts, "salesBill", () => tx.salesBill.deleteMany({ where: { id: { in: salesBillIds } } }));
   } else {
     deletedCounts.salesBillReceipt = 0;
+    deletedCounts.salesBillDispatchAllocation = 0;
     deletedCounts.salesBillLine = 0;
     deletedCounts.salesBill = 0;
   }
@@ -1272,6 +1321,17 @@ async function runFullDemoResetDeletes(tx, deleted) {
     ],
     ["salesBillReceipt", async () => addDeleteCount(deleted, "salesBillReceipt", () => tx.salesBillReceipt.deleteMany({}))],
     ["salesBillLine", async () => addDeleteCount(deleted, "salesBillLine", () => tx.salesBillLine.deleteMany({}))],
+    [
+      "salesBillDispatchAllocation",
+      async () =>
+        tryOptionalTableDelete(
+          tx,
+          deleted,
+          ["salesbilldispatchallocation", "SalesBillDispatchAllocation"],
+          "salesBillDispatchAllocation",
+          () => tx.salesBillDispatchAllocation.deleteMany({}),
+        ),
+    ],
     ["salesBill", async () => addDeleteCount(deleted, "salesBill", () => tx.salesBill.deleteMany({}))],
     ["customerReturn", async () => addDeleteCount(deleted, "customerReturn", () => tx.customerReturn.deleteMany({}))],
     [
@@ -1282,6 +1342,7 @@ async function runFullDemoResetDeletes(tx, deleted) {
           return tx.dispatch.deleteMany({});
         }),
     ],
+    ["qcReversal", async () => addDeleteCount(deleted, "qcReversal", () => tx.qcReversal.deleteMany({}))],
     [
       "qcRejectedDisposition:clearParentRefs",
       async () => {
@@ -1322,6 +1383,17 @@ async function runFullDemoResetDeletes(tx, deleted) {
       async () =>
         tryOptionalTableDelete(tx, deleted, ["materialwastagenote", "MaterialWastageNote"], "materialWastageNote", () =>
           tx.materialWastageNote.deleteMany({}),
+        ),
+    ],
+    [
+      "rmAllowanceApprovalRequest",
+      async () =>
+        tryOptionalTableDelete(
+          tx,
+          deleted,
+          ["rmallowanceapprovalrequest", "RmAllowanceApprovalRequest"],
+          "rmAllowanceApprovalRequest",
+          () => tx.rmAllowanceApprovalRequest.deleteMany({}),
         ),
     ],
     [
@@ -1381,6 +1453,17 @@ async function runFullDemoResetDeletes(tx, deleted) {
         ),
     ],
     [
+      "productionWorkOrderReportWastageDetail",
+      async () =>
+        tryOptionalTableDelete(
+          tx,
+          deleted,
+          ["productionworkorderreportwastagedetail", "ProductionWorkOrderReportWastageDetail"],
+          "productionWorkOrderReportWastageDetail",
+          () => tx.productionWorkOrderReportWastageDetail.deleteMany({}),
+        ),
+    ],
+    [
       "productionWorkOrderReportLine",
       async () =>
         tryOptionalTableDelete(
@@ -1429,17 +1512,57 @@ async function runFullDemoResetDeletes(tx, deleted) {
       async () => addDeleteCount(deleted, "regularSoPlanningSnapshot", () => tx.regularSoPlanningSnapshot.deleteMany({})),
     ],
     ["salesOrderLine", async () => addDeleteCount(deleted, "salesOrderLine", () => tx.salesOrderLine.deleteMany({}))],
+    [
+      "noQtySoClosedShortageLine",
+      async () =>
+        tryOptionalTableDelete(
+          tx,
+          deleted,
+          ["noqtysoclosedshortageline", "NoQtySoClosedShortageLine"],
+          "noQtySoClosedShortageLine",
+          () => tx.noQtySoClosedShortageLine.deleteMany({}),
+        ),
+    ],
+    [
+      "noQtySoCloseSnapshot",
+      async () =>
+        tryOptionalTableDelete(tx, deleted, ["noqtysoclosesnapshot", "NoQtySoCloseSnapshot"], "noQtySoCloseSnapshot", () =>
+          tx.noQtySoCloseSnapshot.deleteMany({}),
+        ),
+    ],
     ["salesOrder", async () => addDeleteCount(deleted, "salesOrder", () => tx.salesOrder.deleteMany({}))],
     ["quotationLine", async () => addDeleteCount(deleted, "quotationLine", () => tx.quotationLine.deleteMany({}))],
     ["quotation", async () => addDeleteCount(deleted, "quotation", () => tx.quotation.deleteMany({}))],
+    [
+      "feasibility",
+      async () =>
+        tryOptionalTableDelete(tx, deleted, ["feasibility", "Feasibility"], "feasibility", () =>
+          tx.feasibility.deleteMany({}),
+        ),
+    ],
     ["enquiryLine", async () => addDeleteCount(deleted, "enquiryLine", () => tx.enquiryLine.deleteMany({}))],
     ["enquiry", async () => addDeleteCount(deleted, "enquiry", () => tx.enquiry.deleteMany({}))],
+    [
+      "purchaseBillPayment",
+      async () =>
+        tryOptionalTableDelete(tx, deleted, ["purchasebillpayment", "PurchaseBillPayment"], "purchaseBillPayment", () =>
+          tx.purchaseBillPayment.deleteMany({}),
+        ),
+    ],
     ["purchaseBillLine", async () => addDeleteCount(deleted, "purchaseBillLine", () => tx.purchaseBillLine.deleteMany({}))],
     ["purchaseBill", async () => addDeleteCount(deleted, "purchaseBill", () => tx.purchaseBill.deleteMany({}))],
     ["grnLine", async () => addDeleteCount(deleted, "grnLine", () => tx.grnLine.deleteMany({}))],
     ["grn", async () => addDeleteCount(deleted, "grn", () => tx.grn.deleteMany({}))],
     ["rmPurchaseOrderLine", async () => addDeleteCount(deleted, "rmPurchaseOrderLine", () => tx.rmPurchaseOrderLine.deleteMany({}))],
     ["rmPurchaseOrder", async () => addDeleteCount(deleted, "rmPurchaseOrder", () => tx.rmPurchaseOrder.deleteMany({}))],
+    [
+      "monthlyPlanning",
+      async () => {
+        for (const step of buildMonthlyPlanningCleanupSteps(tx)) {
+          await addDeleteCount(deleted, step.table, () => step.delete());
+        }
+      },
+    ],
     [
       "stockTransaction",
       async () =>
@@ -1460,6 +1583,11 @@ async function runFullDemoResetDeletes(tx, deleted) {
         tryOptionalTableDelete(tx, deleted, ["ratecontractline", "RateContractLine"], "rateContractLine", () =>
           tx.rateContractLine.deleteMany({}),
         ),
+    ],
+    [
+      "rateContract",
+      async () =>
+        tryOptionalTableDelete(tx, deleted, ["ratecontract", "RateContract"], "rateContract", () => tx.rateContract.deleteMany({})),
     ],
     ["item", async () => addDeleteCount(deleted, "item", () => tx.item.deleteMany({}))],
     ["supplier", async () => addDeleteCount(deleted, "supplier", () => tx.supplier.deleteMany({}))],
@@ -1647,7 +1775,16 @@ adminDatabaseCleanupRouter.post(
         });
       } catch (e) {
         if (e instanceof CleanupStepError) {
-          return res.status(500).json({ message: "Full demo reset failed", step: e.step, error: e.error });
+          // Full technical detail stays in server logs (see full-demo-reset-step-failed).
+          return res.status(500).json({
+            message:
+              "Full reset could not be completed. No data was deleted because the transaction was rolled back.",
+            step: e.step,
+            errorCode: "FULL_DEMO_RESET_ROLLED_BACK",
+            hint: "Retry only after the underlying cleanup dependency issue is corrected.",
+            // Short reference for support — not a Prisma stack dump.
+            error: `Stage: ${e.step}`,
+          });
         }
         throw e;
       }
@@ -1710,6 +1847,7 @@ module.exports = {
   adminDatabaseCleanupRouter,
   buildMonthlyPlanningCleanupSteps,
   buildProductionExecutionCleanupSteps,
+  buildProductionRmFlowCleanupSteps,
   buildProductionReportCleanupSteps,
   buildResetTransactionDataCleanupSteps,
   buildStockLedgerCleanupSteps,
@@ -1717,7 +1855,9 @@ module.exports = {
   deleteProductionReportsForWorkOrders,
   RESET_TRANSACTION_VERIFY_TABLES,
   runFinalTransactionResetSweep,
+  runFullDemoResetDeletes,
   runResetTransactionDataInTransaction,
   verifyTransactionResetComplete,
   NO_QTY_RECOVERY_CLEANUP_TABLES,
+  CleanupStepError,
 };

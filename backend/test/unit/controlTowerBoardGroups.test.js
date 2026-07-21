@@ -126,6 +126,24 @@ describe("groupControlTowerRows", () => {
     assert.equal(group.rows[1].currentStatus, CONTROL_TOWER_STATUSES.PRODUCTION_ON_HOLD);
   });
 
+  it("places READY_TO_START (legacy READY_TO_RELEASE_WO) in PRODUCTION owned by Production", () => {
+    const ready = normalizeRmRiskRow({
+      workOrderId: 88,
+      itemId: 3,
+      status: "LOW_BUFFER",
+      queueType: "READY_TO_RELEASE_WO",
+      recommendedAction: "Release to Production",
+      workOrderReleased: false,
+    });
+    assert.equal(ready.currentStatus, CONTROL_TOWER_STATUSES.READY_TO_START);
+    assert.equal(ready.currentOwner, "PRODUCTION");
+    const result = groupControlTowerRows([ready]);
+    const prod = findGroup(result, BOARD_GROUP_KEYS.PRODUCTION);
+    const rm = findGroup(result, BOARD_GROUP_KEYS.RM_READINESS);
+    assert.equal(prod.count, 1);
+    assert.equal(rm.count, 0);
+  });
+
   it("places QA_PENDING in QUALITY", () => {
     const row = normalizeQaRow({ qcRef: "PE-1", workOrderId: 7, status: "PENDING_QC" });
     const result = groupControlTowerRows([row]);

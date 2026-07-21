@@ -244,7 +244,7 @@ describe("buildOperationalSoActions", () => {
     expect(actions[0]?.actionLabel).toBe("Issue RM to Production");
   });
 
-  it("routes AWAITING_RELEASE to production-release, not material-issue", () => {
+  it("does not surface obsolete Release to Production as an operational blocker", () => {
     const actions = buildOperationalSoActions(
       [],
       { rmShortageBlocking: [], purchaseGrnPending: [], readyForWoCreation: [] },
@@ -262,12 +262,40 @@ describe("buildOperationalSoActions", () => {
         },
       ],
     );
-    expect(actions).toHaveLength(1);
-    expect(actions[0]?.stageLabel).toBe("Awaiting release to production");
-    expect(actions[0]?.actionLabel).toBe("Release to Production");
-    expect(actions[0]?.actionTo).toContain("/production-release");
-    expect(actions[0]?.actionTo).toContain("workOrderId=88");
-    expect(actions[0]?.actionTo).not.toContain("/material-issue");
+    expect(actions).toHaveLength(0);
+  });
+
+  it("admin audience returns no Store/Production execution blockers", () => {
+    const actions = buildOperationalSoActions(
+      [],
+      {
+        rmShortageBlocking: [],
+        purchaseGrnPending: [],
+        readyForWoCreation: [
+          {
+            salesOrderId: 10,
+            salesOrderDocNo: "SO-26-0001",
+            customerName: "Acme",
+            primaryFgName: "Cap",
+            shortageRmCount: 0,
+            pendingMrRefs: "",
+            nextActionKey: "CREATE_WO",
+            operationalLabel: "Ready for WO",
+          },
+        ],
+      },
+      null,
+      [
+        {
+          workOrderId: 88,
+          operationalKey: "AWAITING_RELEASE",
+          nextActionKey: "RELEASE_TO_PRODUCTION",
+          salesOrderId: 1,
+        },
+      ],
+      { audience: "admin" },
+    );
+    expect(actions).toEqual([]);
   });
 });
 

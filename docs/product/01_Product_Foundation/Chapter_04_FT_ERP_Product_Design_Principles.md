@@ -424,7 +424,7 @@ Plant heads and shift managers use Control Tower; shop operators live primarily 
 
 - Disable invalid CTAs rather than show cryptic errors after click.
 - Block wrong Business Model paths at route level.
-- Clamp Regular production to its governed WO/tolerance and RM boundaries. Clamp NO_QTY production only to remaining PMR/BOM RM-supported capacity; show WO planned qty separately as a target.
+- Clamp REGULAR and NO_QTY production entry to remaining PMR/BOM **RM-supported** capacity (limiting RM line; floor for whole Nos). Show WO planned qty as **Target Remaining** separately from **Extra RM Capacity** / Maximum allowed from issued RM. Do not treat WO plan as the entry hard stop when intentional extra RM supports more FG.
 - Prevent mixed demand-pool PR creation in one requisition.
 
 ### 11.2 Fail with guidance

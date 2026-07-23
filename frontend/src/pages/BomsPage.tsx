@@ -1,7 +1,7 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { PageContainer, ERPBackNavigation } from "../components/PageHeader";
+import { MasterListHeader, MasterListPageShell } from "../components/masters/MasterListWorkbench";
 import { apiFetch, ApiRequestError } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -346,42 +346,39 @@ function BomPageHeader({
   onAddRm: () => void;
 }) {
   return (
-    <header className="bom-vp-head">
-      <div className="flex min-w-0 items-center gap-2">
-        <ERPBackNavigation defaultTo="/dashboard" defaultLabel="Back to Dashboard" />
-        <div className="min-w-0">
-          <h1 className="bom-vp-title">BOM</h1>
-          <p className="bom-vp-sub">Factory recipe for material planning</p>
+    <MasterListHeader
+      title="BOM"
+      description="Factory recipe for material planning"
+      actions={
+        showToolbar ? (
+          <div className="bom-vp-toolbar">
+            <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px] font-semibold" onClick={onNewDraft}>
+              New draft
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 px-2.5 text-[11px] font-bold"
+              disabled={saveDisabled}
+              onClick={onSaveDraft}
+            >
+              Save draft
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-[11px] font-semibold"
+              disabled={addRmDisabled}
+              onClick={onAddRm}
+            >
+              <Plus className="mr-0.5 h-3 w-3" aria-hidden />
+              Add line
+            </Button>
           </div>
-          </div>
-      {showToolbar ? (
-        <div className="bom-vp-toolbar">
-          <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px] font-semibold" onClick={onNewDraft}>
-            New draft
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            className="h-7 px-2.5 text-[11px] font-bold"
-            disabled={saveDisabled}
-            onClick={onSaveDraft}
-          >
-            Save draft
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 px-2 text-[11px] font-semibold"
-            disabled={addRmDisabled}
-            onClick={onAddRm}
-          >
-            <Plus className="mr-0.5 h-3 w-3" aria-hidden />
-            Add line
-          </Button>
-        </div>
-      ) : null}
-    </header>
+        ) : null
+      }
+    />
   );
 }
 
@@ -1552,7 +1549,8 @@ export function BomsPage() {
 
   return (
     <>
-      <PageContainer className="bom-vp-page -mt-1 mx-auto w-full max-w-[min(80rem,calc(100vw-1.5rem))]">
+      <MasterListPageShell>
+        <div className="bom-vp-page -mt-1 mx-auto w-full max-w-[min(80rem,calc(100vw-1.5rem))] space-y-3">
         <BomPageHeader
           showToolbar={isAdmin}
           saveDisabled={!canSaveDraft}
@@ -1793,7 +1791,8 @@ export function BomsPage() {
             <p className="px-2 py-3 text-[11px] text-slate-600">View saved BOMs above. Contact admin to create or edit recipes.</p>
           )}
         </div>
-      </PageContainer>
+        </div>
+      </MasterListPageShell>
 
       {confirmDiscard ? (
         <ErpModal onClose={() => setConfirmDiscard(null)} aria-labelledby="bom-discard-title">

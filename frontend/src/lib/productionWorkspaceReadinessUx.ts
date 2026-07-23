@@ -43,11 +43,12 @@ export function isQueueRmGateBlocked(
   return gate !== "READY_FOR_PRODUCTION";
 }
 
-/** Ready-to-start bucket: backend nextAction + RM gate, never when RM blocked. */
+/** Ready-to-start bucket: backend nextAction + RM gate; never when draft blocks entry. */
 export function isQueueReadyToStart(row: DashboardProductionStatusSource): boolean {
   const next = upper(row.nextAction);
   const exec = upper(row.productionExecutionStatus);
-  if (next !== "PRODUCTION_PENDING" && next !== "PRODUCTION_DRAFT_REVIEW") return false;
+  if (next === "PRODUCTION_DRAFT_REVIEW" || row.hasOpenDraft) return false;
+  if (next !== "PRODUCTION_PENDING") return false;
   if (exec === "COMPLETED" || exec === "BLOCKED" || exec === "SHORTFALL_PENDING") return false;
   // Entry-level Pending QC must not hide Ready when nothing has been produced yet.
   if (n(row.producedQty) > EPS) return false;

@@ -3,8 +3,6 @@ import type { WastageDetailDraft } from "./productionWastageClassification";
 export type ProductionReportLineInputDraft = {
   rmConsumedQty: string;
   rmReturnQty: string;
-  scrapWasteQty: string;
-  varianceQty: string;
   remarks: string;
 };
 

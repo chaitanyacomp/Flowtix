@@ -15,6 +15,7 @@ import {
 import type { WastageTypeRow } from "../../../lib/wastageTypeApi";
 
 type Props = {
+  rmLines: Array<{ itemId: number; itemName: string; unit: string }>;
   wastageTypes: WastageTypeRow[];
   rows: WastageDetailDraft[];
   totalWastageQty: number;
@@ -36,6 +37,7 @@ function newRowKey() {
 }
 
 export function ProductionReportWastageDetails({
+  rmLines,
   wastageTypes,
   rows,
   totalWastageQty,
@@ -72,12 +74,13 @@ export function ProductionReportWastageDetails({
       ...rows,
       {
         key,
+        itemId: rmLines[0]?.itemId,
         wastageTypeId: nextTypeId,
         qty,
         remarks: "",
       },
     ]);
-  }, [balance.remainingQty, balance.status, onChange, rows, totalWastageQty, unit, wastageTypes]);
+  }, [balance.remainingQty, balance.status, onChange, rmLines, rows, totalWastageQty, unit, wastageTypes]);
 
   const updateRow = React.useCallback(
     (key: string, patch: Partial<WastageDetailDraft>) => {
@@ -178,7 +181,8 @@ export function ProductionReportWastageDetails({
           <table className={cn("w-full border-collapse text-slate-800", compact ? "table-fixed text-[11px]" : "text-[12px]")}>
             <thead>
               <tr className="border-b border-slate-200 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                <th className={cn("px-2 font-medium", compact ? "w-[38%] py-0.5" : "py-1")}>Wastage Type</th>
+                <th className={cn("px-2 font-medium", compact ? "w-[24%] py-0.5" : "py-1")}>RM Item</th>
+                <th className={cn("px-2 font-medium", compact ? "w-[28%] py-0.5" : "py-1")}>Wastage Type</th>
                 <th className={cn("px-2 text-right font-medium", compact ? "w-[4.5rem] py-0.5" : "py-1")}>Qty</th>
                 <th className={cn("px-2 font-medium", compact ? "py-0.5" : "py-1")}>Remarks</th>
                 {!readOnly ? (
@@ -195,6 +199,19 @@ export function ProductionReportWastageDetails({
                 const showRowRemaining = !compact && !readOnly && rows.length > 1 && totalWastageQty > 1e-6;
                 return (
                   <tr key={row.key} className="border-b border-slate-100">
+                    <td className={cn("px-2", compact ? "py-0.5" : "py-1")}>
+                      {readOnly ? (
+                        rmLines.find((line) => line.itemId === row.itemId)?.itemName ?? "—"
+                      ) : (
+                        <select
+                          className="h-8 w-full rounded border border-slate-200 bg-white px-1 text-[12px]"
+                          value={row.itemId ? String(row.itemId) : ""}
+                          onChange={(e) => updateRow(row.key, { itemId: Number(e.target.value) })}
+                        >
+                          {rmLines.map((line) => <option key={line.itemId} value={line.itemId}>{line.itemName}</option>)}
+                        </select>
+                      )}
+                    </td>
                     <td className={cn("px-2", compact ? "py-0.5" : "py-1")}>
                       {readOnly ? (
                         typeName

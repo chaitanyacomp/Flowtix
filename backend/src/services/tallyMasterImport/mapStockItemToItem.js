@@ -21,56 +21,115 @@ function extractHsnDeep(node) {
 }
 
 /**
- * Parse Tally-style GST blocks via shared LIST helpers:
- * GSTDETAILS.LIST → STATEWISEDETAILS.LIST → RATEDETAILS.LIST
- * Prefer Integrated / IGST; else CGST+SGST when equal; else largest rate among duty-labelled rows.
+ * Parse Tally APPLICABLEFROM (often YYYYMMDD or DD-MMM-YY style) for ordering.
+ * @param {unknown} raw
+ * @returns {number} sortable timestamp (0 if unknown)
+ */
+function applicableFromSortKey(raw) {
+  const t = String(raw || "")
+    .trim()
+    .replace(/[^0-9]/g, "");
+  if (/^\d{8}$/.test(t)) {
+    const y = Number(t.slice(0, 4));
+    const m = Number(t.slice(4, 6));
+    const d = Number(t.slice(6, 8));
+    if (y > 1900 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return Date.UTC(y, m - 1, d);
+    }
+  }
+  if (/^\d{1,10}$/.test(t)) {
+    const n = Number(t);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+
+/**
+ * IGST rate from a single GSTDETAILS block (Integrated / IGST duty head only).
+ * Blank / missing → null (Unresolved/Inherited — never coerce to 0%).
+ * @param {unknown} gd
+ * @returns {number | null}
+ */
+function extractIgstRateFromGstDetailsBlock(gd) {
+  if (!gd || typeof gd !== "object") return null;
+  /** @type {number[]} */
+  const igst = [];
+
+  for (const sw of getListBlocks(gd, "STATEWISEDETAILS")) {
+    for (const r of getListBlocks(sw, "RATEDETAILS")) {
+      const duty = String(firstDirectText(r, ["GSTRATEDUTYHEAD"]) || "").toLowerCase();
+      if (!(duty.includes("integrated") || duty.includes("igst"))) continue;
+      const rateStr = firstDirectText(r, ["GSTRATE", "RATE", "GSTPERCENT", "TAXRATE"]);
+      if (!String(rateStr || "").trim()) continue;
+      const n = Number(rateStr);
+      if (Number.isFinite(n) && n >= 0 && n <= 100) igst.push(n);
+    }
+  }
+  for (const r of getListBlocks(gd, "RATEDETAILS")) {
+    const duty = String(firstDirectText(r, ["GSTRATEDUTYHEAD"]) || "").toLowerCase();
+    if (!(duty.includes("integrated") || duty.includes("igst"))) continue;
+    const rateStr = firstDirectText(r, ["GSTRATE", "RATE", "GSTPERCENT", "TAXRATE"]);
+    if (!String(rateStr || "").trim()) continue;
+    const n = Number(rateStr);
+    if (Number.isFinite(n) && n >= 0 && n <= 100) igst.push(n);
+  }
+
+  // Some exports put a single GSTRATE on the GSTDETAILS block with TAXTYPE Integrated.
+  const taxType = String(firstDirectText(gd, ["TAXTYPE", "GSTREGISTRATIONTYPE", "HSNMASTERNAME"]) || "").toLowerCase();
+  const direct = firstDirectText(gd, ["GSTRATE", "RATE", "GSTPERCENT"]);
+  if (String(direct || "").trim() && (taxType.includes("integrated") || taxType.includes("igst"))) {
+    const n = Number(direct);
+    if (Number.isFinite(n) && n >= 0 && n <= 100) igst.push(n);
+  }
+
+  if (!igst.length) return null;
+  return igst[igst.length - 1];
+}
+
+/**
+ * Select IGST from the **latest applicable** GSTDETAILS record (by APPLICABLEFROM).
+ * Do not use the first GSTRATE blindly. Blank/inherited stays null.
+ * @param {unknown} stockRoot
+ * @returns {{ rate: number | null; source: "STOCKITEM_LATEST_IGST" | null; applicableFrom: string | null }}
+ */
+function extractLatestApplicableIgst(stockRoot) {
+  if (!stockRoot || typeof stockRoot !== "object") {
+    return { rate: null, source: null, applicableFrom: null };
+  }
+  const blocks = getListBlocks(stockRoot, "GSTDETAILS");
+  if (!blocks.length) return { rate: null, source: null, applicableFrom: null };
+
+  const ranked = blocks.map((gd, idx) => {
+    const applicableFrom = firstDirectText(gd, ["APPLICABLEFROM", "APPDATE", "FROMDATE"]) || "";
+    return {
+      gd,
+      idx,
+      sortKey: applicableFromSortKey(applicableFrom),
+      applicableFrom,
+    };
+  });
+  ranked.sort((a, b) => b.sortKey - a.sortKey || b.idx - a.idx);
+
+  for (const row of ranked) {
+    const rate = extractIgstRateFromGstDetailsBlock(row.gd);
+    if (rate != null) {
+      return { rate, source: "STOCKITEM_LATEST_IGST", applicableFrom: row.applicableFrom || null };
+    }
+  }
+  // Latest block(s) present but IGST blank → unresolved (do not fall back to arbitrary GSTRATE).
+  return { rate: null, source: null, applicableFrom: ranked[0]?.applicableFrom || null };
+}
+
+/**
+ * Legacy helper kept for STOCKGROUP tax inherit — prefers IGST when labelled.
+ * Prefer extractLatestApplicableIgst for STOCKITEM masters.
  * @param {unknown} stockRoot
  * @returns {number | null}
  */
 function extractGstPercentFromGstBlocks(stockRoot) {
-  if (!stockRoot || typeof stockRoot !== "object") return null;
-
-  /** @type {{ duty: string; rate: number }[]} */
-  const rows = [];
-
-  for (const gd of getListBlocks(stockRoot, "GSTDETAILS")) {
-    const direct = firstDirectText(gd, ["GSTRATE", "RATE", "GSTPERCENT"]);
-    const dn = Number(direct);
-    if (Number.isFinite(dn) && dn >= 0 && dn <= 100) rows.push({ duty: "", rate: dn });
-
-    for (const sw of getListBlocks(gd, "STATEWISEDETAILS")) {
-      for (const r of getListBlocks(sw, "RATEDETAILS")) {
-        const duty = String(firstDirectText(r, ["GSTRATEDUTYHEAD"]) || "").toLowerCase();
-        const rateStr = firstDirectText(r, ["GSTRATE", "RATE", "GSTPERCENT", "TAXRATE"]);
-        const n = Number(rateStr);
-        if (Number.isFinite(n) && n >= 0 && n <= 100) rows.push({ duty, rate: n });
-      }
-    }
-
-    for (const r of getListBlocks(gd, "RATEDETAILS")) {
-      const duty = String(firstDirectText(r, ["GSTRATEDUTYHEAD"]) || "").toLowerCase();
-      const rateStr = firstDirectText(r, ["GSTRATE", "RATE", "GSTPERCENT", "TAXRATE"]);
-      const n = Number(rateStr);
-      if (Number.isFinite(n) && n >= 0 && n <= 100) rows.push({ duty, rate: n });
-    }
-  }
-
-  if (!rows.length) return null;
-
-  const integrated = rows.find((r) => r.duty.includes("integrated") || r.duty.includes("igst"));
-  if (integrated) return integrated.rate;
-
-  const cgstRates = rows.filter((r) => r.duty.includes("central") || r.duty.includes("cgst")).map((r) => r.rate);
-  const sgstRates = rows
-    .filter((r) => r.duty.includes("state") || r.duty.includes("sgst") || r.duty.includes("utgst"))
-    .map((r) => r.rate);
-  if (cgstRates.length && sgstRates.length) {
-    const c = Math.max(...cgstRates);
-    const sgt = Math.max(...sgstRates);
-    if (Math.abs(c - sgt) < 0.02) return Math.round((c + sgt) * 100) / 100;
-  }
-
-  return Math.max(...rows.map((r) => r.rate));
+  const latest = extractLatestApplicableIgst(stockRoot);
+  if (latest.rate != null) return latest.rate;
+  return null;
 }
 
 /**
@@ -241,6 +300,13 @@ function extractStockGroupContext(s) {
 function mapStockItemToItem(stockRaw, keywordOpts = {}) {
   if (!stockRaw || typeof stockRaw !== "object") return null;
   const s = /** @type {Record<string, unknown>} */ (stockRaw);
+
+  const deletedRaw = String(firstDirectText(s, ["ISDELETED"]) || strVal(s.ISDELETED) || "")
+    .trim()
+    .toLowerCase();
+  const isDeleted = deletedRaw === "yes" || deletedRaw === "y" || deletedRaw === "true" || deletedRaw === "1";
+  if (isDeleted) return null;
+
   const name = masterDisplayName(s);
   if (!name) return null;
 
@@ -249,7 +315,9 @@ function mapStockItemToItem(stockRaw, keywordOpts = {}) {
 
   const hsnCodeRaw =
     firstDirectText(s, ["HSNCODE", "HSNSAC", "HSN", "SACCODE"]) || extractHsnDeep(s) || null;
-  const gstRate = extractGstPercentFromGstBlocks(s) ?? extractGstPercentDeep(s);
+  const igst = extractLatestApplicableIgst(s);
+  // Do not deep-scan arbitrary GSTRATE — blank/inherited stays unresolved for operator review.
+  const gstRate = igst.rate;
 
   const { tallyStockGroup, classificationHaystack, parentGroup } = extractStockGroupContext(s);
   const autoDetectedItemType = classificationHaystack
@@ -263,11 +331,15 @@ function mapStockItemToItem(stockRaw, keywordOpts = {}) {
     baseUnit: baseUnit || "",
     hsnCode: hsnCodeRaw,
     gstRate: gstRate != null && Number.isFinite(gstRate) ? gstRate : null,
+    gstUnresolved: gstRate == null,
+    gstStatus: gstRate == null ? "Unresolved/Inherited" : "Resolved",
     hsnSource: hsnCodeRaw ? "STOCKITEM" : null,
-    gstSource: gstRate != null && Number.isFinite(gstRate) ? "STOCKITEM" : null,
+    gstSource: igst.source,
+    gstApplicableFrom: igst.applicableFrom,
     parentGroup,
     tallyStockGroup,
     autoDetectedItemType,
+    isDeleted: false,
   };
 }
 
@@ -454,6 +526,8 @@ module.exports = {
   extractGstPercentDeep,
   extractHsnDeep,
   extractGstPercentFromGstBlocks,
+  extractLatestApplicableIgst,
+  extractIgstRateFromGstDetailsBlock,
   classifyItemTypeFromStockGroupHaystack,
   extractStockGroupContext,
   buildStockGroupTaxLookup,

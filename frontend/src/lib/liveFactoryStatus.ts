@@ -113,6 +113,11 @@ export function classifyLiveFactoryBucket(
     return "AWAITING_REPORT";
   }
 
+  // Blocking draft is not Ready to Start — operator must Review & Finalize first.
+  if (workState === "DRAFT_PENDING" || next === "PRODUCTION_DRAFT_REVIEW" || row.hasOpenDraft) {
+    return "BLOCKED";
+  }
+
   if (
     (next === "QC_PENDING" || (row.hasPendingQc && balance <= EPS)) &&
     (canAccept === false || balance <= EPS)
@@ -125,10 +130,7 @@ export function classifyLiveFactoryBucket(
       if (isRmGateBlocked(row) && produced <= EPS) return "BLOCKED";
       return produced > EPS ? "RUNNING" : "READY_TO_START";
     }
-    if (
-      workState === "READY_TO_START" ||
-      (produced <= EPS && (next === "PRODUCTION_PENDING" || next === "PRODUCTION_DRAFT_REVIEW"))
-    ) {
+    if (workState === "READY_TO_START" || (produced <= EPS && next === "PRODUCTION_PENDING")) {
       if (isRmGateBlocked(row)) return "BLOCKED";
       return "READY_TO_START";
     }

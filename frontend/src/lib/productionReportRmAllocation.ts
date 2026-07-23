@@ -24,8 +24,8 @@ export function computeRmLineRequiredAllocation(input: {
 }
 
 export type RmLineWastageAllocation = {
+  physicalBalance: number;
   requiredAllocation: number;
-  runnerWasteQty: number;
   manualWasteQty: number;
   /** Issued − consumed − returned − runner − manual wastage (unexplained balance). */
   unexplainedBalance: number;
@@ -46,21 +46,20 @@ export function computeRmLineWastageAllocation(input: {
   const issued = roundRmQty(input.issuedQty);
   const consumed = roundRmQty(input.consumedQty);
   const returned = roundRmQty(input.returnedQty ?? 0);
-  const runnerWasteQty = roundRmQty(Math.max(0, Number(input.runnerWasteQty) || 0));
+  const physicalBalance = roundRmQty(Math.max(0, issued - consumed));
   const requiredAllocation = computeRmLineRequiredAllocation({
     issuedQty: issued,
     consumedQty: consumed,
     returnedQty: returned,
   });
-  const defaultManual = roundRmQty(Math.max(0, requiredAllocation - runnerWasteQty));
   const manualWasteQty =
     input.manualWasteQty != null && Number.isFinite(Number(input.manualWasteQty))
       ? roundRmQty(Math.max(0, Number(input.manualWasteQty)))
-      : defaultManual;
-  const unexplainedBalance = roundRmQty(issued - consumed - returned - runnerWasteQty - manualWasteQty);
+      : 0;
+  const unexplainedBalance = roundRmQty(issued - consumed - returned - manualWasteQty);
   return {
+    physicalBalance,
     requiredAllocation,
-    runnerWasteQty,
     manualWasteQty,
     unexplainedBalance: Math.abs(unexplainedBalance) <= EPS ? 0 : unexplainedBalance,
   };

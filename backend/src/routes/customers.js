@@ -17,6 +17,12 @@ const {
   syncDeliveryAddresses,
   getCustomerById,
 } = require("../services/customerMasterService");
+const {
+  parseBulkIds,
+  runBulkIsActiveMutation,
+  runBulkHardDelete,
+  customerHasBlockingReferences,
+} = require("../services/masterBulkMutationService");
 
 const customerRouter = express.Router();
 
@@ -26,6 +32,7 @@ const CUSTOMER_NOT_FOUND = "Customer not found.";
 const CUSTOMER_READ_ACCESS_DENIED =
   "Access denied. Only administrators can view customers.";
 const customerReadRoles = requireRole(["ADMIN"], CUSTOMER_READ_ACCESS_DENIED);
+const customerWriteRoles = requireRole(["ADMIN"]);
 
 const deliveryAddressSchema = z.object({
   id: z.number().int().positive().optional(),
@@ -307,7 +314,55 @@ customerRouter.put("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res,
 
 const CUSTOMER_IN_USE_MESSAGE = "Customer cannot be deleted because it is used in transactions.";
 
-customerRouter.delete("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
+customerRouter.post("/bulk-activate", requireAuth, customerWriteRoles, async (req, res, next) => {
+  try {
+    const ids = parseBulkIds(req.body);
+    const result = await runBulkIsActiveMutation(prisma, {
+      model: "customer",
+      ids,
+      isActive: true,
+      alreadyReason: "Customer is already active.",
+      notFoundReason: CUSTOMER_NOT_FOUND,
+    });
+    return res.json(result);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+customerRouter.post("/bulk-deactivate", requireAuth, customerWriteRoles, async (req, res, next) => {
+  try {
+    const ids = parseBulkIds(req.body);
+    const result = await runBulkIsActiveMutation(prisma, {
+      model: "customer",
+      ids,
+      isActive: false,
+      alreadyReason: "Customer is already inactive.",
+      notFoundReason: CUSTOMER_NOT_FOUND,
+    });
+    return res.json(result);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+customerRouter.post("/bulk-delete", requireAuth, customerWriteRoles, async (req, res, next) => {
+  try {
+    const ids = parseBulkIds(req.body);
+    const result = await runBulkHardDelete(prisma, {
+      model: "customer",
+      ids,
+      hasBlockingReferences: customerHasBlockingReferences,
+      defaultBlockedReason: CUSTOMER_IN_USE_MESSAGE,
+      notFoundReason: CUSTOMER_NOT_FOUND,
+    });
+    return res.json(result);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+customerRouter.delete("/:id", requireAuth, customerWriteRoles, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
@@ -319,13 +374,7 @@ customerRouter.delete("/:id", requireAuth, requireRole(["ADMIN"]), async (req, r
       return res.status(404).json({ error: { message: "Customer not found" } });
     }
 
-    const [enquiryCount, poCount, salesOrderCount] = await Promise.all([
-      prisma.enquiry.count({ where: { customerId: id } }),
-      prisma.customerPO.count({ where: { customerId: id } }),
-      prisma.salesOrder.count({ where: { customerId: id } }),
-    ]);
-
-    if (enquiryCount > 0 || poCount > 0 || salesOrderCount > 0) {
+    if (await customerHasBlockingReferences(prisma, id)) {
       return res.status(409).json({
         error: { message: CUSTOMER_IN_USE_MESSAGE },
       });

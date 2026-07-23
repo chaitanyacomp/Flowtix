@@ -7,7 +7,10 @@ const { prisma } = require("../utils/prisma");
 const { getOrSetRequestCache } = require("../utils/prismaQueryMetrics");
 const { filterNoQtyExecutionReleasedWorkOrders } = require("./noQtyExecutionBoundaryService");
 const { aggregateRmDemandForFgLines, round3 } = require("./bomExplosionService");
-const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
+const {
+  calculateRegularSoDemandCoverageLine,
+  getMaterialAvailabilityByItems,
+} = require("./materialAvailabilityService");
 const { qtyToNumber } = require("./rmPurchaseHelpers");
 const {
   buildRegularSoPlanningSnapshotView,
@@ -120,6 +123,43 @@ function hasFullyIssuedPmr(pmrStatus) {
 
 function hasAnyIssuedPmr(pmrStatus) {
   return (pmrStatus?.openPmrs || []).some((p) => n(p.totalIssuedQty) > QUEUE_EPS);
+}
+
+function regularSoIssuedByItem(pmrStatus) {
+  const out = new Map();
+  for (const pmr of pmrStatus?.openPmrs || []) {
+    for (const line of pmr.lines || []) {
+      const itemId = Number(line.rmItemId ?? line.itemId);
+      if (!itemId) continue;
+      out.set(itemId, round3((out.get(itemId) || 0) + Math.max(0, n(line.issuedQty))));
+    }
+  }
+  return out;
+}
+
+function applyRegularSoWoDemandCoverage(line, wo, pmrStatus) {
+  if (!["NORMAL", "REPLACEMENT"].includes(wo?.salesOrder?.orderType)) return line;
+  const issuedByItem = regularSoIssuedByItem(pmrStatus);
+  const netIssuedQty = issuedByItem.get(line.itemId) || 0;
+  const coverage = calculateRegularSoDemandCoverageLine({
+    availability: line,
+    salesOrderId: wo.salesOrderId,
+    workOrderId: wo.id,
+    netIssuedQty,
+    openIncomingQty: line.incomingQty,
+  });
+  const roundingAcknowledged = (pmrStatus?.openPmrs || []).some(
+    (pmr) => pmr.status === "SHORT_ISSUE_ACCEPTED",
+  );
+  const operationalIssueBalanceQty = roundingAcknowledged ? 0 : coverage.remainingIssueBalanceQty;
+  return {
+    ...line,
+    issuedToProductionQty: netIssuedQty,
+    shortageNowQty: coverage.uncoveredProcurementQty,
+    shortageAfterReservationQty: operationalIssueBalanceQty,
+    netShortageAfterIncomingQty: coverage.uncoveredProcurementQty,
+    ...coverage,
+  };
 }
 
 function hasPmrReadyForProductionRelease(pmrStatus) {
@@ -535,6 +575,10 @@ function mapAvailabilityLine(line, itemById, context = {}) {
     shortageAfterReservationQty: line.shortageAfterReservationQty,
     coveredByIncomingQty: line.coveredByIncomingQty,
     netShortageAfterIncomingQty: line.netShortageAfterIncomingQty,
+    coveredQty: line.coveredQty,
+    currentDemandCoverageQty: line.currentDemandCoverageQty,
+    uncoveredProcurementQty: line.uncoveredProcurementQty,
+    remainingIssueBalanceQty: line.remainingIssueBalanceQty,
     allocationCoverageQty: line.allocationCoverageQty,
     allocationShortageQty: line.allocationShortageQty,
     allocationStatus: line.allocationStatus,
@@ -1905,8 +1949,9 @@ function buildSoPlanningShortageCase({ mr, terminalMr, fgName, rmLines, caseSupp
     escalationLifecycle: noWoEscalation,
     procurementStatusLabel: deriveCaseProcurementStatusLabel(noWoEscalation),
     issueStatusLabel: procuredAwaitingWo ? "WO not created yet — PMR pending WO" : "WO not created yet",
-    nextStoreAction: procuredAwaitingWo || noWoEscalation.state === "PROCUREMENT_COMPLETED"
-      ? {
+    nextStoreAction: (() => {
+      if (procuredAwaitingWo || noWoEscalation.state === "PROCUREMENT_COMPLETED") {
+        return {
           key: isNoQty ? "PLACE_WO" : "CREATE_WO",
           label: isNoQty ? "Place WO" : "Create Work Order",
           description: isNoQty
@@ -1914,13 +1959,34 @@ function buildSoPlanningShortageCase({ mr, terminalMr, fgName, rmLines, caseSupp
             : procuredAwaitingWo
               ? "RM received in Store after GRN. Create the work order to open PMR and material issue."
               : "RM is available for this SO. Return to Prepare WO to create the work order.",
-        }
-      : {
-          key: "CONTINUE_PROCUREMENT",
-          label: "Complete procurement, then create Work Order",
+        };
+      }
+      const esc = String(noWoEscalation.state || "");
+      if (esc === "WAITING_GRN") {
+        return {
+          key: "WAIT_GRN",
+          label: "Waiting for GRN",
+          description: noWoEscalation.description || "Record goods receipt when material arrives.",
+        };
+      }
+      if (esc === "PROCUREMENT_IN_PROGRESS") {
+        return {
+          key: "WAIT_PO",
+          label: "Waiting for Purchase to prepare RM PO",
           description:
-            "Store tracks this SO-level requisition until Purchase/GRN completes; Material Issue starts only after WO creation.",
-        },
+            noWoEscalation.description ||
+            "Purchase Request exists — Purchase prepares the RM PO. Open Procurement Workspace to follow up.",
+        };
+      }
+      // Pre-PR Regular SO shortage (including synthetic not-yet-persisted MR cases).
+      // Create PR is the primary CTA in the procurement panel — do not emit a duplicate workspace link.
+      return {
+        key: "AWAITING_PR",
+        label: "Create Purchase Request",
+        description:
+          "Store creates the Purchase Request for this SO shortage. Purchase prepares the RM PO after the PR exists.",
+      };
+    })(),
     rmLines: rmLines.map((line) => ({
       rmItemId: line.rmItemId,
       rmItemName: line.rmItemName,
@@ -2151,6 +2217,11 @@ async function buildMaterialAvailabilityWorkspaceImpl(db = prisma, filtersInput 
       .map((mr) => mr.salesOrderId)
       .filter(Boolean),
   );
+  for (const wo of workOrders) {
+    if (["NORMAL", "REPLACEMENT"].includes(wo.salesOrder?.orderType) && wo.salesOrderId) {
+      coveredSoIds.add(wo.salesOrderId);
+    }
+  }
   const soPlanningSalesOrders = await loadCandidateSoPlanningShortageSalesOrders(
     db,
     filters,
@@ -2203,14 +2274,15 @@ async function buildMaterialAvailabilityWorkspaceImpl(db = prisma, filtersInput 
   const details = [];
   for (const row of raw) {
     const pmrStatus = pmrByWorkOrder.get(row.wo.id) || { openPmrs: [], latestStatus: null };
-    const allRmLines = row.availability.map((line) =>
-      mapAvailabilityLine(line, itemById, {
+    const allRmLines = row.availability.map((line) => {
+      const projectedLine = applyRegularSoWoDemandCoverage(line, row.wo, pmrStatus);
+      return mapAvailabilityLine(projectedLine, itemById, {
         pmrStatus,
         traceByRmItemId,
         bomIssue: row.bomIssue,
         hasWorkOrder: true,
-      }),
-    );
+      });
+    });
     if (allRmLines.length) {
       const woMr = woMrByWorkOrder.get(row.wo.id) || mprsMrByWorkOrder.get(row.wo.id) || null;
       const terminalMr = woMr ? null : terminalMrByWorkOrder.get(row.wo.id) || null;
@@ -2710,6 +2782,7 @@ module.exports = {
   PMR_WAITING_ISSUE_STATUSES,
   WO_PLANNING_SOURCE,
   assessPostGrnCreateWoEligibility,
+  applyRegularSoWoDemandCoverage,
   buildMaterialAvailabilityWorkspace,
   buildStoreIssuePendingDashboardRows,
   buildStoreProductionHandoffDashboardRows,

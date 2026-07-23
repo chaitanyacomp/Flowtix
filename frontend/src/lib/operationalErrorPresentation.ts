@@ -14,6 +14,8 @@ export const PLANNING_INIT_FAILED_MESSAGE =
   "Unable to initialize production planning.\n\nPlease apply latest database update or contact system administrator.";
 
 const GENERIC_OPERATIONAL_MESSAGE = "This operation could not be completed. Please try again or contact your administrator.";
+const ORDER_RM_PLANNING_QUERY_MESSAGE =
+  "Order RM Planning could not be calculated. Please contact your administrator and quote ORDER_RM_PLANNING_QUERY_FAILED.";
 
 const TECHNICAL_PATTERNS =
   /prisma|invocation|p20\d{2}|migration|database table|schema is out of date|regularsoplanningsnapshot|foreign key|constraint failed|sqlstate|column .+ (does not exist|cannot be null)/i;
@@ -65,6 +67,15 @@ export function presentOperationalError(error: unknown): OperationalErrorPresent
         ? error.message
         : String(error ?? "");
   const code = error instanceof ApiRequestError ? error.code : undefined;
+
+  if (code === "ORDER_RM_PLANNING_QUERY_FAILED") {
+    return {
+      userMessage: ORDER_RM_PLANNING_QUERY_MESSAGE,
+      technicalDetail: raw.trim() || null,
+      isPlanningSetupIncomplete: false,
+      canRetryInitializePlanning: false,
+    };
+  }
 
   const planning = isPlanningSetupError(raw, code);
   if (planning) {

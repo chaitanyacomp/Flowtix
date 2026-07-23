@@ -38,11 +38,16 @@ export const REPORT_PAGE_SHELL_CLASS =
 export function ReportPageShell({
   children,
   className,
+  ...rest
 }: {
   children: React.ReactNode;
   className?: string;
-}) {
-  return <div className={cn(REPORT_PAGE_SHELL_CLASS, className)}>{children}</div>;
+} & React.HTMLAttributes<HTMLDivElement>) {
+  return (
+    <div className={cn(REPORT_PAGE_SHELL_CLASS, className)} {...rest}>
+      {children}
+    </div>
+  );
 }
 
 /* --------------------------------- toolbar -------------------------------- */

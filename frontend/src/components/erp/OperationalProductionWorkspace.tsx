@@ -1,9 +1,9 @@
 import * as React from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { apiFetch } from "../../services/api";
+import { ApiRequestError, apiFetch } from "../../services/api";
 import { cn } from "../../lib/utils";
 import {
   formatProductionQty,
@@ -79,22 +79,38 @@ function ageLabel(iso?: string | null): string {
 export function PendingStoreTasksPanel({ className }: { className?: string }) {
   const liveTick = useErpRefreshTick(["production", "dashboard"], { pollIntervalMs: 30000 });
   const [rows, setRows] = React.useState<RmReturnPendingTaskRow[]>([]);
+  const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     let mounted = true;
     void apiFetch<RmReturnPendingTaskRow[]>("/api/production-material-returns/pending?status=PENDING")
       .then((data) => {
-        if (mounted) setRows(Array.isArray(data) ? data : []);
+        if (mounted) {
+          setRows(Array.isArray(data) ? data : []);
+          setError(null);
+        }
       })
-      .catch(() => {
-        if (mounted) setRows([]);
+      .catch((cause) => {
+        console.error("Awaiting Store reconciliation request failed", {
+          endpoint: "/api/production-material-returns/pending?status=PENDING",
+          status: cause instanceof ApiRequestError ? cause.status : null,
+          code: cause instanceof ApiRequestError ? cause.code : null,
+        });
+        if (mounted) {
+          setRows([]);
+          setError(
+            cause instanceof ApiRequestError
+              ? cause.message
+              : "Could not load Store reconciliation tasks. Refresh or contact your administrator.",
+          );
+        }
       });
     return () => {
       mounted = false;
     };
   }, [liveTick]);
 
-  if (rows.length === 0) return null;
+  if (rows.length === 0 && !error) return null;
 
   return (
     <Card className={cn("min-w-0", className)} data-testid="production-pending-store-tasks">
@@ -104,9 +120,12 @@ export function PendingStoreTasksPanel({ className }: { className?: string }) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-1.5 p-2">
+        {error ? (
+          <p className="rounded border border-red-200 bg-red-50 px-2 py-1 text-[11px] text-red-800">{error}</p>
+        ) : null}
         {rows.map((row) => (
           <div key={row.id} className="rounded-md border border-amber-200 bg-amber-50/80 px-2.5 py-2 text-[11px] text-amber-950">
-            <div className="font-bold">RM Return Submitted — Awaiting Store Approval</div>
+            <div className="font-bold">RM Return Reconciliation — Store Action Required</div>
             <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5">
               <dt className="font-medium text-amber-900">WO No</dt>
               <dd className="tabular-nums">{displayWorkOrderNo(row.workOrderId, row.workOrderNo)}</dd>
@@ -119,9 +138,16 @@ export function PendingStoreTasksPanel({ className }: { className?: string }) {
                 {formatProductionQty(row.requestedQty)}
                 {row.unit ? ` ${row.unit}` : ""}
               </dd>
-              <dt className="font-medium text-amber-900">Status</dt>
-              <dd>Informational — no Production action</dd>
+              <dt className="font-medium text-amber-900">Required action</dt>
+              <dd>Store must receive and reconcile this returned RM.</dd>
             </dl>
+            <Link
+              to={`/production/rm-returns?pendingId=${encodeURIComponent(String(row.id))}&workOrderId=${encodeURIComponent(String(row.workOrderId))}&from=production-workspace`}
+              className="mt-2 inline-flex h-8 items-center rounded-md border border-amber-300 bg-white px-2.5 text-[12px] font-semibold text-amber-950 no-underline hover:bg-amber-100"
+              data-testid={`production-awaiting-store-review-${row.id}`}
+            >
+              Review Store Reconciliation
+            </Link>
           </div>
         ))}
       </CardContent>
@@ -130,10 +156,11 @@ export function PendingStoreTasksPanel({ className }: { className?: string }) {
 }
 
 const SECTION_TABS: ProductionWorkspaceSectionId[] = [
-  "ready",
-  "active",
-  "paused",
   "reportPending",
+  "draftPending",
+  "paused",
+  "active",
+  "ready",
   "pendingQa",
   "awaitingStore",
   "recent",
@@ -244,15 +271,17 @@ export function OperationalProductionWorkspace({
     let list: DashboardProductionStatusRow[] =
       section === "ready"
         ? sections.ready
-        : section === "paused"
-          ? sections.paused
-          : section === "reportPending"
-            ? sections.reportPending
-            : section === "pendingQa"
-              ? sections.pendingQa
-              : section === "awaitingStore" || section === "recent"
-                ? []
-                : sections.active;
+        : section === "draftPending"
+          ? sections.draftPending
+          : section === "paused"
+            ? sections.paused
+            : section === "reportPending"
+              ? sections.reportPending
+              : section === "pendingQa"
+                ? sections.pendingQa
+                : section === "awaitingStore" || section === "recent"
+                  ? []
+                  : sections.active;
     // Bucket filter applies on the matching tab only (Ready or Continue).
     if (productionBucket && (section === "active" || section === "ready")) {
       list = list.filter((row) => matchesProductionWorkspaceBucket(row, productionBucket));
@@ -533,6 +562,9 @@ export function OperationalProductionWorkspace({
                 const rem = remainingQtyForCard(row);
                 const focused = focusWoId === row.workOrderId;
                 const qcHint = entryQcWithBalanceHint(row);
+                const reportHref = row.productionReportConfirmed
+                  ? `/production?salesOrderId=${encodeURIComponent(String(row.salesOrderId ?? ""))}&workOrderId=${encodeURIComponent(String(row.workOrderId))}${row.workOrderLineId ? `&workOrderLineId=${encodeURIComponent(String(row.workOrderLineId))}` : ""}&reportId=${encodeURIComponent(String(row.productionReportId ?? ""))}&focusReport=1&viewReport=1&from=production-workspace`
+                  : null;
                 const soLabel =
                   row.orderType === "GREEN_LEVEL"
                     ? (row.salesOrderNo ?? "Stock Replenishment")
@@ -627,6 +659,13 @@ export function OperationalProductionWorkspace({
                         {qcHint}
                       </p>
                     ) : null}
+                    {row.regularClosurePending ? (
+                      <p className="mt-1 text-[10px] font-medium leading-snug text-amber-800">
+                        WO closure reconciliation pending · Shortfall{" "}
+                        {formatProductionQty(row.regularShortfallQty ?? rem)}
+                        {row.itemUnit ? ` ${row.itemUnit}` : ""}
+                      </p>
+                    ) : null}
 
                     <div className="mt-auto flex items-end justify-between gap-2 pt-2">
                       <div className="min-w-0">
@@ -653,19 +692,31 @@ export function OperationalProductionWorkspace({
                           </span>
                         )}
                       </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-8 shrink-0 px-2.5 text-[12px] font-semibold"
-                        disabled={section === "paused" && resumeBusyId === row.workOrderId}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openCard(row);
-                        }}
-                      >
-                        {actionLabel}
-                      </Button>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {reportHref && state !== "PRODUCTION_REPORT_PENDING" ? (
+                          <Link
+                            to={reportHref}
+                            className="inline-flex h-8 items-center rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 no-underline hover:bg-slate-50"
+                            onClick={(e) => e.stopPropagation()}
+                            data-testid={`view-production-report-${row.workOrderId}`}
+                          >
+                            View Report
+                          </Link>
+                        ) : null}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-8 shrink-0 px-2.5 text-[12px] font-semibold"
+                          disabled={section === "paused" && resumeBusyId === row.workOrderId}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openCard(row);
+                          }}
+                        >
+                          {actionLabel}
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 );

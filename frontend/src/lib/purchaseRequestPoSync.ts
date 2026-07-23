@@ -143,10 +143,15 @@ export type ConsolidatedPoPreviewLine = {
   itemName: string;
   unit: string;
   orderQty: number;
+  /** Sum of pending/required demand covered by selected lines (capped). */
+  requiredQty: number;
+  /** Extra to unrestricted RM stock. */
+  excessToStockQty: number;
   rate: number;
   amount: number;
   allocationCount: number;
   prDocNos: string[];
+  soBreakdown: Array<{ salesOrderDocNo: string | null; referenceLabel: string | null; demandQty: number; prDocNo: string }>;
 };
 
 /** Preview commercial consolidation (same RM + same rate → one PO item). */
@@ -154,7 +159,7 @@ export function previewConsolidatedRmPoLines(
   lines: PendingPurchaseRequestLineRow[],
   poQty: Record<number, string>,
   rates: Record<number, string>,
-): { allocationsSelected: number; consolidated: ConsolidatedPoPreviewLine[]; totalAmount: number } {
+): { allocationsSelected: number; consolidated: ConsolidatedPoPreviewLine[]; totalAmount: number; confirmationLines: string[] } {
   /** @type {Map<string, ConsolidatedPoPreviewLine>} */
   const byKey = new Map<string, ConsolidatedPoPreviewLine>();
   let allocationsSelected = 0;
@@ -165,31 +170,72 @@ export function previewConsolidatedRmPoLines(
     if (!Number.isFinite(qty) || qty <= 0) continue;
     if (!Number.isFinite(rate) || rate <= 0) continue;
     allocationsSelected += 1;
+    const pending = Math.max(0, Number(ln.pendingQty) || 0);
+    const demandQty = Math.min(qty, pending);
+    const excessQty = Math.max(0, qty - demandQty);
     const rateKey = (Math.round(rate * 100) / 100).toFixed(2);
     const key = `${ln.rmItemId}:${rateKey}`;
+    const soLabel =
+      ln.referenceLabel?.trim() ||
+      (ln.sources || []).map((s) => s.sourceRef).find(Boolean) ||
+      null;
     const existing = byKey.get(key);
     if (existing) {
       existing.orderQty = Math.round((existing.orderQty + qty) * 1000) / 1000;
+      existing.requiredQty = Math.round((existing.requiredQty + demandQty) * 1000) / 1000;
+      existing.excessToStockQty = Math.round((existing.excessToStockQty + excessQty) * 1000) / 1000;
       existing.amount = Math.round(existing.orderQty * existing.rate * 100) / 100;
       existing.allocationCount += 1;
       if (!existing.prDocNos.includes(ln.requestDocNo)) existing.prDocNos.push(ln.requestDocNo);
+      existing.soBreakdown.push({
+        salesOrderDocNo: soLabel,
+        referenceLabel: ln.referenceLabel ?? null,
+        demandQty,
+        prDocNo: ln.requestDocNo,
+      });
     } else {
       byKey.set(key, {
         rmItemId: ln.rmItemId,
         itemName: ln.itemName,
         unit: ln.unit,
         orderQty: qty,
+        requiredQty: demandQty,
+        excessToStockQty: excessQty,
         rate,
         amount: Math.round(qty * rate * 100) / 100,
         allocationCount: 1,
         prDocNos: [ln.requestDocNo],
+        soBreakdown: [
+          {
+            salesOrderDocNo: soLabel,
+            referenceLabel: ln.referenceLabel ?? null,
+            demandQty,
+            prDocNo: ln.requestDocNo,
+          },
+        ],
       });
     }
   }
 
   const consolidated = [...byKey.values()];
   const totalAmount = Math.round(consolidated.reduce((s, c) => s + c.amount, 0) * 100) / 100;
-  return { allocationsSelected, consolidated, totalAmount };
+  const confirmationLines = consolidated.map((c) => formatRmPoExcessConfirmationLine(c));
+  return { allocationsSelected, consolidated, totalAmount, confirmationLines };
+}
+
+/** Purchase confirmation line: Required | PO Qty | Extra to RM Stock */
+export function formatRmPoExcessConfirmationLine(input: {
+  requiredQty: number;
+  orderQty: number;
+  excessToStockQty: number;
+  unit: string;
+}): string {
+  const u = String(input.unit ?? "").trim();
+  const unitSuffix = u ? ` ${u}` : "";
+  const req = Math.round((Number(input.requiredQty) || 0) * 1000) / 1000;
+  const po = Math.round((Number(input.orderQty) || 0) * 1000) / 1000;
+  const excess = Math.round(Math.max(0, Number(input.excessToStockQty) || 0) * 1000) / 1000;
+  return `Required: ${req}${unitSuffix} | PO Qty: ${po}${unitSuffix} | Extra to RM Stock: ${excess}${unitSuffix}`;
 }
 
 /** User-facing message for create-po failures (uses backend code when present). */

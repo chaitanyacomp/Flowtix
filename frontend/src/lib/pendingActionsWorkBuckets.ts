@@ -72,7 +72,19 @@ export function parseReadyToDispatchQty(actionLabel: string): string | null {
 
 export function buildPendingActionPreviewLine(row: PendingAction): PendingActionBucketPreviewLine {
   const doc = String(row.documentNo ?? "").trim() || "—";
-  if (String(row.action ?? "").trim() === PENDING_ACTION_CREATE_SALES_BILL_KEY) {
+  const actionLabel = String(row.action ?? "").trim();
+  if (actionLabel === "Create GRN" || actionLabel === "GRN Pending") {
+    const supplier = String(row.itemName ?? "").trim();
+    const qty = row.qty != null && Number.isFinite(Number(row.qty)) ? Number(row.qty) : null;
+    const uom = String(row.uom ?? "").trim();
+    const qtyPart =
+      qty != null
+        ? `${Number.isInteger(qty) ? String(qty) : qty.toFixed(3).replace(/\.?0+$/, "")}${uom ? ` ${uom}` : ""} pending`
+        : null;
+    const detail = [supplier && supplier !== "—" ? supplier : null, qtyPart].filter(Boolean).join(" · ");
+    return { documentNo: doc, detail: detail || null };
+  }
+  if (actionLabel === PENDING_ACTION_CREATE_SALES_BILL_KEY) {
     const dispatchOnly = doc.split(" · ")[0]?.trim() || doc;
     return { documentNo: dispatchOnly };
   }
@@ -135,6 +147,27 @@ export function pendingActionWorkspaceListHref(href: string): string {
       qs.set("from", url.searchParams.get("from") || "pending-actions");
       return `/material-issue?${qs.toString()}`;
     }
+    // Create GRN multi-open: stay in Purchase & GRN (pending receipts), never Dashboard / RMCC.
+    if (/^\/rm-po-grn\/\d+$/.test(path) || path === "/rm-po-grn") {
+      const qs = new URLSearchParams();
+      qs.set("focus", "pending-requests");
+      qs.set("from", url.searchParams.get("from") || "pending-actions");
+      return `/rm-po-grn?${qs.toString()}`;
+    }
+    /**
+     * Regular Prepare WO list open: keep salesOrderId + source so refresh / multi-open
+     * still lands on Prepare WO (never Dashboard).
+     */
+    if (path === "/work-orders/prepare" || path.startsWith("/work-orders/prepare")) {
+      const qs = new URLSearchParams();
+      const soId = url.searchParams.get("salesOrderId") || url.searchParams.get("soId");
+      if (soId) qs.set("salesOrderId", soId);
+      qs.set("source", url.searchParams.get("source") || "regular_so");
+      qs.set("from", url.searchParams.get("from") || "pending-actions");
+      const itemId = url.searchParams.get("itemId") || url.searchParams.get("fgItemId");
+      if (itemId) qs.set("itemId", itemId);
+      return `/work-orders/prepare?${qs.toString()}`;
+    }
     const params = new URLSearchParams();
     const preserveKeys = [
       "returnTo",
@@ -151,6 +184,10 @@ export function pendingActionWorkspaceListHref(href: string): string {
     // NO_QTY WO placement / RS execution: never drop explicit RS identity (FT-PD-040 §7.10).
     if (path.includes("/requirement-sheets")) {
       preserveKeys.push("sheetId", "requirementSheetId", "cycleId", "salesOrderId");
+    }
+    // Regular Prepare WO: keep SO identity for refresh-safe deep links.
+    if (path.includes("/work-orders/prepare") || path.includes("/rm-check")) {
+      preserveKeys.push("salesOrderId", "soId", "itemId", "fgItemId");
     }
     for (const key of preserveKeys) {
       const v = url.searchParams.get(key);

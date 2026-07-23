@@ -54,6 +54,9 @@ export type ProductionOperatorEntryFieldsProps = {
   createFormCanSubmit: boolean;
   useRemainingDisabled: boolean;
   onUseRemaining: () => void;
+  showUseRmSupportedMax?: boolean;
+  useRmSupportedMaxDisabled?: boolean;
+  onUseRmSupportedMax?: () => void;
   prodSaveFocusBind: { onFocus: FocusEventHandler<HTMLButtonElement>; onBlur: FocusEventHandler<HTMLButtonElement> };
   onProdQtyEnter?: () => void;
   onMarkProdQtyShortcut?: () => void;
@@ -86,6 +89,9 @@ export function ProductionOperatorEntryFields({
   createFormCanSubmit,
   useRemainingDisabled,
   onUseRemaining,
+  showUseRmSupportedMax,
+  useRmSupportedMaxDisabled,
+  onUseRmSupportedMax,
   prodSaveFocusBind,
   onProdQtyEnter,
   onMarkProdQtyShortcut,
@@ -145,7 +151,7 @@ export function ProductionOperatorEntryFields({
           </label>
         </FieldShortcutHint>
 
-        <div className="flex shrink-0 items-end gap-2.5 self-end">
+        <div className="flex shrink-0 flex-wrap items-end gap-2.5 self-end">
           <Button
             type="button"
             variant="outline"
@@ -156,6 +162,18 @@ export function ProductionOperatorEntryFields({
           >
             Use Remaining Qty
           </Button>
+          {showUseRmSupportedMax ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="h-12 shrink-0 px-3 text-[13px] font-semibold"
+              disabled={useRmSupportedMaxDisabled}
+              onClick={onUseRmSupportedMax}
+              data-testid="use-rm-supported-max-btn"
+            >
+              Use RM-Supported Max
+            </Button>
+          ) : null}
 
           <FieldShortcutHint
             show={shortcutHints.activeFieldId === "prodSave"}

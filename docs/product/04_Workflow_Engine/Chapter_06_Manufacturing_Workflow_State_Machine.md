@@ -31,6 +31,7 @@
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Manufacturing domain State Machines and transition tables |
 | 1.0.1 | 2026-07-18 | FT ERP Product Team | MFGWF-17 — Active Production eligibility vs Store RM-return / Pending QA scoping |
+| 1.0.2 | 2026-07-22 | FT ERP Product Team | Interim — REGULAR SO-demand End Production / Production Report park |
 
 **Supersedes:** None.
 
@@ -518,7 +519,7 @@ Every **successful** user-initiated transition emits **exactly one** primary aud
 | **MFGWF-14** | **Cancelled WO blocks** issue and production — `GRD_MFG_WO_CANCELLED` ([MFG-15](../03_Domain_Specifications/Chapter_04_Manufacturing_Domain_Specification.md)). |
 | **MFGWF-15** | **Partial issue and partial production permitted** — multiple Issue and Production Entry docs ([MFG-16](../03_Domain_Specifications/Chapter_04_Manufacturing_Domain_Specification.md)). |
 | **MFGWF-16** | **Procurement never creates WO**; **Manufacturing never creates dispatch** — domain boundaries preserved. |
-| **MFGWF-17** | **Active Production eligibility** is “can accept a new production entry” — not residual planned − produced. After production report confirmation with shortfall carried forward, the WO may remain open for Store RM-return approval (`MFG_RETURN`) while production editing stays locked and the WO is excluded from Active Production. Pending QA KPIs are WO-scoped; Recent Production Entries remain entry-scoped. |
+| **MFGWF-17** | **Active Production eligibility** is “can accept a new production entry” — not residual planned − produced. After Production Report confirmation, the WO may close while Store RM-return receipt remains a separate `MFG_RETURN` inventory action; production editing stays locked and the WO is excluded from Active Production. Pending QA KPIs are WO-scoped; Recent Production Entries remain entry-scoped. |
 | **MFGWF-18** | **Production Entry QC ≠ WO execution.** A partial approved entry may be Pending QC while the WO remains In Progress or Paused with remaining qty. Pause/Resume (execution `BLOCKED` / WO `PAUSED`) preserves history; only Confirm Report & Close WO finalizes execution and shortfall/CF assessment. |
 
 *Operational rules MFG-01–MFG-16 in Volume 3 Ch. 4 remain authoritative; MFGWF rules are engine enforcement.*
@@ -679,13 +680,34 @@ Entry QC is not a WO state. `RUNNING + remaining > 0 + Pending QC entry` remains
 ### Production draft and remaining-balance disposition
 
 `DRAFT -> Review & Finalize -> APPROVED output` is the production-entry transition. Finalizing a batch sends it to QC and is independent of WO closure. When an executable WO balance remains, finalization requires `CONTINUE`, `PAUSE`, or `END_WITH_SHORTAGE`, persisted atomically with the output. Continue maps to `CONTINUE_PRODUCTION`; Pause maps to `PAUSED_PRODUCTION` and navigates off the paused runner; End-with-Shortage, equal completion, and approved extra completion map to execution `SHORTFALL_PENDING` / workbench **Production Report Pending**. Only **Confirm Report & Close WO** (after RM reconciliation to zero unexplained balance) completes the WO and, for shortage, creates the canonical next-cycle recovery source. Read models and QC transitions must not infer closure from Pending QC or from `producedQty >= plannedQty`.
+
+### REGULAR_SO End Production when SO demand is covered (interim)
+
+NO_QTY Review & Finalize disposition cards are **not** used for REGULAR. For REGULAR:
+
+| Decision | Condition | Transition |
+|----------|-----------|------------|
+| Continue Later | Further production intended | WO stays open; no Production Report |
+| End Production & Complete Report | Produced ≥ remaining SO demand (even if WO-plan balance &gt; 0) | execution `SHORTFALL_PENDING` / report-pending → mandatory Production Report → confirm → WO `COMPLETED` |
+| End with Shortage | Produced &lt; remaining SO demand | report-pending → Production Report → `CLOSED_WITH_SHORTFALL` (SO-demand shortfall qty) |
+| WO plan fully produced | Produced ≥ WO planned | Production Report → `COMPLETED` |
+
+WO-plan remainder after SO demand coverage is **not** a shortage and must not force another production entry.
 # RM planning and mandatory Production Report (2026-07)
+
+## Production Report reconciliation guard (authoritative)
+
+For every RM line, confirmation requires `Issued = Consumed + Returned + Valid Classified Wastage` within `0.0005` RM-UOM units. Production Entry consumption already contains the BOM runner share; expected runner is informational and must never be auto-counted or auto-posted as actual wastage. Actual runner wastage exists only when Production explicitly classifies it, and `Actual Runner - Expected Runner` is displayed separately.
+
+No wastage is invented or prefilled. The guard names the unresolved item and quantity and tells Production to return it or classify it. Returned and wastage edits, including restored browser drafts, recalculate eligibility immediately. Drafts persist only entered return, wastage details, and remarks; issued/consumed and all derived values come from the current server report.
 
 Theoretical BOM RM already includes the Item Master/BOM runner component. Store authors Planned Process Allowance as **Add Qty** only.
 
 **Display (Material Issue card):** **Qty (BOM)** = original theoretical BOM for the line (never the remaining balance). **Already Issued** = cumulative issued. **Remaining** = unissued balance. Allowance % acknowledgement uses remaining entitlement for the denominator only: `allowance % = Add Qty ÷ applicable BOM × 100` where applicable BOM = `max(0, theoretical − min(alreadyIssued, theoretical))`. Default Issue Now for this fill: `applicable BOM + Add Qty` (partial Issue Now allowed). Prior issues and prior allowances must not be double-counted. Remaining balance is not itself an allowance.
 
 **Intentional partial issue:** Store may issue less than Remaining. Stock moves only for the issued quantity. PMR status → `PARTIALLY_ISSUED`. Material Issue side queue classifies `issueQueueState`: `READY_TO_ISSUE` | `PARTIALLY_ISSUED` | `COMPLETE` | `SHORT_CLOSED`. After a successful partial issue the workspace clears the form, places the WO under **Partially Issued**, and advances to the next Ready WO—never blocks Store on the partial WO. Production may proceed on issued RM per capacity rules. **Close Remaining (Short Issue)** / waive remains explicit optional Store action only (`SHORT_ISSUE_ACCEPTED`); never auto-triggered by a partial issue. Store Pending Action for open partial balance: **Continue RM Issue** (deep-link `bucket=partiallyIssued`).
+
+**REGULAR_SO rounding tolerance (only):** When cumulative issued is short of theoretical by at most `min(0.5% × theoretical, 0.5 Kg)`, Store may acknowledge **Within rounding tolerance** (`shortIssueCloseReason = ROUNDING_TOLERANCE`). Display status: **Fully Issued – Within Rounding Tolerance**. Audit records theoretical requirement, cumulative issue, tolerance difference, user, timestamp. Physical FG capacity = `floor(netIssued ÷ BOM per FG)`; with acknowledgement, production maximum may reach **WO target** but never invent capacity above target. Excess issued RM may support production above WO target; SO dispatch remains capped by original SO qty. NO_QTY / RS / MPRS rules unchanged.
 
 **Pending Actions → Material Issue URL contract:** Canonical `bucket=` = `readyToIssue` | `partiallyIssued` | `approvalPending` | `approved` | `rejected`, with `from=pending-actions` and `returnTo=pending-actions`. Open List keeps `bucket` and strips WO/PMR. Open (item) includes `workOrderId` + `pmrId`. Legacy `queue=` aliases are accepted. Shared frontend parser: `materialIssueDeepLink.ts`.
 
@@ -712,4 +734,4 @@ QA Pending / Complete QA remain in the Quality workspace; they must not control 
 
 **UAT example (pause):** WO plan 5,000; finalize 3,000 with Pause (e.g. Machine Breakdown) → batch Pending QC; WO Paused with 2,000 remaining; no report; runner leaves the paused WO; Resume restores 3,000 produced / 2,000 remaining.
 
-The Production Report is owned by Production and reconciles issued RM, product material used, read-only automatic runner wastage (`AUTO – Item Master`), manual other actual wastage, reported RM return, and explained variance (`Issued − production consumption − wastage − return = unexplained`). Per line, required allocation is `issued − consumed − returned` at RM precision (decimal Kg retained). Default manual wastage fills the remainder after runner so unexplained starts at zero; operators classify that wastage by type until remaining to classify is zero. It is independent of QA/QC and may be confirmed while finalized entries remain Pending QC. Store receipt remains the stock-posting authority for reported returns. Only confirmed report/WO closure creates the canonical shortage carry-forward, idempotently and once.
+The Production Report is owned by Production. It never invents wastage: the operator returns the physical balance or explicitly classifies valid wastage until Remaining Unreconciled is zero within tolerance. It is independent of QA/QC and may be confirmed while finalized entries remain Pending QC. Store receipt remains the stock-posting authority for reported returns. Only confirmed report/WO closure creates the canonical shortage carry-forward, idempotently and once.

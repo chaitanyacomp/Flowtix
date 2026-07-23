@@ -56,6 +56,7 @@ import { NO_QTY_TERMS } from "../../lib/flowTerminology";
 import {
   buildRmPoDetailHref,
   fetchPostGrnContinuitySnapshot,
+  isCreateGrnDeepLinkSearch,
   isRmPoDocumentOnly,
   postGrnFulfilledMessage,
   RM_PO_FINAL_GRN_COMPLETION_TOAST,
@@ -77,11 +78,17 @@ export function RmPurchasePoDetailPage() {
   const poId = Number(poIdParam);
   const navigate = useNavigate();
   const location = useLocation();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const toast = useToast();
   const isAdmin = user?.role === "ADMIN";
   const canWritePo = hasErpRole(user?.role, RM_PO_WRITE_ROLES);
+  const openGrnFromDeepLink = isCreateGrnDeepLinkSearch(searchParams);
+  const openGrnDeepLinkHandledRef = React.useRef(false);
+
+  React.useEffect(() => {
+    openGrnDeepLinkHandledRef.current = false;
+  }, [poId]);
 
   const rmPurchaseBackNav = React.useMemo(
     () =>
@@ -461,6 +468,42 @@ export function RmPurchasePoDetailPage() {
   );
   const grnAllowed = grnReceiptPending && canPostGrn;
   const grnPendingReadOnlyForViewer = grnReceiptPending && !canPostGrn;
+
+  /** Pending Actions / Dashboard Create GRN deep-link: open form when eligible; never bounce to Dashboard. */
+  React.useEffect(() => {
+    if (!openGrnFromDeepLink || loading || !po || openGrnDeepLinkHandledRef.current) return;
+    openGrnDeepLinkHandledRef.current = true;
+    const stripOpenGrnQuery = () => {
+      const next = new URLSearchParams(searchParams);
+      next.delete("openGrn");
+      next.delete("action");
+      setSearchParams(next, { replace: true });
+    };
+    if (grnAllowed) {
+      setGrnModalOpen(true);
+      return;
+    }
+    if (!canPostGrn) {
+      toast.showError("You do not have permission to create a GRN. Store posts goods receipt.");
+    } else if (po.status === "CANCELLED") {
+      toast.showError("This purchase order is cancelled — Create GRN is not available.");
+    } else if (po.status === "COMPLETED" || (receiveInfo && receiveInfo.pending <= 1e-6)) {
+      toast.showError("This purchase order is fully received — Create GRN is no longer required.");
+    } else {
+      toast.showError("Create GRN is not available for this purchase order.");
+    }
+    stripOpenGrnQuery();
+  }, [
+    openGrnFromDeepLink,
+    loading,
+    po,
+    grnAllowed,
+    canPostGrn,
+    receiveInfo,
+    searchParams,
+    setSearchParams,
+    toast,
+  ]);
 
   const poPrimaryUnit = po?.lines[0]?.unit?.trim() ?? "";
   const stockStatusLabel =

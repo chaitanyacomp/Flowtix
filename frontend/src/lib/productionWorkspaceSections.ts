@@ -9,6 +9,7 @@ import { classifyProductionWorkspaceSectionFromState } from "./productionWorkben
 
 export type ProductionWorkspaceSectionId =
   | "ready"
+  | "draftPending"
   | "active"
   | "paused"
   | "reportPending"
@@ -43,6 +44,7 @@ export function buildProductionWorkspaceSectionRows(
 ): {
   active: DashboardProductionStatusRow[];
   ready: DashboardProductionStatusRow[];
+  draftPending: DashboardProductionStatusRow[];
   paused: DashboardProductionStatusRow[];
   reportPending: DashboardProductionStatusRow[];
   pendingQa: DashboardProductionStatusRow[];
@@ -51,6 +53,7 @@ export function buildProductionWorkspaceSectionRows(
   const built = buildDashboardProductionStatusRows(queueRows, { limit: Math.max(queueRows.length, 1) });
   const active: DashboardProductionStatusRow[] = [];
   const ready: DashboardProductionStatusRow[] = [];
+  const draftPending: DashboardProductionStatusRow[] = [];
   const paused: DashboardProductionStatusRow[] = [];
   const reportPending: DashboardProductionStatusRow[] = [];
   const pendingQa: DashboardProductionStatusRow[] = [];
@@ -58,13 +61,11 @@ export function buildProductionWorkspaceSectionRows(
   for (const row of built.all) {
     const section = classifyProductionWorkspaceSection(row);
     if (section === "ready") ready.push(row);
+    else if (section === "draftPending") draftPending.push(row);
     else if (section === "active") active.push(row);
     else if (section === "paused") paused.push(row);
     else if (section === "reportPending") reportPending.push(row);
     else if (section === "pendingQa") pendingQa.push(row);
-    // Entry QC with executable remaining balance stays under Continue/Ready/Paused —
-    // do not also list those WOs under Pending QA (entry history covers Pending QC).
-    // Report-pending WOs may still have Pending QC batches; they stay under Report Pending.
   }
 
   const byWoAge = (a: DashboardProductionStatusRow, b: DashboardProductionStatusRow) =>
@@ -73,6 +74,7 @@ export function buildProductionWorkspaceSectionRows(
   return {
     active: [...active].sort(byWoAge),
     ready: [...ready].sort(byWoAge),
+    draftPending: [...draftPending].sort(byWoAge),
     paused: [...paused].sort(byWoAge),
     reportPending: [...reportPending].sort(byWoAge),
     pendingQa: [...pendingQa].sort(byWoAge),
@@ -88,6 +90,7 @@ export function buildProductionWorkspaceSectionCounts(
   const sections = buildProductionWorkspaceSectionRows(queueRows);
   const woPaused = new Set(sections.paused.map((r) => r.workOrderId));
   const woReady = new Set(sections.ready.map((r) => r.workOrderId));
+  const woDraft = new Set(sections.draftPending.map((r) => r.workOrderId));
   const woActive = new Set(sections.active.map((r) => r.workOrderId));
   const woReport = new Set(sections.reportPending.map((r) => r.workOrderId));
   const woQa = new Set(sections.pendingQa.map((r) => r.workOrderId));
@@ -97,6 +100,7 @@ export function buildProductionWorkspaceSectionCounts(
 
   return {
     ready: woReady.size,
+    draftPending: woDraft.size,
     active: woActive.size,
     paused: woPaused.size,
     reportPending: woReport.size,
@@ -164,6 +168,7 @@ export function pauseReasonLabel(row: DashboardProductionStatusSource): string {
 
 export const PRODUCTION_WORKSPACE_SECTION_LABELS: Record<ProductionWorkspaceSectionId, string> = {
   ready: "Ready to Start",
+  draftPending: "Draft Awaiting Approval",
   active: "Continue Production",
   paused: "Paused Production",
   reportPending: "Production Report Pending",

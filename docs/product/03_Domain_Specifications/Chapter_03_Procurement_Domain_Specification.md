@@ -6,7 +6,7 @@
 | **Volume** | 3 — Domain Specifications |
 | **Chapter** | 3 — Procurement Domain Specification |
 | **Title** | Procurement Domain Specification |
-| **Version** | 1.0.1 |
+| **Version** | 1.0.2 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -31,6 +31,7 @@
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Procurement domain — PR, PO, GRN, pools, availability |
 | 1.0.1 | 2026-07-12 | FT ERP Product Team | RM Stock Replenishment / Monitor — STOCK_REPLENISHMENT as sole ARR path |
+| 1.0.2 | 2026-07-22 | FT ERP Product Team | §9.2 / §10.2 — Create GRN Pending Action deep-links to Purchase & GRN PO + form |
 
 **Supersedes:** None.
 
@@ -434,9 +435,11 @@ Engine-generated only.
 |----|---------|--------|
 | `PRC_PR_REGULAR` | REGULAR MR Approved; no PR | Create Purchase Requisition |
 | `PRC_PR_REPLEN` | Replenishment MR; no PR | Create PR (replenishment) |
-| `PRC_GRN_POST` | PO Open; material arrived | Post Goods Receipt Note |
-| `PRC_GRN_PARTIAL` | Partial delivery | Post partial GRN |
+| `PRC_GRN_POST` | PO Open; remaining receipt qty &gt; 0 | **Create GRN** — deep-link `/rm-po-grn/{rmPoId}?openGrn=1&from=pending-actions` (auto-select PO, open form) |
+| `PRC_GRN_PARTIAL` | Partial delivery; remaining qty &gt; 0 | **Create GRN** (same deep-link; show remaining qty + UOM) |
 | `PRC_WAIT_PO` | MR approved; awaiting Purchase PO | Monitor (read-only) |
+
+**Create GRN rules:** Fully received / cancelled / closed POs suppress the action. Card shows business PO number, supplier, pending qty + UOM — never internal IDs. Destination is Purchase & GRN only (not Dashboard or RM Control Center). Store posts GRN; unauthorized roles do not receive or complete the action. See Workflow Engine §7.14.
 
 ### 9.3 Admin
 
@@ -467,9 +470,9 @@ Admin does not own standard PR/PO/GRN workflow in product default.
 
 | Zone | Content |
 |------|---------|
-| **My Work** | §9.2 Store Pending Actions |
+| **My Work** | §9.2 Store Pending Actions — **Create GRN** opens Purchase & GRN for the PO (`/rm-po-grn/{id}?openGrn=1`), not Dashboard or RM Control Center |
 | **REGULAR PR queue** | MR awaiting PR creation |
-| **GRN queue** | PO lines awaiting receipt |
+| **GRN queue** | PO lines awaiting receipt (business PO no., supplier, pending qty) |
 | **KPIs** | Open GRN drafts; REGULAR_MR without PR |
 
 Store Dashboard does **not** show MPRS PR creation actions (Purchase-owned).
@@ -625,6 +628,7 @@ stateDiagram-v2
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Procurement Domain Specification |
+| 1.0.2 | 2026-07-22 | FT ERP Product Team | Create GRN Pending Action deep-link to Purchase & GRN |
 
 ---
 

@@ -20,6 +20,17 @@ Sign-in uses email + password. Ask your administrator for an account.
 
 On the login screen, use the eye control beside the password field to **Show password** / **Hide password** while typing (password stays hidden by default). Enter still submits Sign in.
 
+## Master Data Workbench (quick)
+
+1. Open **Masters → Masters hub** (`/masters`) or a master list (Customers, Suppliers, Items, …).
+2. Use **Back to Masters** on a list to return to the hub (not browser Back alone).
+3. Search by name (Items also match HSN); apply filters; sort headers; change rows per page (25/50/100).
+4. Select checkboxes on the **current page only** — Select All does not mean the whole master.
+5. When permitted, use Activate / Deactivate / Delete; blocked deletes stay and show a reason (record in use).
+6. Add/Edit Save or Cancel returns to the same list.
+
+**Items:** Use **+ Add Item** and choose Raw Material, Finished Good, Semi-finished Good, or Consumable. Opening quantity is entered under Opening Stock, not on item create. Item type cannot be changed after the item is used in transactions.
+
 ## Daily path (manufacturing)
 
 1. Check **Dashboard** / pending actions for your role.

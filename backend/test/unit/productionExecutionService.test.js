@@ -413,7 +413,7 @@ describe("productionExecutionService", () => {
       { actorUserId: null, actorRole: null },
     );
     assert.equal(result.outcome, "WAIVE_BALANCE");
-    assert.equal(getWoStatus(), "IN_PROGRESS");
+    assert.equal(getWoStatus(), "COMPLETED");
   });
 
   test("finishProductionExecution WAIVE_BALANCE closes WO and creates CarryForwardPending", async () => {

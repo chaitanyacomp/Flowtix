@@ -109,7 +109,7 @@ describe("PendingMaterialRequestsPanel PO prep visibility", () => {
     expect(panelSource).toContain("RM_PO_MODAL_DISCARD_CONFIRM");
     expect(panelSource).not.toContain("rounded-lg border border-slate-200 p-3");
     expect(panelSource).toContain("Still to order");
-    expect(panelSource).toMatch(/\+\{fmtQty\(excess/);
+    expect(panelSource).toMatch(/\+\$\{fmtQty\(excess/);
   });
 });
 
@@ -141,6 +141,16 @@ describe("Create RM PO modal layout + decimal inputs", () => {
     expect(panelSource).toContain("RM_PO_MODAL_QTY_INPUT_CLASS");
     expect(panelSource).toContain("RM_PO_MODAL_RATE_INPUT_CLASS");
     expect(panelSource).toContain("table-fixed");
+  });
+
+  it("aligns Order Qty and Rate on the same vertical baseline with DecimalInput", () => {
+    expect(panelSource).toContain("RM_PO_MODAL_LINE_INPUT_ROW_CLASS");
+    expect(panelSource).toContain("RM_PO_MODAL_LINE_INPUT_HINT_CLASS");
+    expect(panelSource).toContain("rm-po-order-qty-cell-");
+    expect(panelSource).toContain("rm-po-rate-cell-");
+    expect(panelSource).toMatch(/align-top[\s\S]*rm-po-order-qty-/);
+    expect(panelSource).toMatch(/unit=\{ln\.unit\}/);
+    expect(panelSource).not.toMatch(/type=["']number["']/);
   });
 });
 

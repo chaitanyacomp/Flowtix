@@ -136,6 +136,8 @@ enum PmrShortIssueWaiveReason {
   SCALE_LIMITATION
   PACKING_LIMITATION
   MANAGEMENT_DECISION
+  /// REGULAR_SO: remaining shortage within operational rounding tolerance (acknowledged).
+  ROUNDING_TOLERANCE
   OTHER
 }
 
@@ -585,6 +587,7 @@ model User {
   productionRmReturnsReceived              ProductionRmReturnPending[]     @relation("ProductionRmReturnReceivedBy")
   productionMaterialRequestsCreated       ProductionMaterialRequest[]     @relation("PmrCreatedBy")
   productionMaterialRequestsRequested     ProductionMaterialRequest[]     @relation("PmrRequestedBy")
+  productionMaterialRequestsShortClosed   ProductionMaterialRequest[]     @relation("PmrShortIssueClosedBy")
   materialAllocationsCreated              MaterialAllocation[]            @relation("MaterialAllocationCreatedBy")
   materialAllocationsReleased             MaterialAllocation[]            @relation("MaterialAllocationReleasedBy")
   monthlyProductionPlansCreated           MonthlyProductionPlan[]         @relation("MppCreatedBy")
@@ -1962,12 +1965,17 @@ model ProductionMaterialRequest {
   requestedAt       DateTime?
   requestedByUserId Int?
   createdByUserId   Int?
+  /// Set when Store closes remaining unissued qty (short issue / rounding tolerance).
+  shortIssueCloseReason PmrShortIssueWaiveReason?
+  shortIssueClosedAt    DateTime?
+  shortIssueClosedByUserId Int?
   createdAt         DateTime                        @default(now())
   updatedAt         DateTime                        @updatedAt
 
   workOrder           WorkOrder           @relation(fields: [workOrderId], references: [id], onDelete: Restrict)
   requestedBy         User?               @relation("PmrRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
   createdBy           User?               @relation("PmrCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  shortIssueClosedBy  User?               @relation("PmrShortIssueClosedBy", fields: [shortIssueClosedByUserId], references: [id], onDelete: SetNull)
   lines               ProductionMaterialRequestLine[]
   materialIssueNotes  MaterialIssueNote[]
   materialReturnNotes MaterialReturnNote[]
@@ -1979,6 +1987,7 @@ model ProductionMaterialRequest {
   @@index([status])
   @@index([requestedByUserId])
   @@index([createdByUserId])
+  @@index([shortIssueClosedByUserId])
 }
 
 model ProductionMaterialRequestLine {
@@ -2489,6 +2498,8 @@ model RmPurchaseOrderLine {
   amount  Decimal? @db.Decimal(18, 2)
   /// Remaining PO balance intentionally waived by Purchase (no stock impact).
   shortClosedQty Decimal @default(0) @db.Decimal(18, 3)
+  /// Qty ordered above selected SO/PR demand — posts to unrestricted RM stock after GRN (not SO demand).
+  excessToStockQty Decimal @default(0) @db.Decimal(18, 3)
 
   rmPo     RmPurchaseOrder @relation(fields: [rmPoId], references: [id], onDelete: Cascade)
   item     Item            @relation(fields: [itemId], references: [id], onDelete: Restrict)

@@ -32,8 +32,17 @@ export type WoPrepareOperational = {
   pendingGrnStatus?: string;
 };
 
-export function woPreparePrepareHref(salesOrderId: number): string {
-  return `/work-orders/prepare?salesOrderId=${encodeURIComponent(String(salesOrderId))}`;
+export function woPreparePrepareHref(
+  salesOrderId: number,
+  opts?: { source?: string; from?: string; itemId?: number; fgItemId?: number },
+): string {
+  const p = new URLSearchParams();
+  p.set("salesOrderId", String(salesOrderId));
+  p.set("source", opts?.source?.trim() || "regular_so");
+  if (opts?.from?.trim()) p.set("from", opts.from.trim());
+  if (opts?.itemId != null && opts.itemId > 0) p.set("itemId", String(opts.itemId));
+  if (opts?.fgItemId != null && opts.fgItemId > 0) p.set("fgItemId", String(opts.fgItemId));
+  return `/work-orders/prepare?${p.toString()}`;
 }
 
 /** Order RM Planning — live SO/quotation requirement review (not PO/GRN execution). */

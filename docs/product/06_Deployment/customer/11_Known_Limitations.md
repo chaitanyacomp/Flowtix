@@ -14,5 +14,9 @@
 | Tally HTTP proxy | Not required when Tally and Flowtix backend run on the same PC and `http://localhost:9000` responds |
 | Packaged vs source runtime | Some Node patterns (source-relative `require.resolve`, bare `@prisma/client` Decimal) work in source but fail in `app/server.js` — see FT-DEP-001 §28.5.1; fixed in packaging v1.14.2 |
 | Tally import confirmation | Sales/Purchase Bill “exported” marks XML downloaded from Flowtix; operator must still import into Tally and confirm there |
+| Master list selection | Select All applies to **visible rows on the current page only**; cross-page multi-select is not supported |
+| Master lifecycle labels | Product architecture may describe Suspend/Archive; runtime uses Active/Inactive (`isActive`) until schema expands |
+| Master list pagination | Large Item masters are filtered/sorted/paged in the browser after load; server-side page tokens for all masters remain a future hardening |
+| Extra item categories | Packing / Stores & Spares / Tool / Scrap are not separate `ItemType` values; packing import maps to CONSUMABLE when approved |
 
 Fill site-specific notes in FT-DEP-013 when deploying.

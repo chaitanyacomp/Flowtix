@@ -82,6 +82,29 @@ describe("resolveRegularRmProductionQtyCap", () => {
     expect(resolveRegularRmEntryQtyCap(data, { lineWoRemaining: 5000 })).toBe(1500);
   });
 
+  it("REGULAR does not clamp RM-supported surplus to WO remaining", () => {
+    const data = ready({
+      woQty: 5000,
+      woRemainingQty: 5000,
+      productionAllowedNowQty: 5142,
+      maxAdditionalQty: 5142,
+      unapprovedProducedQty: 0,
+    });
+    expect(resolveRegularRmEntryQtyCap(data, { lineWoRemaining: 5000 })).toBe(5142);
+  });
+
+  it("REGULAR cumulative: after 3000 produced, next entry max is RM remainder", () => {
+    const data = ready({
+      woQty: 5000,
+      woRemainingQty: 2000,
+      productionAllowedNowQty: 2142,
+      maxAdditionalQty: 2142,
+      draftAndApprovedQty: 3000,
+      unapprovedProducedQty: 0,
+    });
+    expect(resolveRegularRmEntryQtyCap(data, { lineWoRemaining: 2000 })).toBe(2142);
+  });
+
   it("returns null when gate blocks production", () => {
     const blocked = ready({ gate: "WAITING_STORE_ISSUE" });
     expect(isProductionBlockedByRmReadiness(blocked)).toBe(true);

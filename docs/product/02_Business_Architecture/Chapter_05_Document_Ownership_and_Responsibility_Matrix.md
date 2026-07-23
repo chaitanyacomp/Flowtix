@@ -31,6 +31,7 @@
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial ownership and responsibility matrix for all major documents and stages |
 | 1.1.0 | 2026-07-10 | FT ERP Product Team | Production Report owns wastage classification; Lane C analytics read-only; MWN/Scrap/Variance remain separate owners |
+| 1.1.1 | 2026-07-22 | FT ERP Product Team | Interim — REGULAR End Production / Production Report remains Production-owned before WO close |
 
 **Supersedes:** None.
 
@@ -193,7 +194,7 @@ Ownership transfers when the Workflow Engine advances state (e.g. Store submits 
 | Role | Representative Pending Actions (planning + execution) |
 |------|------------------------------------------------------|
 | **Admin** | Complete Enquiry / Feasibility / Quotation; commit Internal Sales Order; create Sales Bill; billing export; commercial completion review |
-| **Store** | Lock RS; complete/submit MPRS; **Create Additional Monthly Plan** (when uncovered source-identity components remain); release RM; raise REGULAR MR; create REGULAR PR; post GRN; WO prepare/placement; submit PMR; Material Issue; Dispatch; **RM Return Approval** (receive submitted production returns) |
+| **Store** | Lock RS; complete/submit MPRS; **Create Additional Monthly Plan** (when uncovered source-identity components remain); release RM; raise REGULAR MR; create REGULAR PR; **Create GRN** (deep-link Purchase & GRN `/rm-po-grn/{id}?openGrn=1`); **Create Work Order in Prepare WO** then **Material Issue** (deep-link `/material-issue?workOrderId={id}&…`); WO prepare/placement; submit PMR; Dispatch; **RM Return Approval** (receive submitted production returns) |
 | **Purchase** | Review/approve Monthly Production Plan (NO_QTY); create MPRS PR; prepare PO; supplier follow-up; monitor awaiting GRN (read-only alert, GRN action remains Store) |
 | **Production** | Record Production Entry; approve batch; report floor blocker; **submit RM return** (approval is Store/Admin — Production sees informational awaiting-approval status only) |
 | **QA** | Inspect batch; disposition reject/rework/scrap; re-inspection after rework |
@@ -328,6 +329,7 @@ Control Tower may deep-link to owning role’s **Workspace** or show read-only t
 | **OWN-12** | **Work Order creation** is Store-owned in standard product (Constitution Art. 10; configurable per Art. 20). |
 | **OWN-13** | **PMR and Material Issue** are Store-owned; Production cannot self-issue RM. |
 | **OWN-14** | **Production Entry** is Production-owned; Store cannot approve shop-floor output. |
+| **OWN-14a** | **REGULAR End Production / Production Report confirm** is Production-owned before WO document close; Store may deep-link/view but does not bypass RM reconciliation or QC. |
 | **OWN-15** | **QA Inspection** is QA-owned; Production cannot self-release dispatch-eligible FG. |
 | **OWN-16** | **Dispatch** is Store-owned; Admin does not post physical shipment. |
 | **OWN-17** | **Control Tower** does not reassign ownership or execute primary-owner actions by default. |
@@ -373,6 +375,18 @@ Control Tower may deep-link to owning role’s **Workspace** or show read-only t
 ---
 
 ## Document navigation
+
+## Production Report reconciliation ownership
+
+| Responsibility | Owner | Control |
+|---|---|---|
+| Enter RM return, RM-specific wastage classification, and remarks | Production | Cannot exceed the current per-line physical balance |
+| Recalculate/validate reconciliation and confirm report | Workflow engine | Backend repeats `Issued = Consumed + Returned + Valid Classified Wastage` within `0.0005` RM-UOM units |
+| Receive approved RM return and post the return ledger movement | Store | Existing Store-owned Material Return workflow is preserved |
+| Post classified RM wastage | Engine on confirmed Production Report | Transactional, once per confirmed report disposition; expected runner is never auto-posted |
+| Process every produced FG batch | QA | Independent of WO report closure; Pending QC is preserved |
+
+Browser draft storage owns no workflow or calculated state. It may retain only operator-entered return, wastage details, and remarks.
 
 | | Link |
 |--|------|

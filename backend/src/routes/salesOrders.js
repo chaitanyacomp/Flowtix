@@ -18,6 +18,7 @@ const {
 } = require("../services/salesBillEligibility");
 const { rmCheckForSalesOrder } = require("../services/rmCheckService");
 const { createMaterialRequirementFromWoPlanning } = require("../services/materialPlanningService");
+const { createPurchaseRequestFromRegularSalesOrder } = require("../services/regularSoPurchaseRequestService");
 const { blockProcurementDemandWhenPlanningDriven } = require("../middleware/planningDrivenProcurementGuard");
 const {
   buildRegularSoPlanningSnapshotView,
@@ -1503,6 +1504,7 @@ salesOrderRouter.put(
       const soId = Number(req.params.id);
       const schema = z.object({
         bufferPercent: z.number().min(0).max(10).optional(),
+        bufferReason: z.string().max(500).optional(),
       });
       const body = schema.parse(req.body ?? {});
       const snapshot = await upsertRegularSoPlanningSnapshot(
@@ -1510,6 +1512,8 @@ salesOrderRouter.put(
           salesOrderId: soId,
           bufferPercent: body.bufferPercent ?? 0,
           createdByUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
+          bufferReason: body.bufferReason ?? null,
         },
         prisma,
       );
@@ -1593,14 +1597,98 @@ salesOrderRouter.post(
           salesOrderId: mr.salesOrderId,
           workOrderId: mr.workOrderId,
           lines: (mr.lines ?? []).map((l) => ({
+            id: l.id,
             rmItemId: l.rmItemId,
             itemName: l.rmItem?.itemName ?? "",
             unit: l.unitSnapshot ?? l.rmItem?.unit ?? "",
             requiredQty: Number(l.requiredQty),
             availableQty: Number(l.availableQtySnapshot),
             shortageQty: Number(l.shortageQty),
+            procuredQty: Number(l.procuredQty ?? 0),
           })),
         },
+      });
+    } catch (e) {
+      if (e?.code === "DUPLICATE_MATERIAL_REQUIREMENT") {
+        return res.status(409).json({
+          code: e.code,
+          message: e.message,
+          existingMaterialRequirement: e.existingMaterialRequirement ?? null,
+        });
+      }
+      if (e?.code === "REOPEN_CONFIRM_REQUIRED") {
+        return res.status(409).json({
+          code: e.code,
+          message: e.message,
+          existingMaterialRequirement: e.existingMaterialRequirement ?? null,
+        });
+      }
+      return next(e);
+    }
+  },
+);
+
+const createPurchaseRequestFromSoBodySchema = z.object({
+  workOrderId: z.number().int().positive().optional(),
+  planLineQty: z.record(z.string(), z.coerce.number().nonnegative()).optional(),
+  confirmReuse: z.boolean().optional(),
+  confirmReopenClosed: z.boolean().optional(),
+});
+
+/** Store: ensure REGULAR_SO MaterialRequirement + create Purchase Request (idempotent). */
+salesOrderRouter.post(
+  "/:id/create-purchase-request",
+  requireAuth,
+  requireRole(MATERIAL_REQUISITION_WRITE_ROLES, "Only Admin and Store can create Regular SO purchase requests."),
+  blockProcurementDemandWhenPlanningDriven,
+  async (req, res, next) => {
+    try {
+      const soId = Number(req.params.id);
+      const body = createPurchaseRequestFromSoBodySchema.parse(req.body ?? {});
+      const planQtyByLineId = {};
+      if (body.planLineQty) {
+        for (const [k, v] of Object.entries(body.planLineQty)) {
+          const lineId = Number(k);
+          if (Number.isFinite(lineId) && lineId > 0) planQtyByLineId[lineId] = v;
+        }
+      }
+      const result = await createPurchaseRequestFromRegularSalesOrder(
+        {
+          salesOrderId: soId,
+          workOrderId: body.workOrderId,
+          planQtyByLineId,
+          confirmReuse: Boolean(body.confirmReuse),
+          confirmReopenClosed: Boolean(body.confirmReopenClosed),
+        },
+        { userId: req.user?.userId, role: req.user?.role },
+      );
+      const soLabel = result.salesOrder?.docNo?.trim() || `SO #${soId}`;
+      const status = result.created ? 201 : 200;
+      return res.status(status).json({
+        ok: true,
+        created: result.created,
+        reusedMr: result.reusedMr,
+        reusedPr: result.reusedPr,
+        message: result.created
+          ? `Purchase Request created for ${soLabel}.`
+          : `Purchase Request already exists for ${soLabel}.`,
+        salesOrder: result.salesOrder,
+        materialRequirement: result.materialRequirement
+          ? {
+              id: result.materialRequirement.id,
+              docNo: result.materialRequirement.docNo,
+              status: result.materialRequirement.status,
+              sourceType: result.materialRequirement.sourceType,
+              salesOrderId: result.materialRequirement.salesOrderId,
+            }
+          : null,
+        purchaseRequest: result.purchaseRequest
+          ? {
+              id: result.purchaseRequest.id,
+              docNo: result.purchaseRequest.docNo,
+              status: result.purchaseRequest.status,
+            }
+          : null,
       });
     } catch (e) {
       if (e?.code === "DUPLICATE_MATERIAL_REQUIREMENT") {

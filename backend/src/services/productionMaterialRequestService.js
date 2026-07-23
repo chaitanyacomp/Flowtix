@@ -42,6 +42,14 @@ const {
   clearStaleAllowanceRequestsAfterNormalIssue,
 } = require("./rmAllowanceApprovalService");
 const { resolveWorkOrderOperationalStatus } = require("./workOrderOperationalStatus");
+const {
+  isRegularSoOrderType,
+  isWithinRoundingTolerance,
+  computeRoundedDownToleranceQty,
+  deriveRegularSoRmIssueStatus,
+  assertRegularSoCumulativeAllowanceGate,
+  round3: regularSoRound3,
+} = require("./regularSoRmIssuePlanning");
 
 const STORE_ISSUE_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED"];
 const PMR_ISSUED_STATUSES = ["FULLY_ISSUED", "SHORT_ISSUE_ACCEPTED"];
@@ -52,6 +60,7 @@ const PMR_SHORT_ISSUE_WAIVE_REASONS = [
   "SCALE_LIMITATION",
   "PACKING_LIMITATION",
   "MANAGEMENT_DECISION",
+  "ROUNDING_TOLERANCE",
   "OTHER",
 ];
 
@@ -434,7 +443,8 @@ function mapPmrRow(row) {
   const storeReadiness = derivePmrStoreIssueReadiness(row.status, totalPending);
   const issueQueueState = derivePmrIssueQueueState(row.status, totalIssued, totalPending);
   const pendingLineCount = lines.filter((l) => n(l.pendingQty) > STOCK_EPS).length;
-  const statusLabel =
+  const orderType = row.workOrder?.salesOrder?.orderType ?? null;
+  let statusLabel =
     row.status === "SHORT_ISSUE_ACCEPTED"
       ? "Closed – Short Issue Accepted"
       : row.status === "FULLY_ISSUED"
@@ -442,17 +452,34 @@ function mapPmrRow(row) {
         : row.status === "PARTIALLY_ISSUED"
           ? "Partially Issued"
           : row.status;
+  let issueStatusKey = row.status;
+  if (isRegularSoOrderType(orderType) && (totalRequired > STOCK_EPS || totalIssued > STOCK_EPS)) {
+    const derived = deriveRegularSoRmIssueStatus({
+      theoreticalRmRequiredQty: totalRequired,
+      cumulativeRmIssuedQty: totalIssued,
+      waivedQty: totalWaived,
+      shortCloseReason: row.shortIssueCloseReason,
+    });
+    statusLabel = derived.statusLabel;
+    issueStatusKey = derived.statusKey;
+  } else if (row.status === "FULLY_ISSUED" && totalIssued > totalRequired + STOCK_EPS) {
+    statusLabel = "Excess/Allowance Issued";
+    issueStatusKey = "EXCESS_ALLOWANCE_ISSUED";
+  }
   return {
     id: row.id,
     docNo: row.docNo,
     status: row.status,
     statusLabel,
+    issueStatusKey,
+    shortIssueCloseReason: row.shortIssueCloseReason ?? null,
     issueQueueState,
     remarks: row.remarks,
     workOrderId: row.workOrderId,
     workOrderNo: row.workOrder?.docNo ?? null,
     salesOrderId: row.workOrder?.salesOrderId ?? null,
     salesOrderNo: row.workOrder?.salesOrder?.docNo ?? null,
+    orderType: orderType,
     requirementSheetId: row.workOrder?.requirementSheetId ?? null,
     requestedAt: row.requestedAt,
     createdAt: row.createdAt,
@@ -756,7 +783,9 @@ async function getProductionMaterialRequestById(id, db = prisma) {
   const row = await db.productionMaterialRequest.findUnique({
     where: { id },
     include: {
-      workOrder: { select: { docNo: true, salesOrder: { select: { docNo: true } } } },
+      workOrder: {
+        select: { docNo: true, salesOrder: { select: { docNo: true, orderType: true } } },
+      },
       lines: { include: { item: { select: { id: true, itemName: true, unit: true } } } },
       materialIssueNotes: { select: { id: true, docNo: true, createdAt: true }, orderBy: { id: "desc" } },
     },
@@ -1129,6 +1158,15 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
       },
       { ...actor, mode: "ISSUE", approvedAllowanceRequest },
     );
+    // REGULAR_SO: cumulative excess vs theoretical cannot be bypassed by splitting issues.
+    if (isRegularSoOrderType(pmr.workOrder?.salesOrder?.orderType)) {
+      assertRegularSoCumulativeAllowanceGate({
+        theoreticalRmRequiredQty: theoreticalBomQty,
+        cumulativeNetIssuedAfter: alreadyIssuedQty + qty,
+        role: actor.role,
+        hasApprovedRequest: Boolean(approvedAllowanceRequest),
+      });
+    }
     const includedRunnerQty = recoverIncludedRunnerQty(
       theoreticalBomQty,
       snapshotFgWeight,
@@ -1447,6 +1485,16 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
             ? "No free stock available for issue at the selected store location."
             : "No pending quantity to issue.";
 
+  const withinRoundingToleranceEligible =
+    isRegularSoOrderType(pmr.workOrder?.salesOrder?.orderType ?? pmr.orderType) &&
+    n(pmr.totalIssued) > STOCK_EPS &&
+    n(pmr.totalPending) > STOCK_EPS &&
+    (pmr.lines || []).every((l) => {
+      const remaining = n(l.pendingQty);
+      if (remaining <= STOCK_EPS) return true;
+      return isWithinRoundingTolerance(n(l.requiredQty ?? l.theoreticalBomQty), n(l.issuedQty));
+    });
+
   const issueDecision = {
     totalRequired: pmr.totalEffectiveRequired,
     totalOriginalRequired: pmr.totalOriginalRequired ?? pmr.totalRequired,
@@ -1469,6 +1517,7 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
     issueQueueState,
     canWaiveRemaining:
       canIssue && n(pmr.totalIssued) > STOCK_EPS && n(pmr.totalPending) > STOCK_EPS,
+    withinRoundingToleranceEligible,
     canReleaseToProduction: canRelease,
     unissuedRequiredLines: releaseAssessment.unissuedRequiredLines,
     releaseBlockedByUnissuedBom: releaseAssessment.unissuedRequiredLines.length > 0,
@@ -1498,7 +1547,10 @@ async function waiveRemainingPmrQty(pmrId, input, actor = {}) {
   return prisma.$transaction(async (tx) => {
     const pmr = await tx.productionMaterialRequest.findUnique({
       where: { id: pmrId },
-      include: { lines: true },
+      include: {
+        lines: true,
+        workOrder: { include: { salesOrder: { select: { orderType: true } } } },
+      },
     });
     if (!pmr) {
       const err = new Error("Production material request not found");
@@ -1522,6 +1574,31 @@ async function waiveRemainingPmrQty(pmrId, input, actor = {}) {
       throw err;
     }
 
+    const isRegular = isRegularSoOrderType(pmr.workOrder?.salesOrder?.orderType);
+    if (reason === "ROUNDING_TOLERANCE") {
+      if (!isRegular) {
+        const err = new Error("Rounding tolerance acknowledgement applies to REGULAR_SO work orders only.");
+        err.statusCode = 400;
+        err.code = "ROUNDING_TOLERANCE_REGULAR_SO_ONLY";
+        throw err;
+      }
+      for (const ln of pmr.lines) {
+        const remaining = pendingQty(ln);
+        if (remaining <= STOCK_EPS) continue;
+        const theoretical = n(ln.requiredQty);
+        const issued = n(ln.issuedQty);
+        if (!isWithinRoundingTolerance(theoretical, issued)) {
+          const tol = computeRoundedDownToleranceQty(theoretical);
+          const err = new Error(
+            `Shortage ${regularSoRound3(remaining)} exceeds rounding tolerance ${tol} for item #${ln.itemId}. Keep Partially Issued or use a short-issue reason.`,
+          );
+          err.statusCode = 409;
+          err.code = "ROUNDING_TOLERANCE_EXCEEDED";
+          throw err;
+        }
+      }
+    }
+
     const waivedLines = [];
     for (const ln of pmr.lines) {
       const remaining = pendingQty(ln);
@@ -1538,6 +1615,7 @@ async function waiveRemainingPmrQty(pmrId, input, actor = {}) {
         issuedQty: n(ln.issuedQty),
         waivedQty: nextWaived,
         remainingWaived: remaining,
+        toleranceQty: computeRoundedDownToleranceQty(n(ln.requiredQty)),
       });
     }
     if (!waivedLines.length) {
@@ -1546,9 +1624,16 @@ async function waiveRemainingPmrQty(pmrId, input, actor = {}) {
       throw err;
     }
 
+    const closedAt = new Date();
     await tx.productionMaterialRequest.update({
       where: { id: pmrId },
-      data: { status: "SHORT_ISSUE_ACCEPTED" },
+      data: {
+        status: "SHORT_ISSUE_ACCEPTED",
+        shortIssueCloseReason: reason,
+        shortIssueClosedAt: closedAt,
+        shortIssueClosedByUserId:
+          typeof actor.userId === "number" && Number.isFinite(actor.userId) ? actor.userId : null,
+      },
     });
     // Release residual allocation so unissued qty returns to free usable stock.
     // Never create StockTransaction for waived / short-issue qty.
@@ -1556,26 +1641,35 @@ async function waiveRemainingPmrQty(pmrId, input, actor = {}) {
 
     const userId = actor.userId;
     if (typeof userId === "number" && Number.isFinite(userId)) {
+      const actionLabel =
+        reason === "ROUNDING_TOLERANCE" ? "PMR_ROUNDING_TOLERANCE_ACKNOWLEDGED" : "PMR_SHORT_ISSUE_CLOSED";
       await auditLog.write(tx, {
         action: auditLog.AuditAction.UPDATE,
         entityType: auditLog.AuditEntityType.WORK_ORDER,
         entityId: String(pmr.workOrderId),
         actorUserId: userId,
         actorRole: actor.role,
-        summary: `Short Issue Closed on ${pmr.docNo || `PMR-${pmrId}`} — inventory moved issued qty only`,
+        summary:
+          reason === "ROUNDING_TOLERANCE"
+            ? `Rounding tolerance acknowledged on ${pmr.docNo || `PMR-${pmrId}`} — WO target permitted; inventory moved issued qty only`
+            : `Short Issue Closed on ${pmr.docNo || `PMR-${pmrId}`} — inventory moved issued qty only`,
         payload: {
           module: "MATERIAL_ISSUE",
-          actionLabel: "PMR_SHORT_ISSUE_CLOSED",
+          actionLabel,
           legacyActionLabel: "PMR_WAIVE_REMAINING",
+          flow: isRegular ? "REGULAR_SO" : pmr.workOrder?.salesOrder?.orderType ?? null,
           ref: { type: "PMR", id: String(pmrId), no: pmr.docNo },
           reason,
           remarks,
           closedByUserId: userId,
-          closedAt: new Date().toISOString(),
+          closedAt: closedAt.toISOString(),
           inventoryRule: "STOCK_MOVEMENT_EQUALS_ISSUED_QTY_ONLY",
           lines: waivedLines.map((w) => ({
             ...w,
             shortIssueQty: w.remainingWaived,
+            theoreticalRequirement: w.requiredQty,
+            actualCumulativeIssue: w.issuedQty,
+            toleranceDifference: w.remainingWaived,
           })),
         },
       });

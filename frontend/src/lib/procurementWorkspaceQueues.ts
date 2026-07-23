@@ -1,5 +1,7 @@
 /** P3 — Purchase Workspace demand pools (REGULAR_SO · MPRS · STOCK_REPLENISHMENT). */
 
+import { PROCUREMENT_TERMS } from "./procurementTerminology";
+
 export const PROCUREMENT_DEMAND_POOL_KEYS = ["REGULAR_SO", "MPRS", "STOCK_REPLENISHMENT"] as const;
 
 export type ProcurementDemandPoolKey = (typeof PROCUREMENT_DEMAND_POOL_KEYS)[number];
@@ -14,10 +16,15 @@ export type ProcurementQueueTabDef = {
   countKey: ProcurementDemandPoolKey;
 };
 
+/** UI labels only — backend pool keys stay REGULAR_SO / MPRS / STOCK_REPLENISHMENT. */
 export const PROCUREMENT_DEMAND_POOL_TABS: ProcurementQueueTabDef[] = [
-  { id: "REGULAR_SO", label: "Sales Orders", countKey: "REGULAR_SO" },
-  { id: "MPRS", label: "Monthly Planning", countKey: "MPRS" },
-  { id: "STOCK_REPLENISHMENT", label: "Stock Replenishment", countKey: "STOCK_REPLENISHMENT" },
+  { id: "REGULAR_SO", label: PROCUREMENT_TERMS.DEMAND_POOL_REGULAR_SO, countKey: "REGULAR_SO" },
+  { id: "MPRS", label: PROCUREMENT_TERMS.DEMAND_POOL_MPRS, countKey: "MPRS" },
+  {
+    id: "STOCK_REPLENISHMENT",
+    label: PROCUREMENT_TERMS.DEMAND_POOL_STOCK_REPLENISHMENT,
+    countKey: "STOCK_REPLENISHMENT",
+  },
 ];
 
 /** @deprecated Use PROCUREMENT_DEMAND_POOL_TABS */
@@ -34,6 +41,9 @@ const POOL_SOURCE_TYPES: Record<ProcurementDemandPoolKey, readonly string[]> = {
   MPRS: ["MONTHLY_PLAN"],
   STOCK_REPLENISHMENT: ["STOCK_REPLENISHMENT"],
 };
+
+/** Legacy Regular SO MRs remain visible/actionable on the Sales Orders workspace tab. */
+const REGULAR_SO_WORKSPACE_SOURCE_TYPES = ["SALES_ORDER", "WORK_ORDER_PLANNING"] as const;
 
 type PoolOriginLike = { materialRequirementId?: number | null };
 type PoolItemLike = { origins?: PoolOriginLike[] | null };
@@ -106,6 +116,7 @@ export function resolveMrDemandPool(mr: {
   source?: { type?: string | null } | null;
 }): ProcurementDemandPoolKey | null {
   const st = String(mr.source?.type ?? mr.sourceType ?? "").trim();
+  if ((REGULAR_SO_WORKSPACE_SOURCE_TYPES as readonly string[]).includes(st)) return "REGULAR_SO";
   for (const pool of PROCUREMENT_DEMAND_POOL_KEYS) {
     if (POOL_SOURCE_TYPES[pool].includes(st)) return pool;
   }
@@ -137,22 +148,47 @@ export function deriveDemandPoolCountsFromPools(pools: PoolsMapLike | null | und
   return counts;
 }
 
+/**
+ * Tab badge counts must agree with rows that appear under each procurement source.
+ *
+ * Prefer `pendingMaterialRequirements` (includes Regular SO pre-MR projections).
+ * When the API is scoped to one demandPool (deep link), fill other tabs from
+ * commercial pools / summary so overall sibling source counts are not zeroed.
+ */
 export function deriveDemandPoolCountsFromWorkspace(ws: {
   pools?: PoolsMapLike | null;
   summary?: { queueCounts?: { byDemandPool?: Partial<ProcurementDemandPoolCounts> } | null } | null;
+  sections?: {
+    pendingMaterialRequirements?: ReadonlyArray<{
+      sourceType?: string | null;
+      source?: { type?: string | null } | null;
+    }> | null;
+  } | null;
 } | null): ProcurementDemandPoolCounts {
-  if (ws?.pools && PROCUREMENT_DEMAND_POOL_KEYS.every((k) => ws.pools?.[k])) {
-    return deriveDemandPoolCountsFromPools(ws.pools);
-  }
-
-  const byPool = ws?.summary?.queueCounts?.byDemandPool;
   const counts = emptyProcurementDemandPoolCounts();
-  if (byPool) {
-    for (const key of PROCUREMENT_DEMAND_POOL_KEYS) {
-      counts[key] = Number(byPool[key] ?? 0);
+  const fromPending = deriveQueueCountsFromMrs(ws?.sections?.pendingMaterialRequirements ?? []);
+  const fromPools = deriveDemandPoolCountsFromPools(ws?.pools);
+  const byPool = ws?.summary?.queueCounts?.byDemandPool;
+
+  for (const key of PROCUREMENT_DEMAND_POOL_KEYS) {
+    if (fromPending[key] > 0) {
+      counts[key] = fromPending[key];
+      continue;
     }
+    const summaryCount = Number(byPool?.[key] ?? 0);
+    counts[key] = Math.max(summaryCount, fromPools[key]);
   }
   return counts;
+}
+
+/**
+ * Count rows for the active tab after client-side deep-link filters (SO / WO).
+ * Use for agreeing the active tab badge with currently displayed rows.
+ */
+export function countDisplayedRowsForDemandPool<
+  T extends { sourceType?: string | null; source?: { type?: string | null } | null },
+>(rows: ReadonlyArray<T>, demandPool: ProcurementDemandPoolKey): number {
+  return filterMrsByQueueTab(rows as T[], demandPool).length;
 }
 
 /** @deprecated Use deriveDemandPoolCountsFromWorkspace */

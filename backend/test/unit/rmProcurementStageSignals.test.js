@@ -49,6 +49,73 @@ describe("rmProcurementStageSignals", () => {
     assert.equal(resolved.action, "Create Purchase Request");
     assert.match(resolved.href, /procurement-planning/);
     assert.match(resolved.href, /demandPool=MPRS/);
+    assert.doesNotMatch(resolved.action, /Regular SO/);
+  });
+
+  it("Regular SO before PR emits Create Purchase Request — Regular SO with salesOrderDocNo", () => {
+    const resolved = resolveRmRiskPendingAction(
+      {
+        materialRequirementId: 55,
+        sourceType: "SALES_ORDER",
+        workOrderId: 2,
+        salesOrderId: 258,
+        salesOrderDocNo: "SO-26-0001",
+        prLineCount: 0,
+        poLineCount: 0,
+        operationalKey: "PROCUREMENT_PENDING",
+        nextActionKey: "CREATE_PR",
+        procurementDemandPool: "REGULAR_SO",
+        hasOpenMr: true,
+      },
+      { queueType: "WAITING_PURCHASE_ACTION", freeStockQty: 0, netShortageAfterIncomingQty: 140 },
+      "STORE",
+    );
+    assert.equal(resolved.action, "Create Purchase Request — Regular SO");
+    assert.match(resolved.href, /demandPool=REGULAR_SO/);
+    assert.match(resolved.href, /salesOrderId=258/);
+    assert.match(resolved.href, /salesOrderDocNo=SO-26-0001/);
+    assert.doesNotMatch(resolved.href, /SO%20%23258/);
+  });
+
+  it("Regular SO shortage without MR still emits Create Purchase Request — Regular SO", () => {
+    const resolved = resolveRmRiskPendingAction(
+      {
+        materialRequirementId: null,
+        sourceType: "SALES_ORDER",
+        salesOrderId: 261,
+        salesOrderDocNo: "SO-26-0001",
+        prLineCount: 0,
+        poLineCount: 0,
+        hasOpenMr: false,
+        procurementDemandPool: "REGULAR_SO",
+      },
+      { queueType: "WO_BLOCKED_RM_SHORTAGE", freeStockQty: 0, netShortageAfterIncomingQty: 2.1 },
+      "STORE",
+    );
+    assert.equal(resolved.action, "Create Purchase Request — Regular SO");
+    assert.match(resolved.href, /demandPool=REGULAR_SO/);
+    assert.match(resolved.href, /salesOrderId=261/);
+  });
+
+  it("draft MR emits Approve Material Requirement instead of Create PR", () => {
+    const resolved = resolveRmRiskPendingAction(
+      {
+        materialRequirementId: 88,
+        sourceType: "SALES_ORDER",
+        salesOrderId: 261,
+        prLineCount: 0,
+        poLineCount: 0,
+        hasOpenMr: true,
+        mrStatus: "PENDING_APPROVAL",
+        operationalKey: "PROCUREMENT_PENDING",
+        procurementDemandPool: "REGULAR_SO",
+      },
+      { queueType: "WAITING_PURCHASE_ACTION", freeStockQty: 0, netShortageAfterIncomingQty: 2.1 },
+      "STORE",
+    );
+    assert.equal(resolved.action, "Approve Material Requirement");
+    assert.match(resolved.href, /material-planning/);
+    assert.match(resolved.href, /materialRequirementId=88/);
   });
 
   it("after PR with zero stock emits waiting for Purchase for Store", () => {
@@ -115,11 +182,12 @@ describe("rmProcurementStageSignals", () => {
       { queueType: "PO_WAITING_GRN" },
       "STORE",
     );
-    assert.equal(resolved.action, "GRN Pending");
+    assert.equal(resolved.action, "Create GRN");
     assert.match(resolved.href, /\/rm-po-grn\/112/);
+    assert.match(resolved.href, /openGrn=1/);
   });
 
-  it("after PO before GRN emits GRN Pending for Store", () => {
+  it("after PO before GRN emits Create GRN for Store", () => {
     const resolved = resolveRmRiskStorePendingAction(
       {
         materialRequirementId: 99,
@@ -132,8 +200,9 @@ describe("rmProcurementStageSignals", () => {
       },
       { queueType: "PO_WAITING_GRN", freeStockQty: 0 },
     );
-    assert.equal(resolved.action, "GRN Pending");
-    assert.match(resolved.href, /rm-po-grn/);
+    assert.equal(resolved.action, "Create GRN");
+    assert.match(resolved.href, /rm-po-grn\/12/);
+    assert.match(resolved.href, /openGrn=1/);
   });
 
   it("after GRN with stock emits Issue Material", () => {
@@ -169,7 +238,7 @@ describe("rmProcurementStageSignals", () => {
     assert.notEqual(resolved.action, "Create Purchase Request");
   });
 
-  it("PMR fully issued after completed procurement routes Store to waiting handoff", () => {
+  it("PMR fully issued after completed procurement routes Store to release handoff when WO not yet released", () => {
     const resolved = resolveRmRiskStorePendingAction(
       {
         materialRequirementId: 1,
@@ -179,18 +248,19 @@ describe("rmProcurementStageSignals", () => {
       },
       { queueType: "READY_TO_RELEASE_WO" },
     );
-    assert.equal(resolved.action, "RM issued — waiting for Production");
-    assert.doesNotMatch(resolved.href, /\/production/);
-    assert.match(resolved.href, /rm-shortage/);
+    assert.equal(resolved.action, "Release to Production");
+    assert.doesNotMatch(resolved.href, /\/work-orders\/prepare/);
+    assert.match(resolved.href, /material-issue|rm-shortage/);
   });
 
-  it("PMR fully issued after completed procurement routes Production to workspace", () => {
+  it("PMR fully issued after completed procurement routes Production to workspace when released", () => {
     const resolved = resolveRmRiskPendingAction(
       {
         materialRequirementId: 1,
         workOrderId: 1,
         procurementCompletedForCase: true,
         mrStatus: "FULLY_PROCURED",
+        materialReleasedToProduction: true,
       },
       { queueType: "READY_TO_RELEASE_WO" },
       "PRODUCTION",
@@ -199,5 +269,45 @@ describe("rmProcurementStageSignals", () => {
     assert.match(resolved.href, /\/production/);
     assert.match(resolved.href, /productionBucket=readyToStart/);
     assert.match(resolved.href, /from=pending-actions/);
+  });
+
+  it("RM_RECEIVED_CREATE_WO deep-links Prepare WO for Regular SO (does not create WO)", () => {
+    const resolved = resolveRmRiskPendingAction(
+      {
+        salesOrderId: 258,
+        salesOrderDocNo: "SO-26-0001",
+        materialRequirementId: 55,
+        sourceType: "SALES_ORDER",
+        procurementCompletedForCase: true,
+        mrStatus: "FULLY_PROCURED",
+        operationalKey: "RM_RECEIVED_CREATE_WO",
+        nextActionKey: "CREATE_WO",
+      },
+      { queueType: "RM_RECEIVED_CREATE_WO", recommendedAction: "Create Work Order in Prepare WO" },
+      "STORE",
+    );
+    assert.equal(resolved.action, "Create Work Order in Prepare WO");
+    assert.match(resolved.href, /\/work-orders\/prepare/);
+    assert.match(resolved.href, /salesOrderId=258/);
+    assert.match(resolved.href, /source=regular_so/);
+    assert.match(resolved.href, /from=pending-actions/);
+    assert.doesNotMatch(resolved.href, /\/dashboard/);
+    assert.doesNotMatch(resolved.href, /rm-shortage/);
+  });
+
+  it("does not offer Prepare WO create-wo link when a work order already exists", () => {
+    const resolved = resolveRmRiskPendingAction(
+      {
+        salesOrderId: 258,
+        workOrderId: 99,
+        procurementCompletedForCase: true,
+        mrStatus: "FULLY_PROCURED",
+        operationalKey: "RM_RECEIVED_CREATE_WO",
+        nextActionKey: "CREATE_WO",
+      },
+      { queueType: "RM_RECEIVED_CREATE_WO" },
+      "STORE",
+    );
+    assert.doesNotMatch(resolved.href, /\/work-orders\/prepare/);
   });
 });

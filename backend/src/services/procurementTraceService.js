@@ -1,4 +1,4 @@
-const { qtyToNumber, sumReceivedByRmPoLineFromGrns } = require("./rmPurchaseHelpers");
+const { QUEUE_EPS, qtyToNumber, sumReceivedByRmPoLineFromGrns } = require("./rmPurchaseHelpers");
 
 const RM_PO_INCLUDE = {
   supplier: {
@@ -180,12 +180,15 @@ function buildDemandSourcesForPoLine(poLine) {
 
       const sourceLinks = prLine.sourceLinks || [];
       if (sourceLinks.length) {
+        const totalSl = sourceLinks.reduce((s, sl) => s + qtyToNumber(sl.allocatedQty), 0);
         for (const sl of sourceLinks) {
           const mrCtx = mapMrContext(sl.materialRequirementLine, sl.allocatedQty);
           if (mrCtx && !seenMr.has(mrCtx.materialRequirementLineId)) {
             seenMr.add(mrCtx.materialRequirementLineId);
             mrSources.push(mrCtx);
           }
+          const share =
+            totalSl > QUEUE_EPS ? qtyToNumber(sl.allocatedQty) / totalSl : 1 / sourceLinks.length;
           demandSources.push({
             demandSourceType: mrCtx?.sourceType ?? null,
             monthlyPlanRevision: mrCtx?.monthlyPlan?.sourceRevision ?? null,
@@ -195,6 +198,7 @@ function buildDemandSourcesForPoLine(poLine) {
             workOrder: mrCtx?.workOrder ?? null,
             salesOrder: mrCtx?.salesOrder ?? null,
             quotation: mrCtx?.quotation ?? null,
+            allocatedQty: linkQty * share,
           });
         }
       } else {
@@ -207,6 +211,7 @@ function buildDemandSourcesForPoLine(poLine) {
           workOrder: null,
           salesOrder: null,
           quotation: null,
+          allocatedQty: linkQty,
         });
       }
       continue;
@@ -226,6 +231,7 @@ function buildDemandSourcesForPoLine(poLine) {
       workOrder: mrCtx?.workOrder ?? null,
       salesOrder: mrCtx?.salesOrder ?? null,
       quotation: mrCtx?.quotation ?? null,
+      allocatedQty: linkQty,
     });
   }
 
@@ -355,6 +361,32 @@ function assembleRmPoProcurementTrace(poRow, stockTransactions = [], purchaseBil
     const shortClosedQty = qtyToNumber(poLine.shortClosedQty);
     const pendingQty = Math.max(0, orderedQty - receivedQty - shortClosedQty);
     const { demandSources, mrSources, prSources } = buildDemandSourcesForPoLine(poLine);
+    const demandAllocatedQty = (poLine.procurementLinks || []).reduce(
+      (sum, link) => sum + qtyToNumber(link.allocatedQty),
+      0,
+    );
+    const excessToStockQty = qtyToNumber(poLine.excessToStockQty);
+    const soAllocationBreakdown = [];
+    const seenSo = new Set();
+    for (const ds of demandSources) {
+      const soId = ds.salesOrder?.id ?? ds.mr?.salesOrder?.id ?? null;
+      const soDoc = ds.salesOrder?.docNo ?? ds.mr?.salesOrder?.docNo ?? null;
+      const key = soId != null ? `so:${soId}` : soDoc ? `doc:${soDoc}` : null;
+      if (!key || seenSo.has(key)) continue;
+      seenSo.add(key);
+      const qtyForSo = demandSources
+        .filter(
+          (x) =>
+            (soId != null && (x.salesOrder?.id ?? x.mr?.salesOrder?.id) === soId) ||
+            (soDoc && (x.salesOrder?.docNo ?? x.mr?.salesOrder?.docNo) === soDoc),
+        )
+        .reduce((s, x) => s + qtyToNumber(x.allocatedQty), 0);
+      soAllocationBreakdown.push({
+        salesOrderId: soId,
+        salesOrderDocNo: soDoc,
+        allocatedQty: qtyForSo,
+      });
+    }
 
     const grnLines = [];
     for (const grn of poRow.grns || []) {
@@ -394,6 +426,9 @@ function assembleRmPoProcurementTrace(poRow, stockTransactions = [], purchaseBil
       outstandingProcurement: pendingQty,
       pendingQty,
       rate: qtyToNumber(poLine.rate),
+      demandAllocatedQty,
+      excessToStockQty,
+      soAllocationBreakdown,
       demandSources,
       prSources,
       mrSources,

@@ -53,9 +53,15 @@ const {
   PREPARE_RM_PO,
   RM_ISSUED_WAITING_FOR_PRODUCTION,
   READY_TO_START_PRODUCTION,
+  CREATE_PURCHASE_REQUEST_ACTION,
+  CREATE_PURCHASE_REQUEST_REGULAR_SO_ACTION,
   resolveRmRiskPendingAction,
   resolveProcurementDemandPool,
+  isCreatePurchaseRequestAction,
+  isRegularSoProcurementStage,
+  createPurchaseRequestActionLabel,
 } = require("./rmProcurementStageSignals");
+const { displaySalesOrderNo } = require("../utils/docNoLabels");
 const {
   productionExecutionPendingActionLabel,
   PRODUCTION_EXECUTION_PENDING_LABELS,
@@ -84,10 +90,13 @@ const RM_RETURN_PENDING_ACTION = "RM Return Approval Pending";
 const RM_RETURN_PENDING_ACTION_LEGACY = "RM Return Pending";
 const DISPATCH_PENDING_ACTION = "Dispatch Pending";
 const STORE_DISPATCH_READY_PREFIX = "Ready to Dispatch";
-const GRN_PENDING_ACTION = "GRN Pending";
+const GRN_PENDING_ACTION = "Create GRN";
+/** @deprecated historical label — still recognized for dedupe / status mapping */
+const GRN_PENDING_ACTION_LEGACY = "GRN Pending";
 const PURCHASE_PO_PREP_ACTIONS = new Set([PREPARE_RM_PO, "Create PO"]);
 const PROCUREMENT_PENDING_ACTIONS = new Set([
-  "Create Purchase Request",
+  CREATE_PURCHASE_REQUEST_ACTION,
+  CREATE_PURCHASE_REQUEST_REGULAR_SO_ACTION,
   "Resolve RM Shortage",
   WAITING_FOR_PURCHASE_RM_PO,
   PREPARE_RM_PO,
@@ -332,7 +341,12 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
     return resolveNoQtyPlanningWorkspaceHref(row);
   }
   if (rowType === ROW_TYPES.WO_PLANNING && salesOrderId > 0) {
-    return `/work-orders/prepare?salesOrderId=${salesOrderId}&from=pending-actions`;
+    const params = new URLSearchParams({
+      salesOrderId: String(salesOrderId),
+      source: "regular_so",
+      from: "pending-actions",
+    });
+    return `/work-orders/prepare?${params.toString()}`;
   }
   if (rowType === ROW_TYPES.DISPATCH_BACKLOG && salesOrderId > 0) {
     const params = new URLSearchParams({ salesOrderId: String(salesOrderId), source: "pending-actions" });
@@ -412,7 +426,7 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
     if (dispId > 0) return `/qc-entry?source=pending-actions${hash}`;
     if (workOrderId > 0) return `/qc-entry?workOrderId=${workOrderId}&source=pending-actions${hash}`;
   }
-  if (workOrderId > 0) return `/work-orders?highlight=${workOrderId}&from=pending-actions`;
+  if (workOrderId > 0) return `/work-orders/${workOrderId}?from=pending-actions`;
   if (salesOrderId > 0) return resolveNoQtyPlanningWorkspaceHref(row);
   return "/dashboard";
 }
@@ -479,11 +493,36 @@ function friendlyActionForNormalizedRow(row, role = "STORE") {
       recommendedAction: row?.nextAction,
     }, role);
     if (resolved.action === "Create PO") return PREPARE_RM_PO;
-    if (resolved.action === "GRN Pending") return "GRN Pending";
+    if (resolved.action === "GRN Pending" || resolved.action === "Create GRN" || resolved.action === GRN_PENDING_ACTION) {
+      return GRN_PENDING_ACTION;
+    }
     return resolved.action;
   }
   if (nextAction) return nextAction;
   return "Open";
+}
+
+function formatRegularSoCreatePrDocumentNo(meta, fallbackDocNo = null) {
+  const soId = Number(meta?.salesOrderId ?? 0);
+  const soLabel =
+    String(meta?.salesOrderDocNo ?? "").trim() ||
+    (soId > 0 ? displaySalesOrderNo(soId, null) : null) ||
+    String(fallbackDocNo ?? "").trim() ||
+    null;
+  const fg = String(meta?.fgItemName ?? "").trim() || null;
+  const rm = String(meta?.itemName ?? "").trim() || null;
+  const shortageRaw = meta?.shortageQty ?? meta?.netShortageAfterIncomingQty;
+  const shortage = Number(shortageRaw);
+  const unit = String(meta?.unit ?? "").trim();
+  const head = [soLabel, fg].filter(Boolean).join(" | ");
+  const shortageBit =
+    rm && Number.isFinite(shortage) && shortage > 0
+      ? `${rm} shortage: ${shortage}${unit ? ` ${unit}` : ""}`
+      : null;
+  if (head && shortageBit) return `${head} · ${shortageBit}`;
+  if (head) return head;
+  if (shortageBit) return shortageBit;
+  return fallbackDocNo ?? null;
 }
 
 function mapNormalizedRowToPendingAction(row, role = "STORE") {
@@ -492,21 +531,37 @@ function mapNormalizedRowToPendingAction(row, role = "STORE") {
   const actionLabel = friendlyActionForNormalizedRow(enriched, role);
   let currentStatus = enriched.currentStatus ?? null;
   if (String(enriched.rowType ?? "") === ROW_TYPES.RM_RISK) {
-    if (actionLabel === GRN_PENDING_ACTION) currentStatus = "GRN_PENDING";
+    if (actionLabel === GRN_PENDING_ACTION || actionLabel === GRN_PENDING_ACTION_LEGACY) {
+      currentStatus = "GRN_PENDING";
+    }
     else if (meta.operationalKey) currentStatus = String(meta.operationalKey);
+  }
+  let documentNo = enriched.documentNo ?? null;
+  if (isCreatePurchaseRequestAction(actionLabel) && isRegularSoProcurementStage(meta)) {
+    documentNo = formatRegularSoCreatePrDocumentNo(meta, documentNo);
+  }
+  let href = appendProductionBucketToProductionHref(resolveHrefForNormalizedRow(enriched, role), actionLabel);
+  if (isCreatePurchaseRequestAction(actionLabel) && isRegularSoProcurementStage(meta)) {
+    const soDoc = String(meta.salesOrderDocNo ?? "").trim();
+    if (soDoc && href.includes("/procurement-planning") && !/[?&]salesOrderDocNo=/.test(href)) {
+      href += `${href.includes("?") ? "&" : "?"}salesOrderDocNo=${encodeURIComponent(soDoc)}`;
+    }
   }
   return {
     id: enriched.rowKey ?? enriched.sourceId,
     priority: priorityFromRiskLevel(enriched.riskLevel),
     action: actionLabel,
-    documentNo: enriched.documentNo ?? null,
+    documentNo,
     ownerRole: String(enriched.currentOwner ?? "").toUpperCase(),
     ageHours: enriched.ageHours != null ? enriched.ageHours : null,
-    href: appendProductionBucketToProductionHref(resolveHrefForNormalizedRow(enriched, role), actionLabel),
+    href,
     sourceModule: enriched.sourceModule ?? null,
     currentStatus,
     purchaseOrderId: meta.primaryPoId != null ? Number(meta.primaryPoId) : null,
     materialRequirementId: meta.materialRequirementId != null ? Number(meta.materialRequirementId) : null,
+    itemName: meta.itemName ?? null,
+    qty: meta.shortageQty != null ? Number(meta.shortageQty) : null,
+    uom: meta.unit ?? null,
   };
 }
 
@@ -703,6 +758,8 @@ function buildProcurementPlanningHrefForRow(row, demandPool) {
   if (mrId > 0) params.set("materialRequirementId", String(mrId));
   if (row.workOrderId) params.set("workOrderId", String(row.workOrderId));
   if (row.salesOrderId) params.set("salesOrderId", String(row.salesOrderId));
+  const soDocNo = String(row.salesOrderDocNo ?? "").trim();
+  if (soDocNo) params.set("salesOrderDocNo", soDocNo);
   return `/procurement-planning?${params.toString()}`;
 }
 
@@ -753,11 +810,30 @@ function mapProcurementQueueRowToPurchasePendingAction(row) {
   }
 
   if (nextKey === "CREATE_PR" || opKey === "PROCUREMENT_PENDING") {
+    const actionLabel = createPurchaseRequestActionLabel({
+      procurementDemandPool: demandPool,
+      sourceType: row.sourceType,
+    });
+    const documentNo =
+      demandPool === "REGULAR_SO"
+        ? formatRegularSoCreatePrDocumentNo(
+            {
+              salesOrderId: row.salesOrderId,
+              salesOrderDocNo: row.salesOrderDocNo,
+              fgItemName: row.primaryFgName ?? row.fgItemName,
+              itemName: row.primaryRmName ?? row.itemName,
+              shortageQty: row.totalShortageQty ?? row.shortageQty,
+              unit: row.primaryRmUnit ?? row.unit,
+            },
+            docNo,
+          )
+        : docNo;
     return {
       ...base,
       id: `procurement:create-pr:mr:${idSuffix}`,
       priority: priorityFromOperationalKey("CREATE_PR"),
-      action: "Create Purchase Request",
+      action: actionLabel,
+      documentNo,
       href: planningHref,
       currentStatus: "PROCUREMENT_PENDING",
     };
@@ -800,18 +876,32 @@ async function fetchStoreGrnPendingActions(db = prisma) {
 
   for (const row of grnPending) {
     const poId = Number(row.purchaseOrderId ?? 0);
-    if (poId <= 0 || byPo.has(poId)) continue;
+    if (poId <= 0) continue;
+    const pendingQty = Number(row.pendingQty ?? 0);
+    const unit = String(row.unit ?? "").trim();
+    const existing = byPo.get(poId);
+    if (existing) {
+      existing.qty = Number(existing.qty ?? 0) + (Number.isFinite(pendingQty) ? pendingQty : 0);
+      if (!existing.uom && unit) existing.uom = unit;
+      continue;
+    }
+    const docNo = row.purchaseOrderDocNo ?? `PO-${poId}`;
+    const supplierName = String(row.supplierName ?? "").trim() || "—";
     byPo.set(poId, {
       id: `procurement:grn:po:${poId}`,
       priority: PENDING_PRIORITY.LOW,
       action: GRN_PENDING_ACTION,
-      documentNo: row.purchaseOrderDocNo ?? `PO-${poId}`,
+      documentNo: docNo,
       ownerRole: "STORE",
       ageHours: null,
-      href: `/rm-po-grn?poId=${poId}&from=pending-actions`,
+      // Internal PO id in path; openGrn opens Create GRN form. Never route via Dashboard / RMCC.
+      href: `/rm-po-grn/${poId}?openGrn=1&from=pending-actions`,
       sourceModule: "PROCUREMENT",
       currentStatus: "GRN_PENDING",
       purchaseOrderId: poId,
+      itemName: supplierName,
+      qty: Number.isFinite(pendingQty) ? pendingQty : 0,
+      uom: unit || null,
     });
   }
 
@@ -1993,11 +2083,11 @@ function extractPurchaseOrderIdFromPendingAction(action) {
 function extractOperationalKeyFromPendingAction(action) {
   const status = String(action?.currentStatus ?? "").trim().toUpperCase();
   if (status === "GRN_PENDING") return "GRN_PENDING";
-  if (action?.action === GRN_PENDING_ACTION) return "GRN_PENDING";
+  if (action?.action === GRN_PENDING_ACTION || action?.action === GRN_PENDING_ACTION_LEGACY) return "GRN_PENDING";
   if (status === "SUPPLIER_PENDING") return "SUPPLIER_PENDING";
   if (status === "PROCUREMENT_PENDING") return "PROCUREMENT_PENDING";
   if (status === "PR_PENDING_PO") return "PR_PENDING_PO";
-  if (action?.action === "Create Purchase Request") return "PROCUREMENT_PENDING";
+  if (isCreatePurchaseRequestAction(action?.action)) return "PROCUREMENT_PENDING";
   if (action?.action === "Follow up Purchase Order") return "SUPPLIER_PENDING";
   if (PURCHASE_PO_PREP_ACTIONS.has(action?.action)) return "PR_PENDING_PO";
   if (action?.action === WAITING_FOR_PURCHASE_RM_PO) return "PR_PENDING_PO";
@@ -2057,8 +2147,8 @@ function preferProcurementCaseAction(existing, candidate) {
   if (existing.action === PREPARE_RM_PO && candidate.action === "Create PO") return existing;
   if (candidate.action === PREPARE_RM_PO && existing.action === "Create PO") return candidate;
 
-  if (existing.action === "Create Purchase Request" && candidatePrepare) return candidate;
-  if (candidate.action === "Create Purchase Request" && existingPrepare) return existing;
+  if (isCreatePurchaseRequestAction(existing.action) && candidatePrepare) return candidate;
+  if (isCreatePurchaseRequestAction(candidate.action) && existingPrepare) return existing;
 
   const pa = PRIORITY_SORT[existing.priority] ?? 99;
   const pb = PRIORITY_SORT[candidate.priority] ?? 99;
@@ -2176,10 +2266,10 @@ function preferStorePendingAction(existing, candidate) {
 
   const existingIssue = existing.action === STORE_ISSUE_PENDING_ACTION;
   const candidateIssue = candidate.action === STORE_ISSUE_PENDING_ACTION;
-  if (existing.action === WAITING_FOR_PURCHASE_RM_PO && candidate.action === "Create Purchase Request") {
+  if (existing.action === WAITING_FOR_PURCHASE_RM_PO && isCreatePurchaseRequestAction(candidate.action)) {
     return existing;
   }
-  if (candidate.action === WAITING_FOR_PURCHASE_RM_PO && existing.action === "Create Purchase Request") {
+  if (candidate.action === WAITING_FOR_PURCHASE_RM_PO && isCreatePurchaseRequestAction(existing.action)) {
     return candidate;
   }
   if (existingIssue && !candidateIssue && PROCUREMENT_PENDING_ACTIONS.has(candidate.action)) {

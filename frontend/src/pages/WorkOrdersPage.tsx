@@ -12,13 +12,12 @@ import {
   DRILL_RECOVERY_LABEL,
   drillFocusTitleWorkOrder,
 } from "../lib/drillFocusCopy";
-import { DRILL_DATA, DRILL_QUERY } from "../lib/drillDownRoutes";
+import { DRILL_DATA, DRILL_QUERY, regularSoWorkOrderDetailHref } from "../lib/drillDownRoutes";
 import { useDrillFocus } from "../hooks/useDrillFocus";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { ApiRequestError, apiFetch } from "../services/api";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { DecimalInput } from "../components/ui/DecimalInput";
 import { Badge } from "../components/ui/badge";
 import { useAuth } from "../hooks/useAuth";
 import { useFastEntryForm } from "../hooks/useFastEntryForm";
@@ -80,11 +79,19 @@ type WoRow = {
   closureReason?: string | null;
   salesOrderId: number;
   sourceType?: string | null;
-  salesOrder?: { docNo?: string | null } | null;
+  salesOrder?: { docNo?: string | null; orderType?: string | null } | null;
   cycleId?: number | null;
   cycle?: { cycleNo?: number | null } | null;
   requirementSheetId?: number | null;
   lines: WoLine[];
+};
+
+type WoLifecycleActionState = {
+  workOrderId: number;
+  edit: { enabled: boolean; blockers: string[] };
+  hardDelete: { enabled: boolean; blockers: string[] };
+  cancel: { enabled: boolean; blockers: string[] };
+  reopen: { enabled: boolean; blockers: string[] };
 };
 
 type SoListRow = {
@@ -174,8 +181,7 @@ type RmCheckFgPlanning = {
   toProduce: number;
 };
 
-/** Default WO planning buffer when the field is blank (user may raise manually). */
-const DEFAULT_SHORTFALL_BUFFER_PERCENT = 0;
+/** Historical shortfall buffer clamp — live % UI retired; calc forced to 0. */
 const SHORTFALL_BUFFER_PERCENT_MAX = 10;
 
 function parseShortfallBufferPercentInput(raw: string): number | null {
@@ -321,6 +327,7 @@ type WoLineRow = {
   woDocNo?: string | null;
   salesOrderId: number;
   soDocNo?: string | null;
+  orderType?: string | null;
   cycleNo?: number | null;
   status: string;
   holdReason?: string | null;
@@ -363,6 +370,7 @@ function flattenWoLines(list: WoRow[]): WoLineRow[] {
         woDocNo: wo.docNo ?? null,
         salesOrderId: wo.salesOrderId,
         soDocNo: wo.salesOrder?.docNo ?? null,
+        orderType: wo.salesOrder?.orderType ?? null,
         cycleNo: wo.cycle?.cycleNo != null ? Number(wo.cycle.cycleNo) : null,
         status: wo.status,
         holdReason: wo.holdReason ?? null,
@@ -393,7 +401,9 @@ export function WorkOrdersPage() {
   useListScrollRestoration();
   const isAdmin = auth.user?.role === "ADMIN";
   const roleUi = useErpRoleUi();
-  const canProd = isAdmin || auth.user?.role === "PRODUCTION";
+  /** Store owns Regular WO placement; Production/Admin may also create. Not a Production-floor write grant. */
+  const canCreateWo = isAdmin || auth.user?.role === "PRODUCTION" || auth.user?.role === "STORE";
+  const canProd = canCreateWo;
   const canOpenRs = useCanOpenRequirementSheet();
 
   const loc = useLocation() as { state?: LocationState };
@@ -430,13 +440,9 @@ export function WorkOrdersPage() {
   const shortfallWoQtyUserTouchedRef = React.useRef<Set<number>>(new Set());
 
   const shortfallBufferParsed = parseShortfallBufferPercentInput(shortfallBufferPercentInput);
-  const shortfallBufferPercentForCalc =
-    shortfallBufferParsed == null
-      ? DEFAULT_SHORTFALL_BUFFER_PERCENT
-      : Math.min(SHORTFALL_BUFFER_PERCENT_MAX, Math.max(0, shortfallBufferParsed));
-  const shortfallBufferPercentInvalidHigh =
-    shortfallBufferParsed != null && shortfallBufferParsed > SHORTFALL_BUFFER_PERCENT_MAX + 1e-9;
-  const shortfallBufferPercentInvalidLow = shortfallBufferParsed != null && shortfallBufferParsed < 0 - 1e-9;
+  void shortfallBufferParsed;
+  /** Live REGULAR planning buffer retired — extra FG uses issued RM, not a WO % buffer. */
+  const shortfallBufferPercentForCalc = 0;
 
   const { searchParams, setSearchParams, patch, read } = useUrlQueryState(WO_LIST_URL_OMIT);
   const focusWorkOrderId = Number(searchParams.get(DRILL_QUERY.workOrderId)) || 0;
@@ -460,6 +466,7 @@ export function WorkOrdersPage() {
   const [qDraft, setQDraft] = useDebouncedUrlStringParam({ urlValue: qFromUrl, patch, paramKey: "q" });
   const [openWoRows, setOpenWoRows] = React.useState<WoRow[]>([]);
   const [completedWoRows, setCompletedWoRows] = React.useState<WoRow[]>([]);
+  const [woLifecycleActions, setWoLifecycleActions] = React.useState<Record<number, WoLifecycleActionState>>({});
   const [completedTotal, setCompletedTotal] = React.useState(0);
   const [listLoaded, setListLoaded] = React.useState(false);
   const [salesOrders, setSalesOrders] = React.useState<SoListRow[]>([]);
@@ -470,6 +477,34 @@ export function WorkOrdersPage() {
     () => new Map(),
   );
   const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    const regularIds = [...new Set(
+      [...openWoRows, ...completedWoRows]
+        .filter((wo) => wo.requirementSheetId == null && wo.cycleId == null)
+        .map((wo) => wo.id),
+    )];
+    if (!regularIds.length) {
+      setWoLifecycleActions({});
+      return;
+    }
+    let cancelled = false;
+    void Promise.allSettled(
+      regularIds.map((id) =>
+        apiFetch<WoLifecycleActionState>(`/api/production/work-orders/${id}/lifecycle-actions`),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      const next: Record<number, WoLifecycleActionState> = {};
+      results.forEach((result, index) => {
+        if (result.status === "fulfilled") next[regularIds[index]] = result.value;
+      });
+      setWoLifecycleActions(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [openWoRows, completedWoRows]);
 
   const [salesOrderId, setSalesOrderId] = React.useState<number | "">(() => {
     const st = loc.state as LocationState | undefined;
@@ -773,7 +808,7 @@ export function WorkOrdersPage() {
     return () => {
       cancelled = true;
     };
-  }, [salesOrderId, openWoRows, completedWoRows, read, searchParams.toString(), shortfallBufferPercentForCalc, cameFromRmCheckPlanning]);
+  }, [salesOrderId, openWoRows, completedWoRows, read, shortfallBufferPercentForCalc, cameFromRmCheckPlanning]);
 
   /** When balance API returns after FG is chosen, prefill WO qty with suggested shortage (if field still empty). */
   React.useEffect(() => {
@@ -927,7 +962,8 @@ export function WorkOrdersPage() {
           orderType: soDetail?.orderType ?? "NORMAL",
           salesOrderId: Number(salesOrderId),
           workOrderId: openWoForPrimaryFg.woId,
-          from: showWoWorkspace ? "work-order-workspace" : "work-orders",
+          // Always workspace return context — never bare salesOrderId Create WO screen.
+          from: "work-order-workspace",
         })
       : null;
 
@@ -1524,9 +1560,11 @@ export function WorkOrdersPage() {
     const { pmrId, pmrDocNo } = await ensureSubmittedPmrForWorkOrderHandoff(woId);
     const returnTo = fromRmPurchase
       ? "rm-purchase"
-      : showWoWorkspace
-        ? "production-workspace"
-        : "work-orders";
+      : cameFromRmCheckPlanning
+        ? "prepare-wo"
+        : showWoWorkspace
+          ? "production-workspace"
+          : "work-orders";
     const label = workOrderLabel?.trim() || displayWorkOrderNo(woId, null);
     toast.showSuccess(formatPostWoCreateSuccessMessage(label, pmrDocNo));
     nav(
@@ -1535,6 +1573,8 @@ export function WorkOrdersPage() {
         pmrId,
         returnTo,
         salesOrderId: salesOrderId !== "" ? Number(salesOrderId) : null,
+        bucket: "readyToIssue",
+        source: cameFromRmCheckPlanning ? "prepare-wo" : undefined,
       }),
     );
   }
@@ -1687,14 +1727,14 @@ export function WorkOrdersPage() {
   }
 
   async function onDeleteWo(id: number) {
-    const reasonRaw = window.prompt("Reason for cancelling this work order (required):");
+    const reasonRaw = window.prompt("Reason for permanently deleting this untouched work order (required):");
     if (reasonRaw == null) return;
     const reason = reasonRaw.trim();
     if (!reason) {
       setError("Reason is required to cancel a work order.");
       return;
     }
-    if (!confirm("Cancel (delete) this work order?")) return;
+    if (!confirm("Permanently delete this untouched work order?")) return;
     try {
       await apiFetch(`/api/production/work-orders/${id}`, {
         method: "DELETE",
@@ -1705,6 +1745,102 @@ export function WorkOrdersPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed");
     }
+  }
+
+  async function onCancelWo(id: number) {
+    const reason = window.prompt("Reason for cancelling this work order (required):")?.trim();
+    if (reason == null) return;
+    if (!reason) {
+      setError("Reason is required to cancel a work order.");
+      return;
+    }
+    if (!confirm("Cancel this work order and release its unissued reservations?")) return;
+    try {
+      await apiFetch(`/api/production/work-orders/${id}/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to cancel work order");
+    }
+  }
+
+  async function onReopenWo(id: number) {
+    const reason = window.prompt("Reason for reopening this work order (required):")?.trim();
+    if (reason == null) return;
+    if (!reason) {
+      setError("Reason is required to reopen a work order.");
+      return;
+    }
+    if (!confirm("Reopen this work order for controlled editing and execution?")) return;
+    try {
+      await apiFetch(`/api/production/work-orders/${id}/reopen`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to reopen work order");
+    }
+  }
+
+  function renderRegularWoLifecycleActions(row: WoLineRow) {
+    const actions = woLifecycleActions[row.woId];
+    if (!actions) return <span className="text-xs text-slate-400">Loading actions…</span>;
+    const blockerTitle = (blockers: string[]) => blockers.join("; ") || undefined;
+    const editHref = `/work-orders?so=${row.salesOrderId}&excludeWo=${row.woId}`;
+    return (
+      <div className="flex min-w-max justify-end gap-1">
+        {actions.edit.enabled ? (
+          <Link className={cn(buttonVariants({ size: "sm", variant: "outline" }), "h-8 text-xs")} to={editHref}>
+            Edit WO
+          </Link>
+        ) : (
+          <Button size="sm" variant="outline" className="h-8 text-xs" disabled title={blockerTitle(actions.edit.blockers)}>
+            Edit WO
+          </Button>
+        )}
+        {actions.hardDelete.enabled ? (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 border-red-200 text-xs text-red-700 hover:bg-red-50"
+            onClick={() => void onDeleteWo(row.woId)}
+          >
+            Delete WO
+          </Button>
+        ) : actions.cancel.enabled ? (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 border-amber-200 text-xs text-amber-800 hover:bg-amber-50"
+            onClick={() => void onCancelWo(row.woId)}
+          >
+            Cancel WO
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs"
+            disabled
+            title={blockerTitle([...actions.hardDelete.blockers, ...actions.cancel.blockers])}
+          >
+            Cancel/Delete WO
+          </Button>
+        )}
+        {actions.reopen.enabled ? (
+          <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => void onReopenWo(row.woId)}>
+            Reopen WO
+          </Button>
+        ) : row.status === "COMPLETED" || row.status === "CLOSED_WITH_SHORTFALL" ? (
+          <Button size="sm" variant="outline" className="h-8 text-xs" disabled title={blockerTitle(actions.reopen.blockers)}>
+            Reopen WO
+          </Button>
+        ) : null}
+      </div>
+    );
   }
 
   const { state: noQtyFlowState } = useNoQtyFlowState(
@@ -1963,45 +2099,6 @@ export function WorkOrdersPage() {
           <p className="font-semibold">{RM_PURCHASE_POST_GRN_MESSAGES.fulfilledHeadline}</p>
           <p className="mt-0.5">{RM_PURCHASE_POST_GRN_MESSAGES.fulfilledDetail}</p>
           <p className="mt-1 text-emerald-900">{RM_PURCHASE_POST_GRN_MESSAGES.fulfilledNextStep}</p>
-        </div>
-      ) : null}
-      {!fromNoQtySo && isRegularNormalOrderForWoPlanning && pageIsShortfallProduction && salesOrderId !== "" && !cameFromRmCheckPlanning ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50/90 px-3 py-3 text-sm text-amber-950 shadow-sm">
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="erp-form-field min-w-0">
-              <label className="erp-form-label text-xs" htmlFor="shortfall-buffer-pct">
-                Production buffer % (optional)
-              </label>
-              <DecimalInput
-                id="shortfall-buffer-pct"
-                className="h-9 w-28 tabular-nums"
-                value={shortfallBufferPercentInput}
-                onValueChange={setShortfallBufferPercentInput}
-              />
-            </div>
-          </div>
-          <p className="mt-1.5 text-[11px] leading-snug text-amber-900">
-            Optional production buffer to cover rejection risk. Default is 0% — WO qty starts at remaining planned qty.
-            Use 0–10%; extra production goes to usable stock.
-          </p>
-          {shortfallBufferPercentInvalidHigh ? (
-            <p className="mt-1 text-[11px] font-medium text-amber-900">Maximum shortfall buffer allowed is 10%.</p>
-          ) : null}
-          {shortfallBufferPercentInvalidLow ? (
-            <p className="mt-1 text-[11px] font-medium text-amber-900">Minimum shortfall buffer is 0%.</p>
-          ) : null}
-          {!woShortfallFromGuidedEntry && hasAnyFgRemainingForShortfall && shortfallBufferPercentForCalc > 0 ? (
-            <p className="mt-2 text-xs text-amber-950">
-              <span className="font-semibold">Tip:</span> Suggested WO qty adds{" "}
-              <span className="tabular-nums font-semibold">{shortfallBufferPercentForCalc}</span>% to each line&apos;s
-              remaining qty until you edit WO qty manually.
-            </p>
-          ) : !woShortfallFromGuidedEntry && hasAnyFgRemainingForShortfall ? (
-            <p className="mt-2 text-xs text-amber-950">
-              <span className="font-semibold">Tip:</span> WO qty defaults to each line&apos;s remaining planned qty. Raise
-              buffer % only if you want extra production for rejection risk.
-            </p>
-          ) : null}
         </div>
       ) : null}
       {!fromNoQtySo && isRegularNormalOrderForWoPlanning && pageIsShortfallProduction && salesOrderId !== "" && cameFromRmCheckPlanning ? (
@@ -3019,7 +3116,10 @@ export function WorkOrdersPage() {
 
             </div>
           ) : (
-            <p className="text-sm text-slate-600">Production / Admin only.</p>
+            <p className="text-sm text-slate-600">
+              Work Order creation is available to Store, Production, and Admin. Use Prepare Work Order for Regular
+              Sales Orders.
+            </p>
           )}
         </CardContent>
       </Card>
@@ -3225,7 +3325,16 @@ export function WorkOrdersPage() {
                           >
                             <td className="px-3 py-1.5 align-top">
                               <div className="font-mono text-[13px] font-semibold tabular-nums text-slate-900">
-                                {displayWorkOrderNo(row.woId, row.woDocNo)}
+                                {row.orderType === "NO_QTY" ? (
+                                  displayWorkOrderNo(row.woId, row.woDocNo)
+                                ) : (
+                                  <Link
+                                    className="text-slate-900 no-underline hover:underline"
+                                    to={regularSoWorkOrderDetailHref(row.woId, { from: "work-orders" })}
+                                  >
+                                    {displayWorkOrderNo(row.woId, row.woDocNo)}
+                                  </Link>
+                                )}
                               </div>
                               {noQtySelected && row.requirementSheetId ? (
                                 <div className="mt-0.5 text-[10px] font-medium text-emerald-700">From Requirement Sheet</div>
@@ -3243,15 +3352,8 @@ export function WorkOrdersPage() {
                               {renderWoListStatusBadge(row, noQtySelected, noQtyWoDisplayStatusById)}
                             </td>
                             <td className="px-3 py-1.5 text-right">
-                              {isAdmin && !noQtySelected ? (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-8 border-red-200 text-xs font-medium text-red-700 hover:bg-red-50"
-                                  onClick={() => onDeleteWo(row.woId)}
-                                >
-                                  Delete
-                                </Button>
+                              {!noQtySelected && row.requirementSheetId == null ? (
+                                renderRegularWoLifecycleActions(row)
                               ) : (
                                 <span className="text-xs text-slate-400">—</span>
                               )}
@@ -3300,7 +3402,16 @@ export function WorkOrdersPage() {
                           >
                             <td className="px-3 py-1.5 align-top">
                               <div className="font-mono text-[13px] font-semibold tabular-nums text-slate-900">
-                                {displayWorkOrderNo(row.woId, row.woDocNo)}
+                                {row.orderType === "NO_QTY" ? (
+                                  displayWorkOrderNo(row.woId, row.woDocNo)
+                                ) : (
+                                  <Link
+                                    className="text-slate-900 no-underline hover:underline"
+                                    to={regularSoWorkOrderDetailHref(row.woId, { from: "work-orders" })}
+                                  >
+                                    {displayWorkOrderNo(row.woId, row.woDocNo)}
+                                  </Link>
+                                )}
                               </div>
                               {noQtySelected && row.requirementSheetId ? (
                                 <div className="mt-0.5 text-[10px] font-medium text-emerald-700">From Requirement Sheet</div>
@@ -3318,15 +3429,8 @@ export function WorkOrdersPage() {
                               {renderWoListStatusBadge(row, noQtySelected, noQtyWoDisplayStatusById)}
                             </td>
                             <td className="px-3 py-1.5 text-right">
-                              {isAdmin && !noQtySelected ? (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-8 border-red-200 text-xs font-medium text-red-700 hover:bg-red-50"
-                                  onClick={() => onDeleteWo(row.woId)}
-                                >
-                                  Delete
-                                </Button>
+                              {!noQtySelected && row.requirementSheetId == null ? (
+                                renderRegularWoLifecycleActions(row)
                               ) : (
                                 <span className="text-xs text-slate-400">—</span>
                               )}

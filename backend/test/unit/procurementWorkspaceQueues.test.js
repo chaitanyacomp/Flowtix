@@ -30,6 +30,30 @@ describe("P5C-3 — procurement workspace queue separation", () => {
     });
   });
 
+  it("computeQueueCounts counts legacy WORK_ORDER_PLANNING on Sales Orders", () => {
+    const counts = computeQueueCounts([
+      { materialRequirementId: 9, sourceType: "WORK_ORDER_PLANNING", operationalKey: "PROCUREMENT_PENDING" },
+      { materialRequirementId: 3, sourceType: "SALES_ORDER", operationalKey: "PROCUREMENT_PENDING" },
+    ]);
+    assert.equal(counts.regularSo, 2);
+    assert.equal(counts.woShortage, 2);
+    assert.equal(counts.byDemandPool.REGULAR_SO, 2);
+  });
+
+  it("filterPendingMrsByDemandPool includes legacy WORK_ORDER_PLANNING for REGULAR_SO", () => {
+    const { filterPendingMrsByDemandPool } = require("../../src/services/procurementWorkspaceService");
+    const rows = [
+      { materialRequirementId: 1, sourceType: "SALES_ORDER" },
+      { materialRequirementId: 2, sourceType: "WORK_ORDER_PLANNING" },
+      { materialRequirementId: 3, sourceType: "MONTHLY_PLAN" },
+    ];
+    const regular = filterPendingMrsByDemandPool(rows, "REGULAR_SO");
+    assert.deepEqual(
+      regular.map((r) => r.materialRequirementId),
+      [1, 2],
+    );
+  });
+
   it("filterPendingMrsBySourceType returns only matching MR summaries", () => {
     const monthly = filterPendingMrsBySourceType(sampleMrs, "MONTHLY_PLAN");
     assert.equal(monthly.length, 2);

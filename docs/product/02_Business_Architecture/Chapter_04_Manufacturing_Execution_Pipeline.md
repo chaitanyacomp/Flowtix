@@ -28,6 +28,8 @@
 
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
+| 1.0.2 | 2026-07-23 | FT ERP Product Team | REGULAR_SO buffered theoretical RM, rounding-tolerance issue close, RM-supported capacity |
+| 1.0.1 | 2026-07-22 | FT ERP Product Team | Interim — REGULAR SO demand vs WO-plan closure; mandatory Production Report |
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Manufacturing Execution Pipeline — common post–Work Order path |
 
 **Supersedes:** None.
@@ -146,6 +148,8 @@ Operators cannot skip PMR, issue without PMR, produce without issue, dispatch wi
 | **Dispatch** | Store | Dispatch Note; FG leaves factory |
 | **Sales Billing** | Admin | Sales Bill; commercial invoice |
 
+**REGULAR Store handoff after WO create:** Prepare WO confirm creates the WO once, ensures PMR, then deep-links Store to Material Issue for that WO (`/material-issue?workOrderId={id}&…&returnTo=prepare-wo`). Do not send Store to a Production-only Work Orders list as the primary post-create destination ([Vol. 2 Ch. 2](./Chapter_02_REGULAR_Order_Planning_Pipeline.md) §7.3.1; Workflow Engine §7.15).
+
 ### 6.1 Stage flow
 
 ```
@@ -222,7 +226,11 @@ Audit and variance reports cite PMR document identity and revision.
 
 Store may issue **less than full PMR** when stock, location, or operational policy requires wave-based supply. Partial issue **proportionally constrains** production capacity until further issue **or** Store closes remaining demand as **Short Issue Accepted**.
 
-**Stock movement rule:** Material Issue posts Stock Transactions for **Issued Qty only**. Short Issue Qty is audit/demand closure only — it **must not** leave RM Store inventory and **must not** create a stock movement. Residual allocations for unissued qty are released. Lower production from less issued RM is recovered only via existing **NO_QTY production shortfall** workflow.
+**REGULAR_SO quantities (kept separate):** `salesOrderQty` (dispatch cap) · `woTargetQty` (buffered WO plan) · `theoreticalRmRequiredQty` (BOM × WO target) · cumulative / net issued · RM-supported production qty · finalized produced qty. Example: SO 15,000 Nos, buffer 0.5%, BOM 210 Kg → WO 15,075 · theoretical RM **211.05 Kg**.
+
+**Practical issue (REGULAR_SO):** Store is not forced to issue exactly theoretical. Exact issue → Fully Issued. Rounded-down issue within backend tolerance `min(0.5% × theoretical, 0.5 Kg)` may be **acknowledged** (`ROUNDING_TOLERANCE`) → status **Fully Issued – Within Rounding Tolerance**; WO target remains permitted; tolerance does **not** authorize extra production above WO target. Larger shortages stay Partially Issued. Excess / allowance issue (e.g. 212–213 Kg) is Fully Issued / Excess-Allowance Issued subject to cumulative 0–5% / >5–10% Admin / >10% blocked bands — never labelled Partially Issued when theoretical is covered or exceeded. Multiple / additional issues update cumulative net issue and capacity immediately; approval bands use **cumulative** excess vs theoretical so split transactions cannot bypass limits.
+
+**Stock movement rule:** Material Issue posts Stock Transactions for **Issued Qty only**. Short Issue Qty / rounding-tolerance difference is audit/demand closure only — it **must not** leave RM Store inventory and **must not** create a stock movement (and must not be invented as wastage). Residual allocations for unissued qty are released. Lower production from less issued RM is recovered only via existing **NO_QTY production shortfall** workflow (NO_QTY path unchanged).
 
 ### 8.3 Validation
 
@@ -263,11 +271,59 @@ Upon Production Entry **approval**, the system posts **RM consumption** against 
 
 ### 9.5 Completion
 
-**Production completion** for a WO line occurs when cumulative approved production reaches WO line quantity (or policy allows early close with reason). Unproduced balance may remain on WO until issue/RM allows further entries.
+**Production completion** depends on Business Model:
 
-**Rule:** Production **cannot exceed** material issued and PMR-aligned capacity.
+| Model | Closure eligibility (after mandatory Production Report) |
+|-------|--------------------------------------------------------|
+| **REGULAR** | Approved produced qty covers **authoritative remaining SO demand** for the FG (customer/PO commitment), **or** WO planned qty is fully produced. WO-plan remainder after SO demand is covered is **not** mandatory additional production. |
+| **NO_QTY / Green Level** | Shop-floor execution completes via Confirm Report & Close WO (plan is a target; see below). |
 
-For NO_QTY, this is the hard execution boundary: WO quantity is a target, not a cap. Additional issued RM may authorize cumulative production above the WO plan. Returns and approved-batch consumption reduce available capacity, and the limiting RM component governs. This does not change RS demand, placed WO quantity, or the stored WO plan.
+**REGULAR distinction:**
+
+- **WO Planned Qty** = operational production target (may include intentional rejection/wastage buffer).
+- **SO Demand Qty** = customer demand (authoritative remaining demand accounts for other valid WOs’ approved production).
+- When produced ≥ remaining SO demand but produced &lt; WO plan: **End Production & Complete Report** is allowed; do not force the WO-plan balance.
+- When produced &lt; remaining SO demand: **Continue Later**, or **End with Shortage** (opens Production Report; shortfall close uses SO-demand shortage, not WO-plan buffer).
+- **Production Report** is mandatory before any final WO close; RM reconcile; WO stays open/report-pending until confirmed.
+- Closing the WO does **not** bypass QC — all produced qty proceeds to QC. After acceptance, qty needed for remaining SO demand stays SO-linked; accepted excess becomes general usable FG stock (dispatch caps unchanged). Rejected qty follows existing QC rejection/recovery rules.
+
+**Rule:** Production **cannot exceed** material issued and PMR-aligned capacity. The WO planned quantity is a **target** (Target Remaining / Use Remaining Qty), not an entry hard stop when intentional extra RM has been issued to the WO.
+
+**REGULAR and NO_QTY — RM-supported maximum**
+
+For each required BOM (or frozen PMR) RM line:
+
+`issuedSupportedFgQty = floor(cumulativeNetIssuedRmQty / effectiveBomConsumptionPerFg)`
+
+where `cumulativeNetIssuedRmQty` is gross issued to this WO minus Store returns/reversals, and available unused stock at production locations further bounds what can still be produced after approved consumption.
+
+`rmSupportedFgMaximum = minimum issuedSupportedFgQty across all limiting BOM RM lines`
+
+`maxEntryQty = max(0, rmSupportedFgMaximum − cumulativeProducedQty)` (draft/unapproved batches reserve the envelope once)
+
+Do **not** clamp `maxEntryQty` to WO plan remaining when issued RM supports more. Whole-number FG UOMs use floor (never round up past issued RM). Example: plan 5,000 Nos needing 70 Kg; 72 Kg issued → floor(5,000 × 72 / 70) = **5,142 Nos**.
+
+Keep display concepts separate:
+
+| Label | Meaning |
+| --- | --- |
+| Planned | Original WO quantity |
+| Finalized Produced | Approved production only (draft does not count) |
+| Draft Awaiting Approval | Open draft entry qty on the line |
+| Target Remaining | max(0, planned − finalized) — unchanged until draft approval |
+| Extra RM Capacity | max(0, RM-supported maximum − planned) |
+| Draft Result / projected extra | max(0, finalized + draft − planned) while approval is pending |
+| RM capacity after draft | max(0, RM max − finalized − draft) |
+
+**Use Remaining Qty** fills Target Remaining only. **Use RM-Supported Max** (optional) fills the RM entry cap. A blocking draft disables a second entry until Review & Finalize / cancel. Extra production still proceeds through QC; dispatch remains capped by SO remaining and accepted usable FG.
+
+**Production Workspace buckets (mutually exclusive):** Production Report Pending → Draft Awaiting Approval → Paused → Continue → Ready to Start → Pending QA/QC → Recent. A WO with an open draft must not count as Ready to Start.
+
+**Unused RM return strip:** Render only after the current WO's readiness has settled, entries have loaded, no blocking draft, and finalized produced exists with returnable qty. Never paint from a prior WO or mid-load state.
+
+**Return navigation:** Explicit `from=` context — Production Workspace / Pending Actions / Work Orders (list focused by `workOrderId`, never bare `salesOrderId` Create WO UI). Default back is Production Workspace.
+
+**Production buffer %:** Retired from live REGULAR_SO Work Order UI. Extra FG capacity is governed by issued RM, not a planning % buffer. Historical stored buffer fields remain readable for audit.
 
 ---
 
@@ -551,6 +607,18 @@ flowchart TB
 
 ---
 
+## 20A. Production Report RM reconciliation
+
+For each RM line, approved Production Entry consumption is authoritative and already uses the engineering BOM shot-weight basis, including the runner share. Expected runner is informational and is never subtracted again or auto-posted as actual wastage.
+
+`Physical Balance = Issued Qty - Consumed Qty`
+
+`Remaining Unreconciled = Issued Qty - Consumed Qty - Returned Qty - Valid Classified Wastage Qty`
+
+Confirmation is allowed only when every line is within `0.0005` RM-UOM units of zero. Returned quantity must be between zero and Physical Balance. Classified wastage must identify the RM item and cannot exceed that line's balance after return. A disabled confirmation names the exact quantity and RM item and directs Production to return or classify it. Return and wastage edits recalculate immediately; expected runner is compared with actual runner-classified wastage separately.
+
+Browser draft recovery restores only operator inputs (return, wastage details, remarks). Issued and consumed quantities are reloaded from the server, and every derived field and confirmation eligibility is recomputed.
+
 ## Document navigation
 
 | | Link |
@@ -559,4 +627,3 @@ flowchart TB
 | **Next** | [Document Ownership & Responsibility Matrix](./Chapter_05_Document_Ownership_and_Responsibility_Matrix.md) (FT-PD-024) |
 | **Volume** | [Business Architecture](./README.md) |
 | **Product** | [Product Documentation Index](../README.md) |
-

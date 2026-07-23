@@ -55,6 +55,10 @@ export function resolveRmPurchaseBackNav(
     return { backLabel: REGULAR_TERMS.BACK_TO_PREPARE_WORK_ORDER, backRoute: "/work-orders/prepare" };
   }
 
+  if (from === "pending-actions") {
+    return { backLabel: "Back to Pending Actions", backRoute: "/pending-actions" };
+  }
+
   if (from === "customer-tracking") {
     return { backLabel: "Back to Customer Tracking", backRoute: "/customer-tracking-flow" };
   }

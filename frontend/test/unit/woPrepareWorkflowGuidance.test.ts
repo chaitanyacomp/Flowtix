@@ -121,6 +121,19 @@ describe("woPrepareWorkflowGuidance", () => {
     expect(proc?.secondaryLabel).toBeUndefined();
   });
 
+  it("maps eligible create state to Ready for WO stage (not RM Received)", () => {
+    expect(
+      deriveWoPrepareWorkflowStepLabel({
+        workflowState: "READY_FOR_WO",
+        canCreateWorkOrder: true,
+        hasRmShortage: false,
+        hasPendingMr: false,
+        hasExistingWorkOrder: false,
+        allRmAvailable: true,
+      }),
+    ).toBe("Ready for WO");
+  });
+
   it("builds blocked card and readiness checklist for RM shortage", () => {
     const step = deriveWoPrepareWorkflowStepLabel({
       workflowState: "NO_MR",

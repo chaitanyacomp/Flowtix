@@ -29,6 +29,8 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial QA domain State Machines and transition tables |
+| 1.0.1 | 2026-07-22 | FT ERP Product Team | QASWF-18 — final usable vs first-pass reject terminology |
+| 1.0.1 | 2026-07-22 | FT ERP Product Team | QASWF-18 — dispatch/report use final usable; first-pass reject is audit only |
 
 **Supersedes:** None.
 
@@ -525,6 +527,7 @@ QA transitions emit **QA-specific audit event codes** (stable for clients and Co
 | **QASWF-15** | **Posted scrap immutable** — `GRD_QA_SCRAP_IMMUTABLE` ([QAS-12](../03_Domain_Specifications/Chapter_05_Quality_Assurance_Domain_Specification.md)). |
 | **QASWF-16** | **Production cannot disposition QA** — `GRD_QA_ROLE` ([QAS-08](../03_Domain_Specifications/Chapter_05_Quality_Assurance_Domain_Specification.md)). |
 | **QASWF-17** | **Re-inspection required after rework** before accept — `GRD_QA_REINSPECTION` ([QAS-11](../03_Domain_Specifications/Chapter_05_Quality_Assurance_Domain_Specification.md)). |
+| **QASWF-18** | **Final usable for dispatch/report** = first-pass accepted + rework-recheck accepted. First-pass `rejectedQty` remains audit history and **SHALL NOT** be labelled as remaining final rejected after successful rework ([§7.2.1](../03_Domain_Specifications/Chapter_05_Quality_Assurance_Domain_Specification.md)). |
 
 *Operational rules QAS-01–QAS-15 in Volume 3 Ch. 5 remain authoritative; QASWF rules are engine enforcement.*
 

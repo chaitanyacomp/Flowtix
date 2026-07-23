@@ -3,6 +3,8 @@ const assert = require("node:assert/strict");
 
 const { computePlannedQtyFromCustomerBuffer } = require("../../src/services/regularSoBufferQty");
 const {
+  assertRegularSoBufferPercentForPersist,
+  clampBufferPercent,
   fgDemandInputFromPlanningView,
   fgShortageDemandInputFromPlanningView,
   snapshotLineFromSalesOrderLine,
@@ -14,6 +16,60 @@ describe("regular SO buffer planning", () => {
     assert.equal(computePlannedQtyFromCustomerBuffer(15000, 0.25), 15037.5);
     assert.equal(computePlannedQtyFromCustomerBuffer(15000, 1.75), 15262.5);
     assert.equal(computePlannedQtyFromCustomerBuffer(15000, 2.5), 15375);
+  });
+
+  it("clampBufferPercent keeps two-decimal precision (no integer round)", () => {
+    assert.equal(clampBufferPercent(0.5), 0.5);
+    assert.equal(clampBufferPercent(1.25), 1.25);
+    assert.equal(clampBufferPercent(4.75), 4.75);
+    assert.equal(clampBufferPercent(7.141), 7.14);
+    assert.equal(clampBufferPercent(12), 10);
+  });
+
+  it("snapshot applies FG UOM precision to planned qty for 0.5%", () => {
+    const line = snapshotLineFromSalesOrderLine(
+      { id: 1, itemId: 7, item: { itemName: "Nozzle" }, customerPoQty: 15000, qty: 15000 },
+      0.5,
+      0,
+    );
+    assert.equal(line.productionBufferPercent, 0.5);
+    assert.equal(line.productionBufferQty, 75);
+    assert.equal(line.plannedProductionQty, 15075);
+  });
+
+  it("RM-supported max caps planned qty without rounding upward past capacity", () => {
+    const line = snapshotLineFromSalesOrderLine(
+      { id: 1, itemId: 7, item: { itemName: "Nozzle" }, customerPoQty: 15000, qty: 15000 },
+      0.5,
+      0,
+      { rmSupportedMaxQty: 15050 },
+    );
+    assert.equal(line.plannedProductionQty, 15050);
+    assert.equal(line.productionBufferQty, 50);
+  });
+
+  it("5% allowed; 5.01% requires Admin + reason; above 10% blocked", () => {
+    assert.equal(assertRegularSoBufferPercentForPersist(5, { role: "STORE" }).ok, true);
+    const needsAdmin = assertRegularSoBufferPercentForPersist(5.01, { role: "STORE", bufferReason: "need" });
+    assert.equal(needsAdmin.ok, false);
+    assert.equal(needsAdmin.code, "BUFFER_PERCENT_ADMIN_REQUIRED");
+    const needsReason = assertRegularSoBufferPercentForPersist(5.01, { role: "ADMIN", bufferReason: "" });
+    assert.equal(needsReason.ok, false);
+    assert.equal(needsReason.code, "BUFFER_PERCENT_REASON_REQUIRED");
+    const adminOk = assertRegularSoBufferPercentForPersist(5.01, {
+      role: "ADMIN",
+      bufferReason: "Customer rejection risk",
+    });
+    assert.equal(adminOk.ok, true);
+    assert.equal(adminOk.bufferPercent, 5.01);
+    const blocked = assertRegularSoBufferPercentForPersist(10.01, { role: "ADMIN", bufferReason: "x" });
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.code, "BUFFER_PERCENT_BLOCKED");
+  });
+
+  it("NO_QTY remains excluded from snapshot planning (orderType guard is separate)", () => {
+    // Formula helpers stay REGULAR-only; NO_QTY callers never use this buffer path.
+    assert.equal(computePlannedQtyFromCustomerBuffer(0, 5), 0);
   });
 });
 

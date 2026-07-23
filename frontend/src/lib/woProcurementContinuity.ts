@@ -130,6 +130,7 @@ export function prSectionEmptyMessage(opts: {
 
 export function buildProcurementWorkspaceHref(opts: {
   salesOrderId?: number | null;
+  salesOrderDocNo?: string | null;
   workOrderId?: number | null;
   rmItemId?: number | null;
   materialRequirementId?: number | null;
@@ -155,6 +156,8 @@ export function buildProcurementWorkspaceHref(opts: {
     if (alias) q.set("source", alias);
   }
   if (opts.salesOrderId != null && opts.salesOrderId > 0) q.set("salesOrderId", String(opts.salesOrderId));
+  const soDocNo = String(opts.salesOrderDocNo ?? "").trim();
+  if (soDocNo) q.set("salesOrderDocNo", soDocNo);
   if (opts.workOrderId != null && opts.workOrderId > 0) q.set("workOrderId", String(opts.workOrderId));
   if (opts.rmItemId != null && opts.rmItemId > 0) q.set("rmItemId", String(opts.rmItemId));
   if (opts.materialRequirementId != null && opts.materialRequirementId > 0) {

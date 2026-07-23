@@ -1,32 +1,65 @@
 import * as React from "react";
 import { Card, CardContent } from "../components/ui/card";
 import { apiFetch } from "../services/api";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { NativeSelect } from "../components/ui/native-select";
 import { DecimalInput } from "../components/ui/DecimalInput";
 import { useAuth } from "../hooks/useAuth";
-import { PageActions } from "../components/PageHeader";
 import { useToast } from "../contexts/ToastContext";
 import { Pencil, Trash2, X } from "lucide-react";
 import { normalizeMasterNameDisplay, normalizeMasterNameKey } from "../lib/masterNameNormalize";
-import { useBulkSelection } from "../hooks/useBulkSelection";
-import { BulkSelectionToolbar } from "../components/masters/BulkSelectionToolbar";
 import { BulkDeleteConfirmModal } from "../components/masters/BulkDeleteConfirmModal";
-import { BULK_DELETE_IN_USE_TOAST, bulkDeleteByIds } from "../lib/masterBulkDelete";
 import { ItemStockStatusBadge } from "../components/erp/ItemStockStatusBadge";
-import { parseItemQtyStr } from "../lib/itemStockStatus";
+import { itemStockStatusFromItemFields, parseItemQtyStr, type ItemStockStatus } from "../lib/itemStockStatus";
 import { ErpModal } from "../components/erp/ErpModal";
 import { DependencyLifecycleModal, type DependencySummary } from "../components/masters/DependencyLifecycleModal";
 import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { confirmLeaveIfDirty } from "../lib/unsavedChangesPolicy";
 import { snapshotItemForm } from "../lib/itemMasterDirtySnapshot";
 import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
+import {
+  MasterBulkActionBar,
+  MasterEmptyState,
+  MasterErrorState,
+  MasterListHeader,
+  MasterListPageShell,
+  MasterListPagination,
+  MasterListToolbar,
+  MasterNoResultsState,
+  MasterRowCheckbox,
+  MasterSearchInput,
+  MasterSelectAllCheckbox,
+  MasterSortHeader,
+  MasterStatusBadge,
+  MasterTableShell,
+  MasterTableSkeleton,
+  MasterTruncatedCell,
+  MasterTypeBadge,
+  masterTdClass,
+  masterThClass,
+  resultCountLabel,
+} from "../components/masters/MasterListWorkbench";
+import { useMasterListSelection, useMasterListWorkbench } from "../hooks/useMasterListWorkbench";
+import {
+  compareByKey,
+  matchesNameSearch,
+  normalizeSearchText,
+  paginateRows,
+} from "../lib/masterListQuery";
+import { postMasterBulkMutation, summarizeMasterBulkResult } from "../lib/masterBulkApi";
+import { AddItemTypeMenu } from "../components/masters/AddItemTypeMenu";
+import {
+  ITEM_TYPE_DEFINITIONS,
+  itemTypeLabel,
+  isItemTypeCode,
+  type ItemTypeCode,
+} from "../lib/itemTypes";
 
 type Item = {
   id: number;
   itemName: string;
-  itemType: "RM" | "FG" | "SFG" | "CONSUMABLE";
+  itemType: ItemTypeCode;
   unit: string;
   unitId?: number | null;
   unitName?: string | null;
@@ -87,6 +120,27 @@ function parseQtyStr(raw: string): number | null {
   return parseItemQtyStr(raw);
 }
 
+const STOCK_STATUS_FILTERS: { value: string; label: string }[] = [
+  { value: "all", label: "Stock: All" },
+  { value: "HEALTHY", label: "Healthy" },
+  { value: "LOW", label: "Low" },
+  { value: "CRITICAL", label: "Below Minimum" },
+  { value: "OUT_OF_STOCK", label: "Out of stock" },
+];
+
+function itemUnitLabel(i: Item): string {
+  return i.unitName?.trim() ? i.unitName : i.unit;
+}
+
+function itemStockStatus(i: Item, stockByItemId: Map<number, number>): ItemStockStatus {
+  return itemStockStatusFromItemFields({
+    currentQty: stockByItemId.get(i.id) ?? 0,
+    minimumStockQty: i.minimumStockQty,
+    minStockLevel: i.minStockLevel,
+    reorderQty: i.reorderQty,
+  });
+}
+
 export function ItemsPage() {
   const toast = useToast();
   const isAdmin = useAuth().user?.role === "ADMIN";
@@ -94,21 +148,25 @@ export function ItemsPage() {
   const [rows, setRows] = React.useState<Item[]>([]);
   const [units, setUnits] = React.useState<UnitRow[]>([]);
   const [stockByItemId, setStockByItemId] = React.useState<Map<number, number>>(() => new Map());
+  const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
-  const [bulkDeleting, setBulkDeleting] = React.useState(false);
+  const [bulkBusy, setBulkBusy] = React.useState(false);
+  const bulkInFlight = React.useRef(false);
   const [lifecycleItem, setLifecycleItem] = React.useState<Item | null>(null);
   const [dependencySummary, setDependencySummary] = React.useState<DependencySummary | null>(null);
   const [checkingDependencies, setCheckingDependencies] = React.useState(false);
 
-  const rowIds = React.useMemo(() => rows.map((r) => r.id), [rows]);
-  const bulkSel = useBulkSelection(rowIds);
+  const wb = useMasterListWorkbench();
+  const { query, setSearch, clearSearch, setStatusFilter, setFilter, clearFilters, toggleSort, setPage, setPageSize, queryContextKey } =
+    wb;
 
   const [showForm, setShowForm] = React.useState(false);
   const [formBaseline, setFormBaseline] = React.useState<string | null>(null);
   const [editingId, setEditingId] = React.useState<number | null>(null);
-  const [creatingType, setCreatingType] = React.useState<"RM" | "FG" | "SFG">("RM");
-  const [saving, setSaving] = React.useState(false);
+  const [creatingType, setCreatingType] = React.useState<ItemTypeCode>("RM");
+  /** When editing: false if item is referenced — type select locked. */
+  const [typeChangeAllowed, setTypeChangeAllowed] = React.useState(true);  const [saving, setSaving] = React.useState(false);
   const [name, setName] = React.useState("");
   const [unitId, setUnitId] = React.useState<number | "">("");
   const [legacyUnitText, setLegacyUnitText] = React.useState<string>("");
@@ -173,6 +231,8 @@ export function ItemsPage() {
   const itemFormScrollRef = React.useRef<HTMLDivElement | null>(null);
 
   const isRmStockForm = creatingType === "RM";
+  const showPlanningSensitivity = creatingType === "FG" || creatingType === "SFG";
+  const showFgGreenLevel = creatingType === "FG";
 
   function captureItemBaseline(fields: Parameters<typeof snapshotItemForm>[0]) {
     setFormBaseline(snapshotItemForm(fields));
@@ -215,6 +275,8 @@ export function ItemsPage() {
   }
 
   function load() {
+    setLoading(true);
+    setError(null);
     return Promise.all([
       apiFetch<Item[]>("/api/items?includeInactive=true"),
       apiFetch<UnitRow[]>("/api/units"),
@@ -232,16 +294,87 @@ export function ItemsPage() {
         }
         setStockByItemId(m);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"));
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
+      .finally(() => setLoading(false));
   }
 
   React.useEffect(() => {
-    load();
+    void load();
   }, []);
 
-  function openAdd(type: "RM" | "FG" | "SFG") {
+  const filtered = React.useMemo(() => {
+    const q = query.debouncedSearch;
+    const typeFilter = query.filters.type || "all";
+    const unitFilter = query.filters.unitId || "";
+    const stockFilter = query.filters.stockStatus || "all";
+    // Item master has no separate code field — search itemName only.
+    let list = rows.filter((i) => {
+      if (!q.trim()) return true;
+      return matchesNameSearch(i.itemName, q) || matchesNameSearch(i.hsnCode || "", q);
+    });
+    if (query.statusFilter === "active") list = list.filter((i) => i.isActive !== false);
+    if (query.statusFilter === "inactive") list = list.filter((i) => i.isActive === false);
+    if (typeFilter !== "all") list = list.filter((i) => i.itemType === typeFilter);
+    if (unitFilter) {
+      list = list.filter((i) => {
+        if (i.unitId != null) return String(i.unitId) === unitFilter;
+        const u = units.find((x) => String(x.id) === unitFilter);
+        if (!u) return false;
+        return normalizeSearchText(itemUnitLabel(i)) === normalizeSearchText(u.unitName);
+      });
+    }
+    if (stockFilter !== "all") {
+      list = list.filter((i) => itemStockStatus(i, stockByItemId) === stockFilter);
+    }
+    const key = query.sortKey;
+    list = [...list].sort((a, b) =>
+      compareByKey(
+        a,
+        b,
+        (r) => {
+          if (key === "type") return r.itemType;
+          if (key === "unit") return itemUnitLabel(r);
+          if (key === "status") return r.isActive === false ? 1 : 0;
+          if (key === "gst") {
+            const g = r.gstRate != null && String(r.gstRate).trim() !== "" ? Number(r.gstRate) : null;
+            return g != null && Number.isFinite(g) ? g : -1;
+          }
+          if (key === "lowStock") {
+            const n = Number(r.minStockLevel);
+            return Number.isFinite(n) ? n : 0;
+          }
+          return r.itemName;
+        },
+        query.sortDir,
+      ),
+    );
+    return list;
+  }, [
+    rows,
+    units,
+    stockByItemId,
+    query.debouncedSearch,
+    query.statusFilter,
+    query.filters,
+    query.sortKey,
+    query.sortDir,
+  ]);
+
+  const { pageRows, totalPages, from, to } = paginateRows(filtered, query.page, query.pageSize);
+  const pageIds = React.useMemo(() => pageRows.map((r) => r.id), [pageRows]);
+  const bulkSel = useMasterListSelection(pageIds, queryContextKey);
+
+  const searching =
+    Boolean(normalizeSearchText(query.debouncedSearch)) ||
+    query.statusFilter !== "all" ||
+    Boolean(query.filters.type && query.filters.type !== "all") ||
+    Boolean(query.filters.unitId) ||
+    Boolean(query.filters.stockStatus && query.filters.stockStatus !== "all");
+
+  function openAdd(type: ItemTypeCode) {
     setError(null);
     setEditingId(null);
+    setTypeChangeAllowed(true);
     setCreatingType(type);
     setName("");
     setUnitId("");
@@ -281,8 +414,9 @@ export function ItemsPage() {
   function openEdit(i: Item) {
     setError(null);
     setEditingId(i.id);
-    const nextType = i.itemType === "CONSUMABLE" ? "RM" : i.itemType;
+    const nextType: ItemTypeCode = isItemTypeCode(i.itemType) ? i.itemType : "RM";
     setCreatingType(nextType);
+    setTypeChangeAllowed(false);
     setName(i.itemName);
     const nextUnitId = i.unitId ?? "";
     setUnitId(nextUnitId);
@@ -349,6 +483,14 @@ export function ItemsPage() {
       fgManualGreenLevel: nextFg,
     });
     setShowForm(true);
+    void apiFetch<DependencySummary>(`/api/items/${i.id}/dependencies`)
+      .then((summary) => {
+        setTypeChangeAllowed(Boolean(summary?.safeToDelete));
+      })
+      .catch(() => {
+        // Fail closed: do not offer type change if we cannot confirm safety.
+        setTypeChangeAllowed(false);
+      });
   }
 
   function closeForm() {
@@ -439,11 +581,11 @@ export function ItemsPage() {
         minStockLevelPayload = minimumStockQtyPayload;
         planningBufferPayload = editingId != null ? null : undefined;
       }
-      if (!isRmStockForm) {
+      if (showPlanningSensitivity) {
         criticalPctPayload = parseCoveragePercent(criticalCoveragePct, "Critical coverage %");
         warningPctPayload = parseCoveragePercent(warningCoveragePct, "Warning coverage %");
       }
-      if (creatingType === "FG") {
+      if (showFgGreenLevel) {
         fgManualGreenLevelPayload = parseOptionalQty(fgManualGreenLevel);
       }
     } catch (err) {
@@ -469,6 +611,7 @@ export function ItemsPage() {
           method: "PUT",
           body: JSON.stringify({
             itemName,
+            itemType: creatingType,
             // Legacy low-stock column: for RM, aligned to Minimum Stock (no separate Low Stock UI).
             minStockLevel: minStockLevelPayload,
             hsnCode: hsnPayload,
@@ -510,7 +653,7 @@ export function ItemsPage() {
               : {}),
             ...(criticalPctPayload !== undefined ? { redThresholdPercent: criticalPctPayload } : {}),
             ...(warningPctPayload !== undefined ? { yellowThresholdPercent: warningPctPayload } : {}),
-            ...(creatingType === "FG" && fgManualGreenLevelPayload !== undefined
+            ...(showFgGreenLevel && fgManualGreenLevelPayload !== undefined
               ? { fgManualGreenLevelQty: fgManualGreenLevelPayload }
               : {}),
           }),
@@ -570,153 +713,252 @@ export function ItemsPage() {
     }
   }
 
-  async function onBulkDeleteConfirm() {
+  async function runBulk(action: "activate" | "deactivate" | "delete") {
+    if (bulkInFlight.current) return;
     const ids = bulkSel.getSelectedIdsArray();
-    if (ids.length === 0) {
-      setBulkDeleteOpen(false);
-      return;
-    }
-    setBulkDeleting(true);
+    if (!ids.length) return;
+    bulkInFlight.current = true;
+    setBulkBusy(true);
     try {
-      const result = await bulkDeleteByIds(ids, (id) =>
-        apiFetch(`/api/items/${id}`, { method: "DELETE" }).then(() => undefined),
-      );
-
-      await load();
+      const result = await postMasterBulkMutation("items", action, ids);
+      const verb = action === "activate" ? "activated" : action === "deactivate" ? "deactivated" : "deleted";
+      const summary = summarizeMasterBulkResult(result, verb);
+      if (summary.tone === "success") toast.showSuccess(summary.message);
+      else if (summary.tone === "info") toast.showInfo(summary.message);
+      else toast.showError(summary.message);
       bulkSel.clear();
-      setBulkDeleteOpen(false);
-
-      if (result.failed === 0) {
-        toast.showSuccess(`Deleted ${ids.length} record(s).`);
-        return;
-      }
-      if (result.blockedFailures > 0) {
-        toast.showInfo(BULK_DELETE_IN_USE_TOAST);
-      } else {
-        toast.showError("Some records could not be deleted.");
-      }
+      await load();
+    } catch (e) {
+      toast.showError(e instanceof Error ? e.message : "Bulk action failed.");
     } finally {
-      setBulkDeleting(false);
+      bulkInFlight.current = false;
+      setBulkBusy(false);
+      setBulkDeleteOpen(false);
     }
   }
 
+  const addActions = isAdmin ? <AddItemTypeMenu onSelect={(type) => openAdd(type)} /> : null;
+
   return (
-    <div>
-      {isAdmin ? (
-        <PageActions>
-          <Button type="button" size="sm" variant="outline" onClick={() => openAdd("RM")}>
-            + Raw material
-          </Button>
-          <Button type="button" size="sm" variant="outline" onClick={() => openAdd("FG")}>
-            + Finished goods
-          </Button>
-          <Button type="button" size="sm" variant="outline" onClick={() => openAdd("SFG")}>
-            + Semi-finished
-          </Button>
-        </PageActions>
-      ) : null}
-      {error ? <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div> : null}
-      {isAdmin ? (
-        <BulkSelectionToolbar
-          selectedCount={bulkSel.selectedCount}
-          onClear={bulkSel.clear}
-          onDeleteClick={() => setBulkDeleteOpen(true)}
-          disabled={bulkDeleting}
-        />
-      ) : null}
-      <div className="erp-table-wrap">
-        <table className="erp-table">
+    <MasterListPageShell>
+      <MasterListHeader
+        title="Items"
+        description="Raw materials, finished goods, semi-finished and consumable items."
+        actions={addActions}
+      />
+
+      {error && !showForm ? <MasterErrorState message={error} onRetry={() => void load()} /> : null}
+
+      <MasterListToolbar
+        search={
+          <MasterSearchInput
+            value={query.search}
+            onChange={setSearch}
+            onClear={clearSearch}
+            placeholder="Search items by name or code…"
+            aria-label="Search items by name or code"
+          />
+        }
+        filters={
+          <>
+            <NativeSelect
+              className="h-9 w-[8.5rem] text-sm"
+              value={query.filters.type || "all"}
+              onChange={(e) => setFilter("type", e.target.value)}
+              aria-label="Filter by type"
+            >
+              <option value="all">Type: All</option>
+              {ITEM_TYPE_DEFINITIONS.map((t) => (
+                <option key={t.code} value={t.code}>
+                  {t.shortLabel}
+                </option>
+              ))}
+            </NativeSelect>            <NativeSelect
+              className="h-9 min-w-[8rem] max-w-[11rem] text-sm"
+              value={query.filters.unitId || ""}
+              onChange={(e) => setFilter("unitId", e.target.value)}
+              aria-label="Filter by unit"
+            >
+              <option value="">Unit: All</option>
+              {units.map((u) => (
+                <option key={u.id} value={String(u.id)}>
+                  {u.unitName}
+                </option>
+              ))}
+            </NativeSelect>
+            <NativeSelect
+              className="h-9 min-w-[9rem] max-w-[12rem] text-sm"
+              value={query.filters.stockStatus || "all"}
+              onChange={(e) => setFilter("stockStatus", e.target.value)}
+              aria-label="Filter by stock status"
+            >
+              {STOCK_STATUS_FILTERS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </NativeSelect>
+            <NativeSelect
+              className="h-9 w-[8.5rem] text-sm"
+              value={query.statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as "all" | "active" | "inactive")}
+              aria-label="Filter by status"
+            >
+              <option value="all">Status: All</option>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </NativeSelect>
+          </>
+        }
+        resultLabel={resultCountLabel({ filtered: filtered.length, total: rows.length, searching })}
+        showClearFilters={searching}
+        onClearFilters={clearFilters}
+        bulkBar={
+          isAdmin && bulkSel.selectedCount > 0 ? (
+            <MasterBulkActionBar
+              selectedCount={bulkSel.selectedCount}
+              entityLabel={bulkSel.selectedCount === 1 ? "item" : "items"}
+              busy={bulkBusy}
+              onClear={bulkSel.clear}
+              onActivate={() => void runBulk("activate")}
+              onDeactivate={() => void runBulk("deactivate")}
+              onDelete={() => setBulkDeleteOpen(true)}
+            />
+          ) : null
+        }
+      />
+
+      {loading ? (
+        <MasterTableShell>
           <thead>
             <tr>
-              {isAdmin ? (
-                <th className="w-10">
-                  <input
-                    ref={bulkSel.selectAllRef}
-                    type="checkbox"
-                    aria-label="Select all items"
-                    checked={bulkSel.allSelected}
-                    onChange={(e) => bulkSel.toggleSelectAll(e.target.checked)}
-                  />
+              {Array.from({ length: 10 }).map((_, i) => (
+                <th key={i} className={masterThClass}>
+                  &nbsp;
                 </th>
-              ) : null}
-              <th>Item</th>
-              <th>Type</th>
-              <th>Unit</th>
-              <th className="whitespace-nowrap">Stock Status</th>
-              <th className="whitespace-nowrap">HSN</th>
-              <th className="whitespace-nowrap">GST %</th>
-              <th className="whitespace-nowrap">Low Stock Level</th>
-              {isAdmin ? <th className="text-right">Actions</th> : null}
+              ))}
             </tr>
           </thead>
-          <tbody>
-            {rows.map((i) => (
-              (() => {
+          <MasterTableSkeleton cols={10} />
+        </MasterTableShell>
+      ) : rows.length === 0 ? (
+        <MasterEmptyState
+          title="No items yet"
+          description="Add raw materials, finished goods, or semi-finished items to the master list."
+          action={addActions}
+        />
+      ) : filtered.length === 0 ? (
+        <MasterNoResultsState query={query.debouncedSearch || "filters"} onClear={clearFilters} />
+      ) : (
+        <>
+          <MasterTableShell>
+            <thead>
+              <tr>
+                {isAdmin ? (
+                  <MasterSelectAllCheckbox
+                    checked={bulkSel.allSelected}
+                    indeterminate={bulkSel.someSelected}
+                    inputRef={bulkSel.selectAllRef}
+                    onChange={bulkSel.toggleSelectAll}
+                    disabled={pageRows.length === 0}
+                  />
+                ) : null}
+                <MasterSortHeader label="Item name" sortKey="name" activeKey={query.sortKey} dir={query.sortDir} onToggle={toggleSort} />
+                <MasterSortHeader label="Type" sortKey="type" activeKey={query.sortKey} dir={query.sortDir} onToggle={toggleSort} />
+                <MasterSortHeader label="Unit" sortKey="unit" activeKey={query.sortKey} dir={query.sortDir} onToggle={toggleSort} />
+                <th className={masterThClass}>Stock status</th>
+                <th className={masterThClass}>HSN</th>
+                <MasterSortHeader label="GST %" sortKey="gst" activeKey={query.sortKey} dir={query.sortDir} onToggle={toggleSort} />
+                <MasterSortHeader
+                  label="Low Stock Level"
+                  sortKey="lowStock"
+                  activeKey={query.sortKey}
+                  dir={query.sortDir}
+                  onToggle={toggleSort}
+                />
+                <MasterSortHeader label="Status" sortKey="status" activeKey={query.sortKey} dir={query.sortDir} onToggle={toggleSort} />
+                {isAdmin ? <th className={`${masterThClass} text-right`}>Actions</th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {pageRows.map((i) => {
                 const currentQty = stockByItemId.get(i.id) ?? 0;
                 return (
-              <tr key={i.id}>
-                {isAdmin ? (
-                  <td>
-                    <input
-                      type="checkbox"
-                      aria-label={`Select ${i.itemName}`}
-                      checked={bulkSel.selectedIds.has(i.id)}
-                      onChange={(e) => bulkSel.toggleOne(i.id, e.target.checked)}
-                    />
-                  </td>
-                ) : null}
-                <td className="font-medium">{i.itemName} {!i.isActive ? <Badge variant="default">Inactive</Badge> : null}</td>
-                <td>
-                  <Badge
-                    variant={i.itemType === "FG" ? "success" : i.itemType === "SFG" ? "info" : "default"}
-                  >
-                    {i.itemType}
-                  </Badge>
-                </td>
-                <td>{i.unitName?.trim() ? i.unitName : i.unit}</td>
-                <td>
-                  <ItemStockStatusBadge
-                    currentQty={currentQty}
-                    minimumStockQty={i.minimumStockQty}
-                    minStockLevel={i.minStockLevel}
-                  />
-                </td>
-                <td className="text-slate-600">{i.hsnCode?.trim() ? i.hsnCode : "—"}</td>
-                <td className="text-slate-600">{i.gstRate != null && String(i.gstRate).trim() !== "" ? i.gstRate : "—"}</td>
-                <td>{i.minStockLevel}</td>
-                {isAdmin ? (
-                  <td>
-                    <div className="erp-table-actions">
-                      <Button type="button" size="icon" variant="outline" onClick={() => openEdit(i)} aria-label="Edit">
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="destructive"
-                        onClick={() => inspectLifecycle(i)}
-                        aria-label="Review dependencies"
-                        title="Review delete or inactive options"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </td>
-                ) : null}
-              </tr>
+                  <tr key={i.id} className={i.isActive === false ? "opacity-70" : undefined} style={{ height: 50 }}>
+                    {isAdmin ? (
+                      <MasterRowCheckbox
+                        id={i.id}
+                        checked={bulkSel.selectedIds.has(i.id)}
+                        onChange={(checked) => bulkSel.toggleOne(i.id, checked)}
+                        label={i.itemName}
+                      />
+                    ) : null}
+                    <MasterTruncatedCell text={i.itemName} />
+                    <td className={masterTdClass}>
+                      <MasterTypeBadge type={i.itemType} />
+                    </td>
+                    <td className={masterTdClass}>{itemUnitLabel(i)}</td>
+                    <td className={masterTdClass}>
+                      <ItemStockStatusBadge
+                        currentQty={currentQty}
+                        minimumStockQty={i.minimumStockQty}
+                        minStockLevel={i.minStockLevel}
+                        reorderQty={i.reorderQty}
+                      />
+                    </td>
+                    <td className={`${masterTdClass} text-slate-600`}>{i.hsnCode?.trim() ? i.hsnCode : "—"}</td>
+                    <td className={`${masterTdClass} text-slate-600`}>
+                      {i.gstRate != null && String(i.gstRate).trim() !== "" ? i.gstRate : "—"}
+                    </td>
+                    <td className={masterTdClass}>{i.minStockLevel}</td>
+                    <td className={masterTdClass}>
+                      <MasterStatusBadge active={i.isActive !== false} />
+                    </td>
+                    {isAdmin ? (
+                      <td className={masterTdClass}>
+                        <div className="erp-table-actions" onClick={(e) => e.stopPropagation()}>
+                          <Button type="button" size="icon" variant="outline" onClick={() => openEdit(i)} aria-label="Edit">
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="text-slate-600 hover:text-red-700"
+                            onClick={() => void inspectLifecycle(i)}
+                            aria-label="Review dependencies"
+                            title="Review delete or inactive options"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </td>
+                    ) : null}
+                  </tr>
                 );
-              })()
-            ))}
-          </tbody>
-        </table>
-      </div>
+              })}
+            </tbody>
+          </MasterTableShell>
+          <MasterListPagination
+            page={query.page}
+            pageSize={query.pageSize}
+            totalPages={totalPages}
+            from={from}
+            to={to}
+            total={filtered.length}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        </>
+      )}
 
       <BulkDeleteConfirmModal
         open={bulkDeleteOpen}
-        count={bulkSel.getSelectedIdsArray().length}
-        loading={bulkDeleting}
+        count={bulkSel.selectedCount}
+        entityLabel="item"
+        loading={bulkBusy}
         onCancel={() => setBulkDeleteOpen(false)}
-        onConfirm={onBulkDeleteConfirm}
+        onConfirm={() => void runBulk("delete")}
       />
       <DependencyLifecycleModal
         open={lifecycleItem != null}
@@ -733,17 +975,10 @@ export function ItemsPage() {
             <div className="sticky top-0 z-[2] flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-3">
               <div className="min-w-0">
                 <div className="text-base font-semibold text-slate-900">
-                  {editingId != null ? "Edit Item" : "Add Item"}
+                  {editingId != null ? "Edit Item" : `Add Item — ${itemTypeLabel(creatingType)}`}
                 </div>
-                <div className="text-xs text-slate-500">
-                  {creatingType === "FG"
-                    ? "Finished goods"
-                    : creatingType === "SFG"
-                      ? "Semi-finished"
-                      : "Raw material"}
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5">
+                <div className="text-xs text-slate-500">{itemTypeLabel(creatingType)}</div>
+              </div>              <div className="flex items-center gap-1.5">
                 <Button type="button" variant="outline" size="sm" className="h-9" onClick={quickFillDefaults}>
                   Quick Fill Defaults
                 </Button>
@@ -796,13 +1031,38 @@ export function ItemsPage() {
                             <div className="erp-form-row-2">
                               <div className="erp-form-field">
                                 <span className="erp-form-label">Type</span>
-                                <div className="pt-1">
-                                  <Badge variant={creatingType === "FG" ? "success" : "default"}>{creatingType === "FG" ? "FG" : "RM"}</Badge>
-                                </div>
+                                {editingId != null && !typeChangeAllowed ? (
+                                  <div className="pt-1">
+                                    <MasterTypeBadge type={creatingType} />
+                                    <p className="mt-1 text-xs text-slate-500">
+                                      Type is locked because this item is used in transactions.
+                                    </p>
+                                  </div>
+                                ) : editingId != null ? (
+                                  <select
+                                    className="erp-select"
+                                    value={creatingType}
+                                    aria-label="Item type"
+                                    data-testid="item-form-type-select"
+                                    onChange={(e) => {
+                                      const v = e.target.value;
+                                      if (isItemTypeCode(v)) setCreatingType(v);
+                                    }}
+                                  >
+                                    {ITEM_TYPE_DEFINITIONS.map((t) => (
+                                      <option key={t.code} value={t.code}>
+                                        {t.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <div className="pt-1">
+                                    <MasterTypeBadge type={creatingType} />
+                                  </div>
+                                )}
                               </div>
                               <div className="erp-form-field">
-                                <span className="erp-form-label">Unit</span>
-                                <select
+                                <span className="erp-form-label">Unit</span>                                <select
                                   className="erp-select"
                                   value={unitId}
                                   onChange={(e) => setUnitId(e.target.value === "" ? "" : Number(e.target.value))}
@@ -948,7 +1208,7 @@ export function ItemsPage() {
                                   />
                                   <p className="mt-1 text-xs text-slate-500">Optional warning level for on-hand visibility</p>
                                 </div>
-                                {creatingType === "FG" ? (
+                                {showFgGreenLevel ? (
                                   <div className="erp-form-field sm:col-span-2 max-w-xs">
                                     <span className="erp-form-label">Manual Green Level qty</span>
                                     <DecimalInput
@@ -964,7 +1224,7 @@ export function ItemsPage() {
                           </div>
                         </div>
 
-                        {!isRmStockForm ? (
+                        {showPlanningSensitivity ? (
                         <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
                           <div className="flex items-center justify-between gap-2">
                             <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Planning Sensitivity</div>
@@ -1067,6 +1327,6 @@ export function ItemsPage() {
           </Card>
         </ErpModal>
       ) : null}
-    </div>
+    </MasterListPageShell>
   );
 }

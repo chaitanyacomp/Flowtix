@@ -61,7 +61,7 @@ test("STOCKITEM: no root HSNCODE — deep HSNCODE only under GST block", () => {
   assert.equal(mi.gstRate, 5);
 });
 
-test("STOCKITEM: CGST + SGST rows combine to total GST %", () => {
+test("STOCKITEM: CGST + SGST only (no IGST) leaves GST unresolved — never coerce to 0%", () => {
   const inner = `
 <STOCKITEM NAME="Split GST">
   <NAME>Split GST</NAME>
@@ -84,7 +84,8 @@ test("STOCKITEM: CGST + SGST rows combine to total GST %", () => {
   const p = parseTallyMastersXml(envelope(inner));
   const mi = mapStockItemToItem(p.stockItems[0]);
   assert.ok(mi);
-  assert.equal(mi.gstRate, 18);
+  assert.equal(mi.gstRate, null);
+  assert.equal(mi.gstStatus, "Unresolved/Inherited");
 });
 
 test("LEDGER: state + GSTIN from LEDMAILINGDETAILS.LIST (Sundry Creditors)", () => {

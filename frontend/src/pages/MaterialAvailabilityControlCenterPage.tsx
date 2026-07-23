@@ -44,6 +44,11 @@ import {
   prefersProcurementWorkspaceNavigation,
   resolveCaseProcurementMr,
 } from "../lib/rmControlCenterProcurementHandoff";
+import {
+  regularSoPurchaseRequestAlreadyExistsMessage,
+  regularSoPurchaseRequestSuccessMessage,
+  shouldCreatePurchaseRequestViaRegularSoEndpoint,
+} from "../lib/regularSoCreatePurchaseRequest";
 import { ErpWorkflowTrail } from "../components/erp/foundation/ErpWorkflowTrail";
 import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
 import { navContextMaterialIssueFromRmcc, navStateWithNavContext } from "../lib/erpNavContext";
@@ -90,6 +95,7 @@ import {
   readinessBadgeFromBackendCase,
   resolveStoreActionPrimaryPresentation,
   normalizeStoreActionKey,
+  rmControlCenterCaseStatusLabel,
 } from "../lib/rmControlCenterReadinessUx";
 
 type WarningRow = { code: string; message: string };
@@ -788,6 +794,7 @@ export function MaterialAvailabilityControlCenterPage() {
     const procurementWorkspaceHref = buildProcurementWorkspaceHref({
       workOrderId,
       salesOrderId,
+      salesOrderDocNo: detail.salesOrder?.docNo ?? woCase?.salesOrderNo ?? null,
       rmItemId: selectedRmItemId,
       materialRequirementId: resolvedProcurementMr?.materialRequirementId ?? mr?.id ?? null,
       sourceType: resolvedProcurementMr?.sourceType ?? mr?.sourceType ?? null,
@@ -812,7 +819,9 @@ export function MaterialAvailabilityControlCenterPage() {
       rmItemId: selectedRmItemId,
       issueHref,
       productionHref,
-      prepareWoHref: salesOrderId ? woPreparePrepareHref(salesOrderId) : null,
+      prepareWoHref: salesOrderId
+        ? woPreparePrepareHref(salesOrderId, { source: "regular_so", from: "rm-control-center" })
+        : null,
       grnHref,
       procurementWorkspaceHref,
       procurementCompletedForCase,
@@ -860,6 +869,7 @@ export function MaterialAvailabilityControlCenterPage() {
     const procurementWorkspaceHref = buildProcurementWorkspaceHref({
       workOrderId,
       salesOrderId,
+      salesOrderDocNo: detail.salesOrder?.docNo ?? woCase?.salesOrderNo ?? null,
       rmItemId: selectedRmItemId,
       materialRequirementId: resolvedProcurementMr?.materialRequirementId ?? woCase?.materialRequirement?.id ?? null,
       sourceType: resolvedProcurementMr?.sourceType ?? woCase?.materialRequirement?.sourceType ?? null,
@@ -869,7 +879,9 @@ export function MaterialAvailabilityControlCenterPage() {
       storeAction,
       issueHref,
       grnHref,
-      prepareWoHref: salesOrderId ? woPreparePrepareHref(salesOrderId) : null,
+      prepareWoHref: salesOrderId
+        ? woPreparePrepareHref(salesOrderId, { source: "regular_so", from: "rm-control-center" })
+        : null,
       noQtyPrepareWoHref: isNoQtyOrder
         ? noQtyExecutionEntryHref({
             salesOrderId: salesOrderId ?? 0,
@@ -880,6 +892,8 @@ export function MaterialAvailabilityControlCenterPage() {
         : null,
       procurementWorkspaceHref,
       isNoQtyOrder,
+      hideDuplicateProcurementAction:
+        normalizeStoreActionKey(storeAction?.key) === "CONTINUE_PROCUREMENT",
     });
   }, [detail, woCase, storeAction, caseSupply, selectedRmItemId, resolvedProcurementMr, role]);
 
@@ -1011,7 +1025,7 @@ export function MaterialAvailabilityControlCenterPage() {
     !postIssueHandoff &&
     !zeroAllocatableStock &&
     Boolean(selectedLineAllocationContext) &&
-    (storePrimaryAction?.kind === "allocation_fallback" || storePrimaryAction?.kind === "none");
+    storePrimaryAction?.kind === "allocation_fallback";
 
   // Continuity: shortage exists → Store raises one RM requirement → waiting for stock/purchase.
   const anyShortageOnCase = React.useMemo(
@@ -1086,6 +1100,7 @@ export function MaterialAvailabilityControlCenterPage() {
     const procurementWorkspaceHref = buildProcurementWorkspaceHref({
       workOrderId: detail.workOrder?.id ?? null,
       salesOrderId: detail.salesOrder?.id ?? woCase?.salesOrderId ?? null,
+      salesOrderDocNo: detail.salesOrder?.docNo ?? woCase?.salesOrderNo ?? null,
       rmItemId: selectedRmItemId,
       materialRequirementId: procMr?.materialRequirementId ?? mr?.id ?? null,
       sourceType: procMr?.sourceType ?? mr?.sourceType ?? null,
@@ -1138,6 +1153,7 @@ export function MaterialAvailabilityControlCenterPage() {
   const requirementProcurementHref = buildProcurementWorkspaceHref({
     workOrderId: detail?.workOrder?.id ?? null,
     salesOrderId: detail?.salesOrder?.id ?? woCase?.salesOrderId ?? null,
+    salesOrderDocNo: detail?.salesOrder?.docNo ?? woCase?.salesOrderNo ?? null,
     materialRequirementId:
       requirementRaised ? resolvedProcurementMr?.materialRequirementId ?? activeMaterialRequirement?.id ?? null : null,
     sourceType: resolvedProcurementMr?.sourceType ?? activeMaterialRequirement?.sourceType ?? null,
@@ -1191,12 +1207,29 @@ export function MaterialAvailabilityControlCenterPage() {
   const operatorStageLabelText = operatorStageLabel({
     allocationFirstLabel: postIssueHandoff
       ? STORE_HANDOFF_STATUS_LABEL
-      : storeAction?.label ?? woCase?.allocationFirstStatus?.label ?? null,
+      : rmControlCenterCaseStatusLabel({
+          storeActionKey: storeAction?.key,
+          storeActionLabel: storeAction?.label ?? woCase?.allocationFirstStatus?.label,
+          fallbackLabel: woCase?.allocationFirstStatus?.label,
+        }),
     guidedPhaseTitle: displayGuided?.phaseTitle ?? displayGuided?.statusHeadline,
-    nextAction: postIssueHandoff ? STORE_HANDOFF_ACTION_LABEL : storeAction?.label ?? woCase?.nextStoreAction?.label,
+    nextAction: postIssueHandoff
+      ? STORE_HANDOFF_ACTION_LABEL
+      : rmControlCenterCaseStatusLabel({
+          storeActionKey: storeAction?.key,
+          storeActionLabel: storeAction?.label ?? woCase?.nextStoreAction?.label,
+        }),
     hasWorkOrder,
     postIssueHandoff,
   });
+
+  const caseStatusChipLabel = postIssueHandoff
+    ? STORE_HANDOFF_STATUS_LABEL
+    : rmControlCenterCaseStatusLabel({
+        storeActionKey: storeAction?.key,
+        storeActionLabel: storeAction?.label ?? woCase?.allocationFirstStatus?.label,
+        fallbackLabel: operatorStageLabelText,
+      });
 
   async function allocateQty(qty: number, note?: string) {
     const ctx = selectedLineAllocationContext;
@@ -1283,6 +1316,7 @@ export function MaterialAvailabilityControlCenterPage() {
           sourceType: procMr.sourceType,
           workOrderId: detail?.workOrder?.id ?? null,
           salesOrderId: detail?.salesOrder?.id ?? woCase?.salesOrderId ?? null,
+          salesOrderDocNo: detail?.salesOrder?.docNo ?? woCase?.salesOrderNo ?? null,
           rmItemId: selectedRmItemId,
           returnTo: "rm-control-center",
         }),
@@ -1290,7 +1324,57 @@ export function MaterialAvailabilityControlCenterPage() {
       return;
     }
 
+    const salesOrderId = detail?.salesOrder?.id ?? woCase?.salesOrderId ?? null;
+    const salesOrderDocNo = detail?.salesOrder?.docNo ?? woCase?.salesOrderNo ?? null;
+    const orderType = detail?.salesOrder?.orderType ?? woCase?.salesOrderOrderType ?? null;
     const mr = woCase?.materialRequirement;
+
+    if (
+      shouldCreatePurchaseRequestViaRegularSoEndpoint({
+        materialRequirementId: mr?.id ?? procMr?.materialRequirementId ?? null,
+        salesOrderId,
+        orderType,
+        prefersProcurementWorkspace: false,
+      })
+    ) {
+      setCreatingPurchaseRequest(true);
+      setError(null);
+      try {
+        const out = await apiFetch<{
+          created?: boolean;
+          reusedPr?: boolean;
+          message?: string;
+          salesOrder?: { id?: number; docNo?: string | null };
+        }>(`/api/sales-orders/${salesOrderId}/create-purchase-request`, {
+          method: "POST",
+          body: JSON.stringify({
+            confirmReopenClosed: requiresReopenConfirm || reopenConfirmPendingRef.current,
+          }),
+        });
+        const soLabel = out.salesOrder?.docNo ?? salesOrderDocNo;
+        const soId = out.salesOrder?.id ?? salesOrderId;
+        if (out.created) {
+          showSuccess(regularSoPurchaseRequestSuccessMessage(soLabel, soId));
+        } else {
+          showSuccess(out.message || regularSoPurchaseRequestAlreadyExistsMessage(soLabel, soId));
+        }
+        await load(filters);
+      } catch (e) {
+        const code = (e as { code?: string; responseJson?: { code?: string } })?.code ??
+          (e as { responseJson?: { code?: string } })?.responseJson?.code;
+        if (code === "REOPEN_CONFIRM_REQUIRED") {
+          setReopenModalOpen(true);
+          return;
+        }
+        const presented = presentOperationalError(e);
+        setError(presented.userMessage);
+        showError(presented.userMessage);
+      } finally {
+        setCreatingPurchaseRequest(false);
+      }
+      return;
+    }
+
     if (!mr?.id) {
       showError("Cannot create purchase request — material requirement was not found for this case.");
       return;
@@ -1307,7 +1391,11 @@ export function MaterialAvailabilityControlCenterPage() {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      showSuccess(PROCUREMENT_TERMS.PR_CREATE_SUCCESS);
+      showSuccess(
+        salesOrderDocNo
+          ? regularSoPurchaseRequestSuccessMessage(salesOrderDocNo, salesOrderId)
+          : PROCUREMENT_TERMS.PR_CREATE_SUCCESS,
+      );
       await load(filters);
     } catch (e) {
       const presented = presentOperationalError(e);
@@ -1704,12 +1792,8 @@ export function MaterialAvailabilityControlCenterPage() {
               <RmControlCenterCasePanel
                 salesOrderLabel={detail.salesOrder?.docNo ?? woCase?.salesOrderNo}
                 fgLabel={detail.fgItem?.itemName ?? woCase?.fgItemName}
-                stageLabel={operatorStageLabelText}
-                allocationFirstLabel={
-                  postIssueHandoff
-                    ? STORE_HANDOFF_STATUS_LABEL
-                    : storeAction?.label ?? woCase?.allocationFirstStatus?.label ?? null
-                }
+                stageLabel={caseStatusChipLabel}
+                allocationFirstLabel={caseStatusChipLabel}
                 postIssueHandoff={postIssueHandoff}
                 rmItemFilterLabel={activeRmItemFilterLabel}
                 mrDocNo={woCase?.materialRequirement?.docNo ?? escalation?.materialRequirementDocNo}
@@ -1730,7 +1814,7 @@ export function MaterialAvailabilityControlCenterPage() {
           <div className="shrink-0 border-b border-slate-200/80 bg-white/90 px-2.5 py-1.5">
             <h2 className="text-[12px] font-bold uppercase tracking-wide text-slate-500">Next action</h2>
           </div>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain p-2 pb-3">
+          <div className="rm-cc-actions-scroll">
             {!detail || !operational ? (
               <div className="grid flex-1 place-items-center text-center">
                 <ArrowDownToLine className="mx-auto h-8 w-8 text-slate-400" />
@@ -1748,39 +1832,7 @@ export function MaterialAvailabilityControlCenterPage() {
               </div>
             ) : (
               <div className="flex min-h-0 flex-col gap-2">
-                {procurementVisibility ? (
-                  <RmControlCenterProcurementPanel
-                    chip={procurementVisibility.chip}
-                    anchorLabel={procurementVisibility.anchorLabel}
-                    executionWoLabel={procurementVisibility.executionWoLabel}
-                    mrDocNo={procurementVisibility.mrDocNo}
-                    procurementChain={caseSupply?.procurementChain ?? null}
-                    timelineStepIndex={procurementVisibility.timelineStepIndex}
-                    prLineCount={procurementVisibility.prLineCount}
-                    poLineCount={procurementVisibility.poLineCount}
-                    pendingGrnQty={procurementVisibility.pendingGrnQty}
-                    receivedGrnQty={procurementVisibility.receivedGrnQty}
-                    warnings={procurementVisibility.warnings}
-                    procurementWorkspaceHref={procurementVisibility.procurementWorkspaceHref}
-                    grnHref={procurementVisibility.grnHref}
-                    canCreatePurchaseRequest={storeMayCreatePurchaseRequest(
-                      procurementVisibility.chip,
-                      canCreatePurchaseRequest,
-                      {
-                        procurementCompleted: procurementCompletedForCase,
-                        mrStatus:
-                          resolvedProcurementMr?.status ??
-                          woCase?.materialRequirement?.status ??
-                          null,
-                        receivedGrnQty: caseSupply?.summary?.receivedGrnQty ?? 0,
-                      },
-                    )}
-                    creatingPr={creatingPurchaseRequest}
-                    onCreatePurchaseRequest={() => void handleCreatePurchaseRequestFromCase()}
-                  />
-                ) : null}
-
-                <div className="rounded-md border border-slate-200 bg-white px-2.5 py-2">
+                <div className="rm-cc-primary-action" data-testid="rm-cc-primary-action">
                   <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Primary operational action</p>
                   <p className="mt-0.5 text-[12px] font-semibold text-slate-900">
                     {postIssueHandoff ? STORE_HANDOFF_ACTION_LABEL : operatorStageLabelText}
@@ -1801,9 +1853,21 @@ export function MaterialAvailabilityControlCenterPage() {
                           }),
                           "h-9 w-full justify-center text-[13px] font-semibold no-underline",
                         )}
+                        data-testid="rm-cc-primary-cta"
                       >
                         {storePrimaryAction.label}
                       </Link>
+                    ) : storePrimaryAction?.kind === "create_pr" ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-9 w-full text-[13px] font-semibold"
+                        disabled={creatingPurchaseRequest}
+                        onClick={() => void handleCreatePurchaseRequestFromCase()}
+                        data-testid="rm-cc-primary-cta"
+                      >
+                        {creatingPurchaseRequest ? "Creating…" : storePrimaryAction.label}
+                      </Button>
                     ) : storePrimaryAction?.kind === "waiting" ? (
                       <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[12px] font-medium text-amber-950">
                         {storePrimaryAction.description || storePrimaryAction.label}
@@ -1814,6 +1878,12 @@ export function MaterialAvailabilityControlCenterPage() {
                           {storePrimaryAction.description || storePrimaryAction.label}
                         </p>
                       )
+                    ) : storePrimaryAction?.kind === "none" ? (
+                      storePrimaryAction.description ? (
+                        <p className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2 text-[12px] text-slate-700">
+                          {storePrimaryAction.description}
+                        </p>
+                      ) : null
                     ) : canShowAllocationControls ? (
                       <div className="flex flex-col gap-2">
                         <Button
@@ -1943,6 +2013,43 @@ export function MaterialAvailabilityControlCenterPage() {
                     )}
                   </div>
                 </div>
+
+                {procurementVisibility ? (
+                  <div className="min-h-0" data-testid="rm-cc-secondary-nav">
+                    <RmControlCenterProcurementPanel
+                      chip={procurementVisibility.chip}
+                      anchorLabel={procurementVisibility.anchorLabel}
+                      executionWoLabel={procurementVisibility.executionWoLabel}
+                      mrDocNo={procurementVisibility.mrDocNo}
+                      procurementChain={caseSupply?.procurementChain ?? null}
+                      timelineStepIndex={procurementVisibility.timelineStepIndex}
+                      prLineCount={procurementVisibility.prLineCount}
+                      poLineCount={procurementVisibility.poLineCount}
+                      pendingGrnQty={procurementVisibility.pendingGrnQty}
+                      receivedGrnQty={procurementVisibility.receivedGrnQty}
+                      warnings={procurementVisibility.warnings}
+                      procurementWorkspaceHref={procurementVisibility.procurementWorkspaceHref}
+                      grnHref={procurementVisibility.grnHref}
+                      canCreatePurchaseRequest={
+                        storePrimaryAction?.kind !== "create_pr" &&
+                        storeMayCreatePurchaseRequest(
+                          procurementVisibility.chip,
+                          canCreatePurchaseRequest,
+                          {
+                            procurementCompleted: procurementCompletedForCase,
+                            mrStatus:
+                              resolvedProcurementMr?.status ??
+                              woCase?.materialRequirement?.status ??
+                              null,
+                            receivedGrnQty: caseSupply?.summary?.receivedGrnQty ?? 0,
+                          },
+                        )
+                      }
+                      creatingPr={creatingPurchaseRequest}
+                      onCreatePurchaseRequest={() => void handleCreatePurchaseRequestFromCase()}
+                    />
+                  </div>
+                ) : null}
 
                 {/* Phase E: hide legacy requisition/procurement actions from operator workflow */}
               </div>

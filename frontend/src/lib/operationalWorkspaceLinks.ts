@@ -1,4 +1,4 @@
-import { DRILL_QUERY } from "./drillDownRoutes";
+import { DRILL_QUERY, regularSoWorkOrderDetailHref } from "./drillDownRoutes";
 import { buildNoQtyGuidedHref } from "./noQtyFlowState";
 import { buildProductionScopedHref } from "./productionNavigation";
 
@@ -69,6 +69,10 @@ export function workOrderHrefForOpenWo(row: {
   const qs = new URLSearchParams();
   if (sid > 0) qs.set("salesOrderId", String(sid));
   qs.set(DRILL_QUERY.workOrderId, String(row.workOrderId));
+  // REGULAR / REPLACEMENT: permanent detail document.
+  if (row.orderType !== "NO_QTY") {
+    return regularSoWorkOrderDetailHref(row.workOrderId, { from: "work-order-workspace" });
+  }
   return `/work-orders?${qs.toString()}`;
 }
 

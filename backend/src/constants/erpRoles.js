@@ -71,15 +71,15 @@ const CUSTOMER_RETURN_READ_ROLES = Object.freeze(["ADMIN", "STORE"]);
 
 const NO_QTY_FLOW_STATE_READ_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION", "QA"]);
 
-/** PRODUCTION — work orders, production entry, rework approval, prepare WO. */
-const WO_WRITE_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
-const WO_PLAN_PREP_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
+/** STORE owns Regular WO prepare/placement; PRODUCTION may open prepare / WO list. */
+const WO_WRITE_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
+const WO_PLAN_PREP_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
 /** STORE — Green Level replenishment WO placement workspace */
 const GREEN_LEVEL_WO_PLACEMENT_ROLES = Object.freeze(["ADMIN", "STORE"]);
 const PRODUCTION_WRITE_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
 const PRODUCTION_READ_ROLES = Object.freeze(["ADMIN", "PRODUCTION", "STORE", "QA"]);
 const PRODUCTION_DASHBOARD_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
-const WO_PREPARE_CREATION_DASHBOARD_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
+const WO_PREPARE_CREATION_DASHBOARD_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
 
 /** QA — inspection posting, QA reports, hold/rejection (domain statuses still use QC_* names). */
 const QA_WRITE_ROLES = Object.freeze(["ADMIN", "QA"]);

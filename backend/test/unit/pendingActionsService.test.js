@@ -406,6 +406,42 @@ describe("pendingActionsService", () => {
     assert.equal(action.action, "Create Purchase Request");
     assert.match(action.href, /demandPool=MPRS/);
     assert.match(action.href, /materialRequirementId=99/);
+    assert.doesNotMatch(action.action, /Regular SO/);
+  });
+
+  it("Regular SO Create PR pending action shows business SO identity (not SO #id)", () => {
+    const row = normalizeRmRiskRow({
+      workOrderId: 9,
+      workOrderNo: "WO-26-0009",
+      salesOrderId: 258,
+      salesOrderNo: "SO-26-0001",
+      itemId: 96,
+      itemName: "PP",
+      unit: "Kg",
+      fgItemName: "Nozzle",
+      shortageAfterReservationQty: 140,
+      queueType: "WAITING_PURCHASE_ACTION",
+      freeStockQty: 0,
+      netShortageAfterIncomingQty: 140,
+      materialRequirementId: 77,
+      sourceType: "SALES_ORDER",
+      prLineCount: 0,
+      poLineCount: 0,
+      operationalKey: "PROCUREMENT_PENDING",
+      nextActionKey: "CREATE_PR",
+      procurementDemandPool: "REGULAR_SO",
+      hasOpenMr: true,
+    });
+    const action = mapNormalizedRowToPendingAction(row, "STORE");
+    assert.equal(action.action, "Create Purchase Request — Regular SO");
+    assert.match(String(action.documentNo), /SO-26-0001/);
+    assert.match(String(action.documentNo), /Nozzle/);
+    assert.match(String(action.documentNo), /PP shortage:\s*140\s*Kg/);
+    assert.doesNotMatch(String(action.documentNo), /SO #258/);
+    assert.doesNotMatch(String(action.action), /SO #/);
+    assert.match(action.href, /salesOrderId=258/);
+    assert.match(action.href, /salesOrderDocNo=SO-26-0001/);
+    assert.match(action.href, /demandPool=REGULAR_SO/);
   });
 
   it("MPRS after PR with zero stock maps to waiting for Purchase for Store", () => {
@@ -602,8 +638,8 @@ describe("pendingActionsService", () => {
             grns: [],
             supplier: { name: "Supplier A" },
             lines: [
-              { id: 1, itemId: 10, qty: 100, item: { itemName: "RM-A" } },
-              { id: 2, itemId: 20, qty: 50, item: { itemName: "RM-B" } },
+              { id: 1, itemId: 10, qty: 100, item: { itemName: "RM-A", unit: "KG" } },
+              { id: 2, itemId: 20, qty: 50, item: { itemName: "RM-B", unit: "KG" } },
             ],
           },
         ],
@@ -611,12 +647,49 @@ describe("pendingActionsService", () => {
     };
     const actions = await fetchStoreGrnPendingActions(mockDb);
     assert.equal(actions.length, 1);
-    assert.equal(actions[0].action, "GRN Pending");
+    assert.equal(actions[0].action, "Create GRN");
     assert.equal(actions[0].documentNo, "RMPO-112");
+    assert.equal(actions[0].itemName, "Supplier A");
+    assert.equal(actions[0].qty, 150);
+    assert.equal(actions[0].uom, "KG");
     assert.equal(actions[0].ownerRole, "STORE");
     assert.equal(actions[0].id, "procurement:grn:po:112");
-    assert.match(actions[0].href, /poId=112/);
+    assert.match(actions[0].href, /\/rm-po-grn\/112\?/);
+    assert.match(actions[0].href, /openGrn=1/);
     assert.match(actions[0].href, /from=pending-actions/);
+    assert.doesNotMatch(actions[0].href, /\/dashboard/);
+    assert.doesNotMatch(actions[0].href, /material-availability|rm-control/i);
+  });
+
+  it("fetchStoreGrnPendingActions omits fully received and cancelled POs", async () => {
+    const mockDb = {
+      rmPurchaseOrder: {
+        findMany: async () => [
+          {
+            id: 1,
+            docNo: "RMPO-FULL",
+            status: "PENDING",
+            supplier: { name: "S1" },
+            lines: [{ id: 10, itemId: 1, qty: 10, shortClosedQty: 0, item: { itemName: "A", unit: "KG" } }],
+            grns: [{ reversedAt: null, lines: [{ rmPoLineId: 10, receivedQty: 10 }] }],
+          },
+          {
+            id: 2,
+            docNo: "RMPO-PARTIAL",
+            status: "PARTIAL",
+            supplier: { name: "S2" },
+            lines: [{ id: 20, itemId: 2, qty: 100, shortClosedQty: 0, item: { itemName: "B", unit: "KG" } }],
+            grns: [{ reversedAt: null, lines: [{ rmPoLineId: 20, receivedQty: 40 }] }],
+          },
+        ],
+      },
+    };
+    // buildGrnPendingSection only queries OPEN_PO_STATUSES — cancelled never returned.
+    const actions = await fetchStoreGrnPendingActions(mockDb);
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].documentNo, "RMPO-PARTIAL");
+    assert.equal(actions[0].qty, 60);
+    assert.match(actions[0].href, /\/rm-po-grn\/2\?/);
   });
 
   it("fetchStoreProductionRmReturnPendingActions maps pending return to Store action with WO number", async () => {
@@ -1067,14 +1140,14 @@ describe("pendingActionsService", () => {
     assert.equal(statuses[0].href, null);
   });
 
-  it("fetchPurchaseProcurementPendingActions does not emit GRN Pending actions", async () => {
+  it("fetchPurchaseProcurementPendingActions does not emit Create GRN actions", async () => {
     const actions = await fetchPurchaseProcurementPendingActions({
       materialRequirement: { findMany: async () => [] },
       purchaseRequest: { findMany: async () => [] },
       rmPurchaseOrder: { findMany: async () => [] },
       purchaseRequestLineSourceLink: { findMany: async () => [] },
     });
-    assert.equal(actions.filter((a) => a.action === "GRN Pending").length, 0);
+    assert.equal(actions.filter((a) => a.action === "Create GRN" || a.action === "GRN Pending").length, 0);
   });
 
   it("mapProcurementQueueRowToPurchasePendingAction maps Monthly Planning approved MR to Create Purchase Request", () => {
@@ -1168,8 +1241,16 @@ describe("pendingActionsService", () => {
       .filter(Boolean);
     assert.equal(purchaseActions.length, 3);
     assert.equal(
-      purchaseActions.filter((a) => a.action === "Create Purchase Request").length,
+      purchaseActions.filter((a) => String(a.action).startsWith("Create Purchase Request")).length,
       2,
+    );
+    assert.equal(
+      purchaseActions.filter((a) => a.action === "Create Purchase Request — Regular SO").length,
+      1,
+    );
+    assert.equal(
+      purchaseActions.filter((a) => a.action === "Create Purchase Request").length,
+      1,
     );
     assert.equal(
       purchaseActions.filter((a) => a.action === PREPARE_RM_PO).length,
@@ -1230,16 +1311,16 @@ describe("pendingActionsService", () => {
     assert.equal(deduped[0].documentNo, "MR-26-0401");
   });
 
-  it("dedupes Store GRN pending actions by PO, preferring supplemental PO doc over RM_RISK WO doc", () => {
+  it("dedupes Store Create GRN actions by PO, preferring supplemental PO doc over RM_RISK WO doc", () => {
     const deduped = dedupePendingActionsByProcurementCase([
       {
         id: "rm-risk:wo:1:rm:10",
         priority: PENDING_PRIORITY.LOW,
-        action: "GRN Pending",
+        action: "Create GRN",
         documentNo: "WO-26-0001",
         ownerRole: "STORE",
         ageHours: null,
-        href: "/rm-po-grn/112?from=pending-actions",
+        href: "/rm-po-grn/112?openGrn=1&from=pending-actions",
         currentStatus: "GRN_PENDING",
         purchaseOrderId: 112,
         materialRequirementId: 99,
@@ -1247,11 +1328,11 @@ describe("pendingActionsService", () => {
       {
         id: "procurement:grn:po:112",
         priority: PENDING_PRIORITY.LOW,
-        action: "GRN Pending",
+        action: "Create GRN",
         documentNo: "RMPO-112",
         ownerRole: "STORE",
         ageHours: null,
-        href: "/rm-po-grn?poId=112&from=pending-actions",
+        href: "/rm-po-grn/112?openGrn=1&from=pending-actions",
         currentStatus: "GRN_PENDING",
         purchaseOrderId: 112,
       },
@@ -1261,7 +1342,7 @@ describe("pendingActionsService", () => {
     assert.equal(deduped[0].id, "procurement:grn:po:112");
   });
 
-  it("Store GRN pending maps from normalized RM_RISK row with PO doc href", () => {
+  it("Store Create GRN maps from normalized RM_RISK row with PO detail openGrn href", () => {
     const row = normalizeRmRiskRow({
       workOrderId: 1,
       workOrderNo: "WO-26-0001",
@@ -1278,10 +1359,12 @@ describe("pendingActionsService", () => {
     });
     assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
     const action = mapNormalizedRowToPendingAction(row, "STORE");
-    assert.equal(action.action, "GRN Pending");
+    assert.equal(action.action, "Create GRN");
     assert.equal(action.ownerRole, "STORE");
     assert.equal(action.currentStatus, "GRN_PENDING");
-    assert.match(action.href, /\/rm-po-grn\/112/);
+    assert.match(action.href, /\/rm-po-grn\/112\?/);
+    assert.match(action.href, /openGrn=1/);
+    assert.doesNotMatch(action.href, /\/dashboard/);
   });
 
   it("dedupes Production pending actions by WO, preferring execution-state label over Ready to Start", () => {
@@ -1355,7 +1438,7 @@ describe("pendingActionsService", () => {
     assert.match(action.href, /from=pending-actions/);
   });
 
-  it("maps READY_TO_RELEASE_WO RM risk row to Release to Production for Store when not released", () => {
+  it("maps READY_TO_RELEASE_WO directly to Production without a separate Store release step", () => {
     const row = normalizeRmRiskRow({
       workOrderId: 1,
       workOrderNo: "WO-26-0001",
@@ -1365,10 +1448,10 @@ describe("pendingActionsService", () => {
       procurementCompletedForCase: true,
       mrStatus: "FULLY_PROCURED",
     });
-    assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
-    const action = mapNormalizedRowToPendingAction(row, "STORE");
-    assert.equal(action.action, "Release to Production");
-    assert.match(action.href, /^\/production-release\?/);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.PRODUCTION);
+    const action = mapNormalizedRowToPendingAction(row, "PRODUCTION");
+    assert.equal(action.action, READY_TO_START_PRODUCTION);
+    assert.match(action.href, /^\/production\?/);
   });
 
   it("does not map READY_TO_RELEASE_WO to Release to Production when production entries exist", () => {

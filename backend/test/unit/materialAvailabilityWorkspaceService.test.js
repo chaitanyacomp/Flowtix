@@ -620,6 +620,9 @@ describe("materialAvailabilityWorkspaceService", () => {
     assert.equal(data.actionQueue[0].nextAction, "Raise Store Requisition");
     assert.equal(data.selectedDetail.workOrder.id, null);
     assert.equal(data.selectedWoShortageCase.materialRequirement, null);
+    assert.equal(data.selectedWoShortageCase.nextStoreAction.key, "AWAITING_PR");
+    assert.notEqual(data.selectedWoShortageCase.nextStoreAction.key, "CONTINUE_PROCUREMENT");
+    assert.notEqual(data.selectedWoShortageCase.nextStoreAction.key, "CREATE_WO");
   });
 
   it("keeps recommendation helpers readable", () => {

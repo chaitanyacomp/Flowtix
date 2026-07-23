@@ -15,7 +15,7 @@ export function parseProductionWorkspaceBucket(
 }
 
 function statesForBucket(bucket: ProductionWorkspaceBucketFilter): ProductionWorkbenchState[] {
-  if (bucket === "readyToStart") return ["READY_TO_START", "DRAFT_PENDING"];
+  if (bucket === "readyToStart") return ["READY_TO_START"];
   return ["CONTINUE_PRODUCTION"];
 }
 
@@ -25,12 +25,9 @@ export function matchesProductionWorkspaceBucket(
 ): boolean {
   if (!bucket) return true;
   const state = classifyProductionWorkbenchState(row);
-  if (bucket === "readyToStart") {
-    // Drafts with prior produced qty live under Continue; only never-started drafts match Ready.
-    if (state === "DRAFT_PENDING") return Number(row.producedQty ?? 0) <= 1e-6;
-    return state === "READY_TO_START";
-  }
-  if (state === "DRAFT_PENDING") return Number(row.producedQty ?? 0) > 1e-6;
+  // Blocking drafts are never Ready or Continue — they own Draft Awaiting Approval.
+  if (state === "DRAFT_PENDING") return false;
+  if (bucket === "readyToStart") return state === "READY_TO_START";
   return statesForBucket(bucket).includes(state);
 }
 

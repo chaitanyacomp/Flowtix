@@ -19,7 +19,19 @@ export function salesOrdersFocusHref(salesOrderId: number): string {
 }
 
 export function workOrdersFocusHref(workOrderId: number): string {
-  return `/work-orders?${DRILL_QUERY.workOrderId}=${workOrderId}`;
+  const id = Number(workOrderId);
+  if (!(id > 0)) return "/work-orders";
+  return `/work-orders/${id}`;
+}
+
+/** REGULAR_SO permanent WO document (path id). NO_QTY continues to use query-scoped `/work-orders`. */
+export function regularSoWorkOrderDetailHref(workOrderId: number, opts?: { from?: string }): string {
+  const id = Number(workOrderId);
+  if (!(id > 0)) return "/work-orders?flow=REGULAR_SO";
+  const qs = new URLSearchParams();
+  if (opts?.from) qs.set("from", opts.from);
+  const q = qs.toString();
+  return `/work-orders/${id}${q ? `?${q}` : ""}`;
 }
 
 /** QC entry: selects production batch for this work order when present. */

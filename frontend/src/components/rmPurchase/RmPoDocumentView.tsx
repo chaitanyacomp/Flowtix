@@ -25,14 +25,16 @@ export type RmPoDocumentViewProps = {
   billingStatusLabel: string;
   canEditPo: boolean;
   showCancel: boolean;
-  grnAllowed: boolean;
+  /** @deprecated Create GRN lives only on the pending-receipt banner — kept for call-site compatibility. */
+  grnAllowed?: boolean;
   isAdmin: boolean;
   reversingGrnId: number;
   /** Completed PO — supplier document only; no workflow actions on this page. */
   documentOnly?: boolean;
   onEdit: () => void;
   onCancel: () => void;
-  onCreateGrn: () => void;
+  /** @deprecated Create GRN lives only on the pending-receipt banner — kept for call-site compatibility. */
+  onCreateGrn?: () => void;
   onReverseGrn: (grnId: number) => void;
 };
 
@@ -43,11 +45,9 @@ export function RmPoDocumentView({
   stockStatusLabel,
   canEditPo,
   showCancel,
-  grnAllowed,
   documentOnly = false,
   onEdit,
   onCancel,
-  onCreateGrn,
 }: RmPoDocumentViewProps) {
   const [supplierCopyMode, setSupplierCopyMode] = React.useState(false);
   const traceabilityHref = buildRmPoTraceabilityHref(po.id);
@@ -108,11 +108,6 @@ export function RmPoDocumentView({
             >
               View GRN History
             </Link>
-          ) : null}
-          {showWorkflowActions && grnAllowed ? (
-            <Button type="button" size="sm" className="text-sm" data-testid="rm-po-create-grn-btn" onClick={onCreateGrn}>
-              Create GRN
-            </Button>
           ) : null}
           {showWorkflowActions && canEditPo ? (
             <Button type="button" variant="outline" size="sm" className="text-sm" data-testid="rm-po-edit-btn" onClick={onEdit}>

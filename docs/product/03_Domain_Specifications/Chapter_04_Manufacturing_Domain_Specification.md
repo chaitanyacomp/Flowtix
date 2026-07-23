@@ -33,6 +33,7 @@
 | 1.1.0 | 2026-07-10 | FT ERP Product Team | WastageType master extension (code/category/description); Lane C Production Report classification analytics ownership clarified |
 | 1.1.1 | 2026-07-15 | FT ERP Product Team | BOM lifecycle — Phase-2 Future Enhancement for BOM Revision FK traceability (docs only) |
 | 1.1.2 | 2026-07-15 | FT ERP Product Team | Cross-ref FT-PD-100 §7.1 Phase-2 planning register (docs only) |
+| 1.1.3 | 2026-07-22 | FT ERP Product Team | Interim — REGULAR SO demand vs WO-plan production completion |
 
 **Supersedes:** None.
 
@@ -202,11 +203,13 @@ Architecture is in [Volume 2, Chapter 4](../02_Business_Architecture/Chapter_04_
 | **Outputs** | Approved production qty; RM consumption posting; **QA Pending** handoff |
 | **Lifecycle** | Draft → Submitted → Approved → QA Pending \| Rejected (internal) |
 | **Allowed actions** | Record draft; submit; approve; cancel draft |
-| **Validation rules** | Material issued; qty ≤ remaining RM-supported capacity. For NO_QTY, WO qty is the planned target and is not a hard cap; Regular tolerance rules remain unchanged. |
+| **Validation rules** | Material issued; qty ≤ remaining RM-supported capacity. For REGULAR and NO_QTY, WO qty is the planned **target** (Target Remaining / Use Remaining) and is not a hard entry cap when issued RM supports more FG. Limiting BOM/PMR RM line governs; floor for whole-number FG UOMs. Open **draft** qty is not finalized production — Target Remaining and Finalized Produced stay based on approved qty until Review & Finalize. |
 
-### NO_QTY excess production authorization
+### REGULAR / NO_QTY excess production authorization
 
-Net usable issued RM is gross issue minus Store return minus RM consumed by approved production. BOM/PMR per-FG demand converts each component balance to FG capacity; the lowest component controls. Saved unapproved batches reserve this remaining envelope once. NO_QTY production may exceed planned WO quantity within that envelope. The WO planned quantity and RS placement balance remain unchanged. Excess follows normal Production → QC → accepted FG stock/rejection processing and does not offset a future recovery cycle automatically.
+Net usable issued RM is gross issue minus Store return minus RM consumed by approved production. BOM/PMR per-FG demand converts each component balance to FG capacity; the lowest component controls. Saved unapproved batches reserve this remaining envelope once. Production may exceed planned WO quantity within that envelope. The WO planned quantity and (for NO_QTY) RS placement balance remain unchanged. Excess follows normal Production → QC → accepted FG stock/rejection processing. Dispatch remains capped by SO remaining and QC-accepted usable FG; accepted excess beyond SO demand is general usable FG.
+
+**Named projection fields (UI + API readiness):** `finalizedProducedQty`, `activeDraftQty`, `plannedTargetRemainingQty`, `rmSupportedMaximumQty`, `rmSupportedEntryCapacityBeforeDraft`, `rmSupportedCapacityAfterDraft`, `projectedProducedAfterDraft`, `projectedExtraQty`. Do not overload a single `producedQty` for draft and approved.
 | **Completion criteria** | **Approved** → **QA Pending** — Manufacturing domain handoff complete |
 
 ---
@@ -384,11 +387,19 @@ Every RM unit in production is traceable. No silent consumption.
 
 | Level | Criterion |
 |-------|-----------|
-| **Production Entry** | Approved → QA Pending |
-| **WO line** | Cumulative approved production = line qty (or early close with reason) |
-| **Work Order** | All lines production complete → `PRODUCTION_COMPLETE` |
+| **Production Entry** | Approved → QA Pending (all produced qty; no usable FG bypass of QC) |
+| **WO line (REGULAR)** | Obligation met when approved produced ≥ **remaining SO demand** (authoritative; other WOs counted) **or** WO planned qty fully produced. WO-plan buffer remainder is not mandatory production. |
+| **WO line (NO_QTY)** | Shop-floor execution + mandatory Production Report close (WO plan is a target) |
+| **Work Order** | Lines production-complete **and** Production Report confirmed → document `COMPLETED` (REGULAR SO-covered) or `CLOSED_WITH_SHORTFALL` (true SO shortage only) |
 
-**Rule:** Production qty **cannot exceed** issued material aligned to frozen PMR.
+**REGULAR decision matrix (interim):**
+
+1. Produced &lt; remaining SO demand → Continue Later **or** End with Shortage → Production Report → shortfall close / recovery as applicable.
+2. Produced ≥ remaining SO demand and Produced &lt; WO plan → End Production → Production Report → `COMPLETED` (expected excess before QC = produced − remaining SO demand).
+3. Produced ≥ WO plan → normal final closure; Production Report still mandatory.
+4. Pause / Continue Later does **not** open Production Report and does **not** close the WO.
+
+**Rule:** Production qty **cannot exceed** issued material aligned to frozen PMR (REGULAR also respects WO + tolerance).
 
 ---
 
@@ -463,7 +474,7 @@ Production Dashboard may show **batches awaiting QA** as read-only monitor — n
 | **PMR queue** | WO awaiting PMR submit |
 | **Issue queue** | PMR awaiting issue |
 | **ARR queue** | Open supplementary requisitions |
-| **KPIs** | WOs Active without issue; partial issue WOs |
+| **KPIs** | WOs Active without issue; partial issue WOs; **Ready for WO** includes eligible Regular RM-ready SO cases (`rmReceivedCreateWoCount`) plus NO_QTY `PLACE_WO` |
 
 ### 10.2 Production Dashboard
 
@@ -637,6 +648,14 @@ Production Work Order Report confirmation owns **wastage classification** agains
 | Historical | Inactive types remain visible on confirmed historical reports and Lane C analytics |
 | Analytical lanes | Lane C classification qty **SHALL NOT** be merged with MaterialWastageNote (Lane A), PE consumption variance (Lane B), or ScrapRecord (Lane D) in the same KPI |
 | Deferred | Machine / Shift / Operator dimensions and Material Cost Loss are **not** implemented until persisted dimensions / valuation policy exist |
+
+### 16A.1 Authoritative RM reconciliation
+
+Production Entry `actualQty` is the Consumed authority. Because BOM explosion and production approval consumption use Shot Weight (FG plus runner), runner material is already included in Consumed. Expected runner is informational; it is not actual wastage and is not part of the conservation equation unless Production explicitly classifies physical runner wastage.
+
+`Remaining Unreconciled = Issued - Consumed - Returned - Valid Classified Wastage`
+
+The per-line tolerance is `0.0005` in the RM UOM. Negative return/wastage is invalid; Returned cannot exceed `max(0, Issued - Consumed)`; line-classified wastage cannot exceed the balance after return. The backend independently recalculates these rules. Expected runner variance is `Actual Runner-classified Wastage - Expected Runner`; it does not alter Remaining Unreconciled. Draft recovery overlays only user-entered return, wastage details, and remarks on current server quantities, then recomputes all derived values.
 
 ---
 

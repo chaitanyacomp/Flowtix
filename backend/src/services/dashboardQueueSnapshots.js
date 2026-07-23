@@ -100,6 +100,25 @@ function isDashboardTerminalWorkOrderStatus(status) {
   return DASHBOARD_TERMINAL_WORK_ORDER_STATUSES.includes(String(status ?? "").toUpperCase());
 }
 
+function regularProductionReportQueueProjection({
+  orderType,
+  executionStatus,
+  confirmedReport,
+  hasPendingQc,
+}) {
+  const type = String(orderType ?? "").toUpperCase();
+  const isRegular = type !== "NO_QTY" && type !== "GREEN_LEVEL";
+  const finalized = isRegular && Boolean(confirmedReport);
+  return {
+    finalized,
+    reportPending:
+      isRegular &&
+      String(executionStatus ?? "").toUpperCase() === "SHORTFALL_PENDING" &&
+      !finalized,
+    nextAction: finalized ? (hasPendingQc ? "QC_PENDING" : "PRODUCTION_CLOSURE_PENDING") : null,
+  };
+}
+
 function customerNameForSalesOrder(so) {
   const direct = so.customer?.name?.trim();
   if (direct) return direct;
@@ -751,6 +770,9 @@ function buildDashboardProductionHref({
     if (orderType === "NO_QTY") return `/production?${noQtyBase}${wo}${wol}${pid}&pwSection=${section}`;
     return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}${pid}&pwSection=${section}`;
   }
+  if (nextAction === "PRODUCTION_CLOSURE_PENDING") {
+    return `/production?salesOrderId=${encodeURIComponent(String(salesOrderId))}${wo}${wol}&focusReport=1&viewReport=1`;
+  }
   if (nextAction === "PRODUCTION_SHORTFALL_DECISION") {
     if (orderType === "NO_QTY") {
       return `/production?${noQtyBase}${wo}${wol}&pwSection=reportPending&focusReport=1`;
@@ -775,6 +797,7 @@ function buildDashboardActionLabel(nextAction) {
     return "Resume Production";
   }
   if (nextAction === "PRODUCTION_SHORTFALL_DECISION") return "Complete Production Report";
+  if (nextAction === "PRODUCTION_CLOSURE_PENDING") return "View Production Report";
   if (nextAction === "PRODUCTION_DRAFT_REVIEW") return "Review & Finalize";
   if (nextAction === "PRODUCTION_PENDING") return "Go to Production";
   return "Open";
@@ -828,6 +851,11 @@ async function getProductionQueueRowsUncached() {
           blockRemarks: true,
           blockedAt: true,
         },
+      },
+      productionReports: {
+        where: { status: "CONFIRMED" },
+        select: { id: true, status: true, confirmedAt: true, remainingQty: true },
+        take: 1,
       },
       lines: {
         orderBy: { id: "asc" },
@@ -1055,7 +1083,16 @@ async function getProductionQueueRowsUncached() {
       const plannedQty = Number(line.plannedQty ?? line.qty);
       const approvedProduced = producedByLineId.get(line.id) ?? 0;
       const execStatus = wo.productionExecution?.executionStatus ?? "NOT_STARTED";
-      const shortfallDecisionPending = execStatus === "SHORTFALL_PENDING";
+      const confirmedProductionReport = wo.productionReports?.[0] ?? null;
+      const reportProjection = regularProductionReportQueueProjection({
+        orderType,
+        executionStatus: execStatus,
+        confirmedReport: confirmedProductionReport,
+        hasPendingQc: (pendingQcByLineId.get(line.id) ?? 0) > QUEUE_EPS,
+      });
+      const isRegularFinalReport = reportProjection.finalized;
+      const shortfallDecisionPending =
+        execStatus === "SHORTFALL_PENDING" && !isRegularFinalReport;
       const balanceQty = shortfallDecisionPending
         ? getWoLineRemainingProductionQty(plannedQty, approvedProduced)
         : getEffectiveProductionPendingQty(plannedQty, approvedProduced, execStatus);
@@ -1178,7 +1215,9 @@ async function getProductionQueueRowsUncached() {
 
       } else {
         hasPendingQc = linePendingQc > QUEUE_EPS;
-        if (balanceQty > QUEUE_EPS || approvedProduced <= QUEUE_EPS) {
+        if (reportProjection.nextAction) {
+          nextAction = reportProjection.nextAction;
+        } else if (balanceQty > QUEUE_EPS || approvedProduced <= QUEUE_EPS) {
           nextAction = "PRODUCTION_PENDING";
         } else if (hasPendingQc) {
           nextAction = "QC_PENDING";
@@ -1275,6 +1314,9 @@ async function getProductionQueueRowsUncached() {
         balanceQty,
         producedQty: approvedProduced,
       });
+      const regularShortfallQty = isRegularFinalReport
+        ? Math.max(0, Number(confirmedProductionReport?.remainingQty || 0))
+        : balanceQty;
 
       rows.push({
         workOrderId: wo.id,
@@ -1294,6 +1336,13 @@ async function getProductionQueueRowsUncached() {
         status: wo.status,
         holdReason: wo.holdReason ?? null,
         productionExecutionStatus: execStatus,
+        productionReportConfirmed: Boolean(confirmedProductionReport),
+        productionReportId: confirmedProductionReport?.id ?? null,
+        productionReportConfirmedAt: confirmedProductionReport?.confirmedAt
+          ? new Date(confirmedProductionReport.confirmedAt).toISOString()
+          : null,
+        regularClosurePending: isRegularFinalReport && regularShortfallQty > QUEUE_EPS,
+        regularShortfallQty: isRegularFinalReport ? regularShortfallQty : 0,
         productionBlockReason: wo.productionExecution?.blockReason ?? null,
         productionBlockReasonLabel: wo.productionExecution?.blockReason
           ? blockReasonLabel(wo.productionExecution.blockReason)
@@ -1321,15 +1370,24 @@ async function getProductionQueueRowsUncached() {
         productionWorkState:
           nextAction === "PRODUCTION_PAUSED" || nextAction === "PRODUCTION_EXECUTION_BLOCKED"
             ? "PAUSED_PRODUCTION"
-            : nextAction === "PRODUCTION_PENDING" || nextAction === "PRODUCTION_DRAFT_REVIEW"
-              ? approvedProduced > QUEUE_EPS ? "CONTINUE_PRODUCTION" : "READY_TO_START"
-              : null,
+            : nextAction === "PRODUCTION_DRAFT_REVIEW"
+              ? "DRAFT_PENDING"
+              : nextAction === "PRODUCTION_PENDING"
+                ? approvedProduced > QUEUE_EPS
+                  ? "CONTINUE_PRODUCTION"
+                  : "READY_TO_START"
+                : null,
         dispatchableQty,
         productionId: productionIdForQc,
         displayQty,
         qtyLabel,
         actionHref: href,
-        actionLabel: nextAction === "PRODUCTION_DRAFT_REVIEW" ? "Review & Finalize" : deriveProductionQueueActionLabel({ nextAction, execStatus }),
+        actionLabel:
+          nextAction === "PRODUCTION_DRAFT_REVIEW"
+            ? "Review & Finalize"
+            : nextAction === "PRODUCTION_CLOSURE_PENDING"
+              ? "View Production Report"
+              : deriveProductionQueueActionLabel({ nextAction, execStatus }),
       });
     }
   }
@@ -2464,9 +2522,11 @@ async function getRmRiskRowsUncached() {
     workOrderReleased: Boolean(gate?.released ?? row.workOrderReleased),
     hasProductionEntry: Boolean(gate?.hasProductionEntry),
     href:
-      row.workOrderId && row.workOrderId > 0
-        ? `/reports/rm-shortage?workOrderId=${row.workOrderId}&rmItemId=${row.rmItemId}&onlyBlocked=true&returnTo=dashboard`
-        : `/reports/rm-shortage?salesOrderId=${row.salesOrderId || ""}&materialRequirementId=${row.materialRequirementId || ""}&rmItemId=${row.rmItemId}&onlyBlocked=true&returnTo=dashboard`,
+      row.queueType === "RM_RECEIVED_CREATE_WO" && row.salesOrderId
+        ? `/work-orders/prepare?salesOrderId=${encodeURIComponent(String(row.salesOrderId))}&source=regular_so&from=dashboard`
+        : row.workOrderId && row.workOrderId > 0
+          ? `/reports/rm-shortage?workOrderId=${row.workOrderId}&rmItemId=${row.rmItemId}&onlyBlocked=true&returnTo=dashboard`
+          : `/reports/rm-shortage?salesOrderId=${row.salesOrderId || ""}&materialRequirementId=${row.materialRequirementId || ""}&rmItemId=${row.rmItemId}&onlyBlocked=true&returnTo=dashboard`,
     status: row.netShortageAfterIncomingQty > QUEUE_EPS ? "CRITICAL" : "LOW_BUFFER",
     queueType: row.queueType,
     productionExecutionStatus: woId > 0 ? (gate?.executionStatus ?? "NOT_STARTED") : null,
@@ -3024,6 +3084,7 @@ module.exports = {
   isDashboardHoldWorkOrderStatus,
   isDashboardPausedWorkOrderStatus,
   isDashboardTerminalWorkOrderStatus,
+  regularProductionReportQueueProjection,
   customerNameForSalesOrder,
   getActionableWorkOrderCount,
   getDispatchBacklogRows,

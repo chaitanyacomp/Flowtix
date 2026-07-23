@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { ChevronRight } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -165,6 +165,8 @@ function CycleHistoryRow({ g }: { g: WoWorkspaceGroup }) {
 
 export function OperationalWorkOrderWorkspace({ className }: { className?: string }) {
   const liveTick = useErpRefreshTick(["production", "dashboard", "workorders"], { pollIntervalMs: 0 });
+  const [searchParams, setSearchParams] = useSearchParams();
+  const flowFilter = (searchParams.get("flow") || "ALL").toUpperCase();
   const [queueRows, setQueueRows] = React.useState<DashboardProductionStatusSource[] | null>(null);
   const [openGroups, setOpenGroups] = React.useState<WoApiGroupInput[] | null>(null);
   const [completedGroups, setCompletedGroups] = React.useState<WoApiGroupInput[] | null>(null);
@@ -202,35 +204,85 @@ export function OperationalWorkOrderWorkspace({ className }: { className?: strin
     [queueRows, openGroups, completedGroups],
   );
 
+  const filterByFlow = React.useCallback(
+    (groups: WoWorkspaceGroup[]) => {
+      if (flowFilter === "REGULAR_SO" || flowFilter === "REGULAR") {
+        return groups.filter((g) => String(g.orderType || "").toUpperCase() !== "NO_QTY");
+      }
+      if (flowFilter === "NO_QTY") {
+        return groups.filter((g) => String(g.orderType || "").toUpperCase() === "NO_QTY");
+      }
+      return groups;
+    },
+    [flowFilter],
+  );
+
+  const operationalOpen = filterByFlow(sections.operationalOpen);
+  const cycleHistory = filterByFlow(sections.cycleHistory);
+
   const loading = queueRows === null || openGroups === null || completedGroups === null;
-  const hasOperational = sections.operationalOpen.length > 0;
-  const hasHistory = sections.cycleHistory.length > 0;
+  const hasOperational = operationalOpen.length > 0;
+  const hasHistory = cycleHistory.length > 0;
   const hasAny = hasOperational || hasHistory;
+
+  function setFlow(next: string) {
+    const q = new URLSearchParams(searchParams);
+    if (!next || next === "ALL") q.delete("flow");
+    else q.set("flow", next);
+    setSearchParams(q, { replace: true });
+  }
 
   return (
     <Card className={cn("erp-op-workspace-primary min-w-0 overflow-hidden", className)}>
       <CardHeader className="border-b border-slate-100 bg-white px-2.5 py-1.5">
-        <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">Work Order Workspace</CardTitle>
-        <p className="text-[11px] text-slate-500">
-          Production execution · actionable cycles · {NO_QTY_TERMS.AGREEMENT_LABEL} and REGULAR
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">Work Order Workspace</CardTitle>
+            <p className="text-[11px] text-slate-500">
+              Permanent register · open a WO number for details · REGULAR and {NO_QTY_TERMS.AGREEMENT_LABEL}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {(
+              [
+                ["ALL", "All"],
+                ["REGULAR_SO", "Regular SO"],
+                ["NO_QTY", "No Qty SO"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={cn(
+                  "rounded border px-2 py-0.5 text-[11px]",
+                  flowFilter === key || (key === "ALL" && flowFilter === "ALL")
+                    ? "border-slate-800 bg-slate-800 text-white"
+                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
+                )}
+                onClick={() => setFlow(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
       </CardHeader>
       <CardContent className="space-y-0 p-0">
         {error ? <p className="px-2.5 py-1.5 text-[12px] text-red-700">{error}</p> : null}
         {loading ? (
           <p className="px-2.5 py-3 text-[13px] text-slate-600">Loading…</p>
         ) : !hasAny ? (
-          <p className="px-3 py-4 text-[13px] text-slate-600">No work orders found.</p>
+          <p className="px-3 py-4 text-[13px] text-slate-600">No work orders found for this filter.</p>
         ) : (
           <div className="max-h-[min(52vh,440px)] overflow-y-auto">
             <section aria-label="Open Operational Cycles" className="bg-white">
               <div className="border-b border-slate-200 bg-gradient-to-b from-white to-slate-50/80 px-2.5 py-1.5">
                 <h3 className="text-[12px] font-bold tracking-tight text-slate-900">Operational Cycles</h3>
-                <p className="text-[10px] text-slate-500">Shop-floor actions only — WO placement is Store-owned</p>
+                <p className="text-[10px] text-slate-500">Click WO number / row for permanent details</p>
               </div>
               {hasOperational ? (
                 <ul className="list-none space-y-2 p-2.5">
-                  {sections.operationalOpen.map((g) => (
+                  {operationalOpen.map((g) => (
                     <OperationalCycleCard key={g.woId} g={g} />
                   ))}
                 </ul>
@@ -253,7 +305,7 @@ export function OperationalWorkOrderWorkspace({ className }: { className?: strin
                   </p>
                 </div>
                 <ul className="list-none pb-1">
-                  {sections.cycleHistory.map((g) => (
+                  {cycleHistory.map((g) => (
                     <CycleHistoryRow key={g.woId} g={g} />
                   ))}
                 </ul>

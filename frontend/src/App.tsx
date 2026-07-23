@@ -25,6 +25,7 @@ import { ControlTowerPage } from "./pages/ControlTowerPage";
 import { PendingActionsPage } from "./pages/PendingActionsPage";
 import { CustomersPage } from "./pages/CustomersPage";
 import { ItemsPage } from "./pages/ItemsPage";
+import { MastersLandingPage } from "./pages/MastersLandingPage";
 import { OpeningStockPage } from "./pages/OpeningStockPage";
 import { UnitsPage } from "./pages/UnitsPage";
 import { WastageTypesPage } from "./pages/WastageTypesPage";
@@ -53,6 +54,7 @@ import { SalesBillsListPage } from "./pages/SalesBillsListPage";
 import { SalesBillNewPage } from "./pages/SalesBillNewPage";
 import { SalesBillEditPage } from "./pages/SalesBillEditPage";
 import { WorkOrdersPage } from "./pages/WorkOrdersPage";
+import { WorkOrderDetailPage } from "./pages/WorkOrderDetailPage";
 import { ProductionPage } from "./pages/ProductionPage";
 import { ProductionFlowLandingPage } from "./pages/ProductionFlowLandingPage";
 import { QcEntryPage } from "./pages/QcEntryPage";
@@ -514,6 +516,14 @@ export default function App() {
           }
         />
         <Route
+          path="/masters"
+          element={
+            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES_OPERATIONAL]}>
+              <MastersLandingPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/customers"
           element={
             <ProtectedRoute allowedRoles={[...ENQUIRY_QUOTATION_WRITE_ROLES]}>
@@ -729,6 +739,14 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={[...WO_WRITE_ROLES]}>
               <WorkOrdersPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/work-orders/:workOrderId"
+          element={
+            <ProtectedRoute allowedRoles={[...WO_WRITE_ROLES]}>
+              <WorkOrderDetailPage />
             </ProtectedRoute>
           }
         />

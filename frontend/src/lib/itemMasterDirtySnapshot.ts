@@ -20,7 +20,7 @@ export function normUnitId(v: number | "" | null | undefined): number | null {
 }
 
 export type ItemFormDirtyFields = {
-  creatingType: "RM" | "FG" | "SFG";
+  creatingType: "RM" | "FG" | "SFG" | "CONSUMABLE";
   name: string;
   unitId: number | "";
   legacyUnitText: string;

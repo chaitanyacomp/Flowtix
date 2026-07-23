@@ -1393,7 +1393,7 @@
   /** Order Planning — viewport-fit store workspace */
   /** RM Control Center — viewport-fit operational desk (queue scrolls only) */
   .rm-cc-page {
-    @apply flex h-[calc(100dvh-5.25rem)] min-h-0 max-h-[calc(100dvh-5.25rem)] flex-col gap-1.5 overflow-hidden;
+    @apply flex h-[calc(100dvh-5.25rem)] min-h-0 max-h-[calc(100dvh-5.25rem)] w-full max-w-full min-w-0 flex-col gap-1.5 overflow-x-hidden overflow-y-hidden;
   }
 
   .rm-cc-head {
@@ -1401,15 +1401,23 @@
   }
 
   .rm-cc-grid {
-    @apply grid min-h-0 flex-1 gap-2 overflow-hidden lg:grid-cols-[26%_52%_22%];
+    @apply grid min-h-0 min-w-0 flex-1 gap-2 overflow-hidden lg:grid-cols-[minmax(0,26%)_minmax(0,52%)_minmax(0,22%)];
   }
 
   .rm-cc-col {
-    @apply min-h-0 min-w-0;
+    @apply min-h-0 min-w-0 overflow-hidden;
   }
 
   .rm-cc-actions {
-    @apply min-h-0;
+    @apply min-h-0 min-w-0;
+  }
+
+  .rm-cc-actions-scroll {
+    @apply flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain p-2 pb-3;
+  }
+
+  .rm-cc-primary-action {
+    @apply sticky top-0 z-10 shrink-0 rounded-md border border-slate-200 bg-white px-2.5 py-2 shadow-sm;
   }
 
   .mp-vp-page {
@@ -1561,7 +1569,7 @@
   }
 
   .mp-vp-ops-card {
-    @apply rounded-md border border-slate-200/90 bg-white px-2.5 py-2 shadow-sm;
+    @apply flex h-full min-h-[5.25rem] flex-col rounded-md border border-slate-200/90 bg-white px-2.5 py-2 shadow-sm;
   }
 
   .mp-vp-ops-label {
@@ -1573,7 +1581,21 @@
   }
 
   .mp-vp-ops-hint {
-    @apply mt-0.5 text-[10px] text-slate-500;
+    @apply mt-auto pt-1 text-[10px] text-slate-500;
+  }
+
+  .mp-vp-rm-coverage-table {
+    @apply min-w-[76rem] table-fixed;
+  }
+
+  .mp-vp-rm-coverage-table th,
+  .mp-vp-rm-coverage-table td {
+    @apply align-middle;
+  }
+
+  .mp-vp-rm-coverage-table th:not(:first-child),
+  .mp-vp-rm-coverage-table td:not(:first-child) {
+    @apply whitespace-nowrap;
   }
 
   .mp-vp-mr-modal {

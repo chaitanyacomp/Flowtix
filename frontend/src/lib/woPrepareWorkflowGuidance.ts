@@ -52,12 +52,8 @@ export function deriveWoPrepareWorkflowStepLabel(args: {
   allRmAvailable: boolean;
 }): WoPrepareWorkflowStepLabel {
   if (args.hasExistingWorkOrder) return "Ready for WO";
-  if (args.canCreateWorkOrder) {
-    if (!args.hasPendingMr && args.allRmAvailable && !args.hasRmShortage) {
-      return "RM Received in Store";
-    }
-    return "Ready for WO";
-  }
+  /** When WO creation is eligible, the active stage is Ready for WO (not the prior RM Received step). */
+  if (args.canCreateWorkOrder) return "Ready for WO";
   if (args.workflowState === "PROCUREMENT_PENDING" || args.workflowState === "WAITING_GRN" || args.hasPendingMr) {
     return "Waiting for RM Procurement";
   }
@@ -315,11 +311,11 @@ export function buildWoPrepareGuidedStripModel(args: {
       return {
         state: "READY_FOR_WO",
         tone: "success",
-        headline: "RM ready for production",
-        owner: "Production",
+        headline: "Ready for Work Order",
+        owner: "Store Department",
         nextActionText: args.resumeWorkOrder
           ? REGULAR_TERMS.RESUME_WO_SUBTITLE
-          : "Create the work order to start manufacturing.",
+          : "Create the work order, then issue RM to production.",
         primaryLabel: args.resumeWorkOrder ? "Continue Work Order" : "Create Work Order",
         primaryKind: "button",
         onPrimaryClick: args.resumeWorkOrder ? args.onResumeWo : args.onCreateWo,
@@ -330,11 +326,11 @@ export function buildWoPrepareGuidedStripModel(args: {
         state: "WO_CREATED",
         tone: "success",
         headline: "Work order created",
-        owner: "Production",
-        nextActionText: "Issue RM to production, then record batches on the production screen.",
-        primaryLabel: "Open Work Orders",
+        owner: "Store Department",
+        nextActionText: "Issue RM against the PMR on Material Issue, then Production can start.",
+        primaryLabel: "Open Material Issue",
         primaryKind: "link",
-        primaryHref: `/work-orders?salesOrderId=${encodeURIComponent(String(so))}`,
+        primaryHref: `/material-issue?salesOrderId=${encodeURIComponent(String(so))}&returnTo=prepare-wo`,
         showRefreshAvailability: false,
       };
     case "FG_STOCK_COVERS":
@@ -342,11 +338,11 @@ export function buildWoPrepareGuidedStripModel(args: {
         state: "FG_STOCK_COVERS",
         tone: "neutral",
         headline: "FG stock covers the order",
-        owner: "Production",
+        owner: "Store Department",
         nextActionText: "No manufacturing gap on this plan — a work order is not required.",
-        primaryLabel: REGULAR_TERMS.BACK_TO_WORK_ORDERS,
+        primaryLabel: REGULAR_TERMS.BACK_TO_SALES_ORDERS,
         primaryKind: "link",
-        primaryHref: `/work-orders?salesOrderId=${encodeURIComponent(String(so))}`,
+        primaryHref: `/sales-orders?salesOrderId=${encodeURIComponent(String(so))}`,
         showRefreshAvailability: false,
       };
     case "REVIEW":

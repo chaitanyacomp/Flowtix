@@ -107,9 +107,7 @@ export function buildContinueWoPreparationHref(salesOrderId: number): string {
 
 
 export function buildCreateWorkOrderHref(salesOrderId: number): string {
-
-  return `/work-orders/prepare?salesOrderId=${encodeURIComponent(String(salesOrderId))}`;
-
+  return `/work-orders/prepare?salesOrderId=${encodeURIComponent(String(salesOrderId))}&source=regular_so`;
 }
 
 
@@ -159,25 +157,36 @@ function buildProductionHref(snapshot: PostGrnContinuitySnapshot): string {
 
 
 export function buildRmPoDetailHref(
-
   poId: number,
-
-  opts?: { salesOrderId?: number | null; from?: string },
-
+  opts?: { salesOrderId?: number | null; from?: string; openGrn?: boolean },
 ): string {
-
   const q = new URLSearchParams();
-
   const soId = Number(opts?.salesOrderId ?? 0);
-
   if (Number.isFinite(soId) && soId > 0) q.set("salesOrderId", String(soId));
-
   if (opts?.from) q.set("from", opts.from);
-
+  if (opts?.openGrn) q.set("openGrn", "1");
   const qs = q.toString();
-
   return qs ? `/rm-po-grn/${poId}?${qs}` : `/rm-po-grn/${poId}`;
+}
 
+/** Store Pending Actions / Dashboard — deep-link to PO detail with Create GRN form open. */
+export function buildCreateGrnDeepLink(
+  poId: number,
+  opts?: { from?: string },
+): string {
+  return buildRmPoDetailHref(poId, {
+    from: opts?.from ?? "pending-actions",
+    openGrn: true,
+  });
+}
+
+export function isCreateGrnDeepLinkSearch(search: string | URLSearchParams): boolean {
+  const params =
+    typeof search === "string"
+      ? new URLSearchParams(search.startsWith("?") ? search.slice(1) : search)
+      : search;
+  const action = (params.get("action") ?? "").trim().toLowerCase();
+  return params.get("openGrn") === "1" || action === "create-grn" || action === "creategrn";
 }
 
 

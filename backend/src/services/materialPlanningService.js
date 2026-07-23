@@ -3,7 +3,10 @@
  */
 
 const { prisma } = require("../utils/prisma");
-const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
+const {
+  getMaterialAvailabilityByItems,
+  calculateRegularSoDemandCoverageLine,
+} = require("./materialAvailabilityService");
 const {
   buildFgBomMeta,
   aggregateRmDemandForFgLines,
@@ -20,6 +23,7 @@ const {
   RM_REQUISITION_ACTIVE_STATUSES,
   rmRequisitionStatusLabel,
 } = require("./rmRequisitionLifecycle");
+const { resolveRegularSoRmPlanningFgQty } = require("./regularSoRmIssuePlanning");
 
 function n(v) {
   const x = typeof v === "number" ? v : Number(v);
@@ -129,11 +133,149 @@ function readinessChipStatus(rmStatus) {
   return "SHORTAGE";
 }
 
-function buildRmSummaryLineFromAvailability({ rmItemId, requiredQty, item, availability }) {
+async function loadRegularSoIssuePositionByItem(db, workOrderId) {
+  const woId = Number(workOrderId);
+  if (!Number.isFinite(woId) || woId <= 0) return new Map();
+  const rows = await db.productionMaterialRequest.findMany({
+    where: {
+      workOrderId: woId,
+      status: { not: "CANCELLED" },
+      workOrder: {
+        requirementSheetId: null,
+        cycleId: null,
+        salesOrder: { orderType: { in: ["NORMAL", "REPLACEMENT"] } },
+      },
+    },
+    select: {
+      status: true,
+      shortIssueCloseReason: true,
+      lines: {
+        select: {
+          itemId: true,
+          issuedQty: true,
+          returnedQty: true,
+        },
+      },
+    },
+  });
+  const out = new Map();
+  for (const pmr of rows || []) {
+    for (const line of pmr.lines || []) {
+      const current = out.get(line.itemId) || {
+        cumulativeIssuedQty: 0,
+        cumulativeReturnedQty: 0,
+        roundingToleranceAcknowledged: false,
+      };
+      current.cumulativeIssuedQty = round3(current.cumulativeIssuedQty + Math.max(0, n(line.issuedQty)));
+      current.cumulativeReturnedQty = round3(current.cumulativeReturnedQty + Math.max(0, n(line.returnedQty)));
+      current.roundingToleranceAcknowledged =
+        current.roundingToleranceAcknowledged ||
+        (pmr.status === "SHORT_ISSUE_ACCEPTED" && pmr.shortIssueCloseReason === "ROUNDING_TOLERANCE");
+      out.set(line.itemId, current);
+    }
+  }
+  for (const value of out.values()) {
+    value.netIssuedQty = round3(Math.max(0, value.cumulativeIssuedQty - value.cumulativeReturnedQty));
+  }
+  return out;
+}
+
+async function loadRegularSoOpenIncomingByItem(db, { salesOrderId, workOrderId }) {
+  if ((!salesOrderId && !workOrderId) || !db.materialRequirementLine?.findMany) return new Map();
+  const lines = await db.materialRequirementLine.findMany({
+    where: {
+      materialRequirement: {
+        sourceType: { in: ["SALES_ORDER", "WORK_ORDER_PLANNING"] },
+        ...(workOrderId
+          ? { OR: [{ workOrderId }, { workOrderId: null, salesOrderId }] }
+          : { salesOrderId }),
+        status: { notIn: ["CANCELLED", "CLOSED"] },
+      },
+    },
+    include: {
+      procurementLinks: {
+        include: {
+          rmPoLine: {
+            include: {
+              rmPo: { select: { status: true } },
+              grnLines: { include: { grn: { select: { reversedAt: true } } } },
+            },
+          },
+        },
+      },
+      purchaseRequestSourceLinks: {
+        include: {
+          purchaseRequestLine: {
+            include: {
+              poLinks: {
+                include: {
+                  rmPoLine: {
+                    include: {
+                      rmPo: { select: { status: true } },
+                      grnLines: { include: { grn: { select: { reversedAt: true } } } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+  const openForPoLink = (link) => {
+    const poLine = link.rmPoLine;
+    if (!poLine || !["PENDING", "PARTIAL"].includes(poLine.rmPo?.status)) return 0;
+    const received = (poLine.grnLines || []).reduce(
+      (sum, grnLine) => sum + (grnLine.grn?.reversedAt ? 0 : n(grnLine.receivedQty)),
+      0,
+    );
+    const orderedOpenRatio = n(poLine.qty) > 1e-6
+      ? Math.max(0, Math.min(1, (n(poLine.qty) - received) / n(poLine.qty)))
+      : 0;
+    return round3(Math.max(0, n(link.allocatedQty)) * orderedOpenRatio);
+  };
+  const out = new Map();
+  for (const line of lines || []) {
+    let open = (line.procurementLinks || []).reduce((sum, link) => sum + openForPoLink(link), 0);
+    for (const source of line.purchaseRequestSourceLinks || []) {
+      const sourceCap = Math.max(0, n(source.allocatedQty));
+      const prOpen = (source.purchaseRequestLine?.poLinks || []).reduce(
+        (sum, link) => sum + openForPoLink(link),
+        0,
+      );
+      open += Math.min(sourceCap, prOpen);
+    }
+    out.set(line.rmItemId, round3((out.get(line.rmItemId) || 0) + open));
+  }
+  return out;
+}
+
+function buildRmSummaryLineFromAvailability({
+  rmItemId,
+  requiredQty,
+  item,
+  availability,
+  demandScope = null,
+  issuePosition = null,
+  openIncomingQty = 0,
+}) {
   const availableQty = availability?.freeStockQty ?? 0;
   const required = round3(requiredQty);
-  const shortage = round3(availability?.shortageAfterReservationQty ?? Math.max(0, required - availableQty));
-  const status = rmLineStatus(required, availableQty);
+  const demandCoverage = demandScope
+    ? calculateRegularSoDemandCoverageLine({
+        availability: { ...availability, requiredQty: required },
+        salesOrderId: demandScope.salesOrderId,
+        workOrderId: demandScope.workOrderId,
+        netIssuedQty: issuePosition?.netIssuedQty ?? 0,
+        cumulativeReturnedQty: issuePosition?.cumulativeReturnedQty ?? 0,
+        openIncomingQty,
+      })
+    : null;
+  const shortage = demandCoverage
+    ? demandCoverage.uncoveredProcurementQty
+    : round3(availability?.shortageAfterReservationQty ?? Math.max(0, required - availableQty));
+  const status = rmLineStatus(required, demandCoverage?.coveredQty ?? availableQty);
   return {
     rmItemId,
     itemName: item?.itemName ?? `#${rmItemId}`,
@@ -146,14 +288,24 @@ function buildRmSummaryLineFromAvailability({ rmItemId, requiredQty, item, avail
     freeStockQty: availability?.freeStockQty ?? availableQty,
     incomingQty: availability?.incomingQty ?? 0,
     issuedToProductionQty: availability?.issuedToProductionQty ?? 0,
-    shortageNowQty: availability?.shortageNowQty ?? Math.max(0, required - availableQty),
+    shortageNowQty: demandCoverage?.uncoveredProcurementQty
+      ?? availability?.shortageNowQty
+      ?? Math.max(0, required - availableQty),
     shortageAfterReservationQty: shortage,
     coveredByIncomingQty: availability?.coveredByIncomingQty ?? 0,
-    netShortageAfterIncomingQty: availability?.netShortageAfterIncomingQty ?? shortage,
+    netShortageAfterIncomingQty: demandCoverage?.uncoveredProcurementQty
+      ?? availability?.netShortageAfterIncomingQty
+      ?? shortage,
     allocationCoverageQty: availability?.allocationCoverageQty ?? 0,
     allocationShortageQty: availability?.allocationShortageQty ?? shortage,
     allocationStatus: availability?.allocationStatus ?? "NOT_ALLOCATED",
     warnings: availability?.warnings ?? [],
+    ...(demandCoverage || {}),
+    roundingToleranceAcknowledged: Boolean(issuePosition?.roundingToleranceAcknowledged),
+    approvedRoundingDifferenceQty:
+      issuePosition?.roundingToleranceAcknowledged && demandCoverage
+        ? demandCoverage.remainingIssueBalanceQty
+        : 0,
     /** Backward-compatible aliases consumed by existing frontend/MR code. */
     availableQty,
     shortageQty: shortage,
@@ -167,7 +319,7 @@ function buildRmSummaryLineFromAvailability({ rmItemId, requiredQty, item, avail
  * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
  * @param {{ lineId?: number, fgItemId: number, fgName?: string, fgQty: number, unit?: string }[]} fgInput
  */
-async function buildMaterialReadinessForFgDemand(db, fgInput) {
+async function buildMaterialReadinessForFgDemand(db, fgInput, demandScope = null) {
   const fgSummary = [];
   for (const row of fgInput) {
     if (!(row.fgQty > 0)) continue;
@@ -218,6 +370,12 @@ async function buildMaterialReadinessForFgDemand(db, fgInput) {
   ]);
   const itemById = new Map(rmItems.map((i) => [i.id, i]));
   const availabilityByItemId = new Map(availabilityRows.map((row) => [row.itemId, row]));
+  const issuePositionByItem = demandScope?.workOrderId
+    ? await loadRegularSoIssuePositionByItem(db, demandScope.workOrderId)
+    : new Map();
+  const openIncomingByItem = demandScope
+    ? await loadRegularSoOpenIncomingByItem(db, demandScope)
+    : new Map();
 
   const rmSummary = [];
   for (const [rmItemId, requiredQty] of rmNeeded) {
@@ -226,6 +384,9 @@ async function buildMaterialReadinessForFgDemand(db, fgInput) {
       requiredQty,
       item: itemById.get(rmItemId),
       availability: availabilityByItemId.get(rmItemId),
+      demandScope,
+      issuePosition: issuePositionByItem.get(rmItemId),
+      openIncomingQty: openIncomingByItem.get(rmItemId) || 0,
     }));
   }
   rmSummary.sort((a, b) => b.shortageQty - a.shortageQty || a.itemName.localeCompare(b.itemName));
@@ -489,14 +650,12 @@ async function evaluateWoPrepareReadiness(
     if (f.note) continue;
     const fromLine = planQtyByLineId[f.lineId];
     const fromFg = planQtyByFgItemId[f.fgItemId];
-    let qty;
-    if (fromLine != null && Number.isFinite(Number(fromLine))) {
-      qty = Math.max(0, Number(fromLine));
-    } else if (fromFg != null && Number.isFinite(Number(fromFg))) {
-      qty = Math.max(0, Number(fromFg));
-    } else {
-      qty = Math.max(0, Number(f.rmPlanningQty ?? f.plannedProductionQty ?? f.toProduce) || 0);
-    }
+    // REGULAR_SO: buffered plannedProductionQty / rmPlanningQty is authoritative for RM need.
+    // Stale planLineQty still equal to customer SO qty must not suppress the buffered WO target.
+    let override = null;
+    if (fromLine != null && Number.isFinite(Number(fromLine))) override = Number(fromLine);
+    else if (fromFg != null && Number.isFinite(Number(fromFg))) override = Number(fromFg);
+    const qty = resolveRegularSoRmPlanningFgQty(f, override);
     if (qty <= 0) continue;
     fgInput.push({
       lineId: f.lineId,
@@ -506,13 +665,15 @@ async function evaluateWoPrepareReadiness(
     });
   }
 
-  const readiness = await buildMaterialReadinessForFgDemand(db, fgInput);
-
   const resolvedWorkOrderId = await resolveWorkOrderIdForWoPlanning(
     salesOrderId,
     { workOrderId: workOrderIdOpt },
     db,
   );
+  const readiness = await buildMaterialReadinessForFgDemand(db, fgInput, {
+    salesOrderId,
+    workOrderId: resolvedWorkOrderId,
+  });
   const pendingMaterialRequirements = await findPendingWoPlanningMaterialRequirements(
     salesOrderId,
     { workOrderId: resolvedWorkOrderId },
@@ -550,7 +711,17 @@ async function buildMaterialPlanningPreview({ quotationId, salesOrderId }, db = 
     throw err;
   }
 
-  const readiness = await buildMaterialReadinessForFgDemand(db, fgInput);
+  const planningWorkOrderId =
+    sourceType === "SALES_ORDER"
+      ? await resolveWorkOrderIdForWoPlanning(salesOrderId, {}, db)
+      : null;
+  const readiness = await buildMaterialReadinessForFgDemand(
+    db,
+    fgInput,
+    sourceType === "SALES_ORDER"
+      ? { salesOrderId, workOrderId: planningWorkOrderId }
+      : null,
+  );
 
   const existingWhere =
     quotationId != null ? { quotationId } : salesOrderId != null ? { salesOrderId } : null;
@@ -710,19 +881,25 @@ function materialPlanningOperationalState({
   }
 
   if (procurementCompleted) {
+    const anyIssued = readiness.rmSummary.some((r) => n(r.netIssuedQty) > 1e-6);
+    const demandCovered = purchaseRequiredCount === 0;
     return {
       key: "PROCUREMENT_COMPLETED",
       currentStage: purchaseRequiredCount > 0
-        ? "Procurement complete — live store shortage remains"
-        : "Procurement complete — live RM demand covered",
+        ? "Procurement complete – genuine uncovered RM remains"
+        : anyIssued
+          ? "Procurement Complete – RM Issued / Ready for Production"
+          : "Procurement complete – RM demand covered",
       purchaseRequiredCount,
       pendingProcurementQty,
-      readyForProduction: false,
+      readyForProduction: demandCovered && anyIssued,
       procurementCompleted: true,
       sourceCompleted: false,
       banner: purchaseRequiredCount > 0
-        ? "Procurement completed — verify live stock in RM Control Center"
-        : "Procurement completed — confirm availability in RM Control Center",
+        ? "Procurement completed – review the genuine uncovered quantity in RM Control Center"
+        : anyIssued
+          ? "Procurement Complete – RM Issued / Ready for Production"
+          : "Procurement completed – RM demand covered",
       actionLabel: "Open RM Control Center",
       nextActionLabel: rmControlCenterHint,
     };
@@ -1133,6 +1310,7 @@ module.exports = {
   listMaterialPlanningSources,
   rmLineStatus,
   buildRmSummaryLineFromAvailability,
+  loadRegularSoOpenIncomingByItem,
   materialPlanningOperationalState,
   isSalesOrderCompleted,
   WO_PLANNING_SOURCE,

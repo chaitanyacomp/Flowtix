@@ -2,6 +2,7 @@ import { formatQtyNumber, formatQtyNumberForInput } from "./quantityDisplay";
 
 export type WastageDetailDraft = {
   key: string;
+  itemId?: number;
   wastageTypeId: number;
   qty: string;
   remarks: string;
@@ -228,9 +229,10 @@ export function productionReportLeaveWarningMessage(opts: {
 
 export function toWastageDetailPayload(rows: WastageDetailDraft[]) {
   return rows
-    .filter((row) => row.wastageTypeId > 0 && Number(row.qty) > 0)
+    .filter((row) => row.wastageTypeId > 0 && Number(row.itemId) > 0 && Number(row.qty) > 0)
     .map((row, index) => ({
       wastageTypeId: row.wastageTypeId,
+      itemId: Number(row.itemId),
       qty: Number(row.qty),
       remarks: row.remarks.trim() || null,
       sortOrder: index,

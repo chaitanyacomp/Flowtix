@@ -20,6 +20,8 @@ import {
   RM_PO_MODAL_HEADER_GRID_CLASS,
   RM_PO_MODAL_QTY_INPUT_CLASS,
   RM_PO_MODAL_RATE_INPUT_CLASS,
+  RM_PO_MODAL_LINE_INPUT_ROW_CLASS,
+  RM_PO_MODAL_LINE_INPUT_HINT_CLASS,
   type RmPoModalEntryBaseline,
 } from "../../lib/pendingMaterialRequestsPanelUx";
 import { DecimalInput } from "../ui/DecimalInput";
@@ -27,6 +29,7 @@ import { useBulkSelection } from "../../hooks/useBulkSelection";
 import {
   flattenOrderablePurchaseRequestLines,
   formatPurchaseRequestPoError,
+  formatRmPoExcessConfirmationLine,
   purchaseRequestPoExcessToStock,
   buildRmPoCreatePayloadLines,
   previewConsolidatedRmPoLines,
@@ -198,6 +201,16 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
     Boolean(supplierId) &&
     !creating;
 
+  const [expandedConsolidatedKeys, setExpandedConsolidatedKeys] = React.useState<Set<string>>(() => new Set());
+  const [confirmExcessOpen, setConfirmExcessOpen] = React.useState(false);
+
+  const excessConfirmationText = React.useMemo(
+    () => consolidationPreview.confirmationLines.join("\n"),
+    [consolidationPreview.confirmationLines],
+  );
+
+  const hasAnyExcessToStock = consolidationPreview.consolidated.some((c) => c.excessToStockQty > 1e-9);
+
   const currentPoModalEntry = React.useMemo<RmPoModalEntryBaseline>(
     () => ({
       supplierPoNumber,
@@ -294,7 +307,7 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
     }
   };
 
-  const submitPo = async () => {
+  const submitPo = async (opts?: { confirmExcess?: boolean }) => {
     if (!canPrepareRmPo || creating || !canSubmitPo) return;
     if (!supplierId) {
       showError("Select a supplier");
@@ -306,6 +319,11 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
       supplierPoNumberRef.current?.focus();
       return;
     }
+    if (hasAnyExcessToStock && !opts?.confirmExcess) {
+      setConfirmExcessOpen(true);
+      return;
+    }
+    setConfirmExcessOpen(false);
     setSupplierPoNumberError(null);
     setCreating(true);
     try {
@@ -754,34 +772,43 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
                           <td className="px-2 text-right tabular-nums font-medium text-amber-950">
                             {ln.pendingQty > 1e-9 ? fmtQty(ln.pendingQty, ln.unit) : "—"}
                           </td>
-                          <td className="px-2 text-right">
-                            <DecimalInput
-                              data-testid={`rm-po-order-qty-${ln.id}`}
-                              className={RM_PO_MODAL_QTY_INPUT_CLASS}
-                              unit={ln.unit}
-                              disabled={creating || !included}
-                              value={poQty[ln.id] ?? ""}
-                              onValueChange={(next) => setPoQty((p) => ({ ...p, [ln.id]: next }))}
-                              aria-label={`Order qty for ${ln.itemName}`}
-                            />
-                            {excess > 1e-9 ? (
-                              <span
-                                className="mt-0.5 block text-[10px] text-emerald-800"
-                                data-testid={`rm-po-excess-${ln.id}`}
-                              >
-                                +{fmtQty(excess, ln.unit)} stock
-                              </span>
-                            ) : null}
+                          <td className="px-2 align-top text-right" data-testid={`rm-po-order-qty-cell-${ln.id}`}>
+                            <div className={RM_PO_MODAL_LINE_INPUT_ROW_CLASS}>
+                              <DecimalInput
+                                data-testid={`rm-po-order-qty-${ln.id}`}
+                                className={RM_PO_MODAL_QTY_INPUT_CLASS}
+                                wrapperClassName="w-full max-w-[7.5rem]"
+                                unit={ln.unit}
+                                disabled={creating || !included}
+                                value={poQty[ln.id] ?? ""}
+                                onValueChange={(next) => setPoQty((p) => ({ ...p, [ln.id]: next }))}
+                                aria-label={`Order qty for ${ln.itemName}`}
+                              />
+                            </div>
+                            <span
+                              className={`${RM_PO_MODAL_LINE_INPUT_HINT_CLASS} ${
+                                excess > 1e-9 ? "text-emerald-800" : "invisible"
+                              }`}
+                              data-testid={`rm-po-excess-${ln.id}`}
+                            >
+                              {excess > 1e-9 ? `+${fmtQty(excess, ln.unit)} stock` : "\u00a0"}
+                            </span>
                           </td>
-                          <td className="px-2 text-right">
-                            <DecimalInput
-                              data-testid={`rm-po-rate-${ln.id}`}
-                              className={RM_PO_MODAL_RATE_INPUT_CLASS}
-                              disabled={creating || !included}
-                              value={rates[ln.id] ?? ""}
-                              onValueChange={(next) => syncRateForItem(ln.rmItemId, next, siblingIds)}
-                              aria-label={`Rate for ${ln.itemName}`}
-                            />
+                          <td className="px-2 align-top text-right" data-testid={`rm-po-rate-cell-${ln.id}`}>
+                            <div className={RM_PO_MODAL_LINE_INPUT_ROW_CLASS}>
+                              <DecimalInput
+                                data-testid={`rm-po-rate-${ln.id}`}
+                                className={RM_PO_MODAL_RATE_INPUT_CLASS}
+                                wrapperClassName="w-full max-w-[7.5rem]"
+                                disabled={creating || !included}
+                                value={rates[ln.id] ?? ""}
+                                onValueChange={(next) => syncRateForItem(ln.rmItemId, next, siblingIds)}
+                                aria-label={`Rate for ${ln.itemName}`}
+                              />
+                            </div>
+                            <span className={`${RM_PO_MODAL_LINE_INPUT_HINT_CLASS} invisible`} aria-hidden>
+                              {"\u00a0"}
+                            </span>
                           </td>
                         </tr>
                       );
@@ -791,29 +818,126 @@ export function PendingMaterialRequestsPanel({ embedded = false, canPrepareRmPo 
               </div>
             </div>
 
-            <div className="sticky bottom-0 z-10 flex shrink-0 items-center justify-between gap-2 border-t border-slate-200 bg-white px-5 py-3">
-              <p className="text-[11px] text-slate-500">
-                Same RM from multiple PRs consolidates to one PO line; source allocations stay separate.
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={requestClosePoModal}
-                  disabled={creating}
-                  data-testid="rm-po-create-modal-cancel"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="button"
-                  disabled={!canSubmitPo}
-                  onClick={() => void submitPo()}
-                  data-testid="rm-po-create-modal-submit"
-                >
-                  {creating ? "Creating…" : "Create RM PO"}
-                </Button>
+            <div className="sticky bottom-0 z-10 flex shrink-0 flex-col gap-2 border-t border-slate-200 bg-white px-5 py-3">
+              {consolidationPreview.consolidated.length > 0 ? (
+                <div className="rounded-md border border-slate-200 bg-slate-50/80 px-3 py-2" data-testid="rm-po-consolidation-preview">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">Consolidated PO preview</p>
+                  <ul className="mt-1.5 space-y-1.5">
+                    {consolidationPreview.consolidated.map((c) => {
+                      const key = `${c.rmItemId}:${c.rate}`;
+                      const open = expandedConsolidatedKeys.has(key);
+                      return (
+                        <li key={key} className="text-[12px] text-slate-800">
+                          <button
+                            type="button"
+                            className="flex w-full items-start justify-between gap-2 text-left"
+                            onClick={() =>
+                              setExpandedConsolidatedKeys((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(key)) next.delete(key);
+                                else next.add(key);
+                                return next;
+                              })
+                            }
+                            data-testid={`rm-po-consolidated-toggle-${c.rmItemId}`}
+                          >
+                            <span className="font-medium">
+                              {c.itemName}: {fmtQty(c.orderQty, c.unit)}
+                              {c.allocationCount > 1 ? ` · ${c.allocationCount} SO/PR sources` : ""}
+                              {c.excessToStockQty > 1e-9
+                                ? ` · Extra stock ${fmtQty(c.excessToStockQty, c.unit)}`
+                                : ""}
+                            </span>
+                            <span className="shrink-0 text-[10px] font-semibold text-slate-500">
+                              {open ? "Hide" : "SO breakdown"}
+                            </span>
+                          </button>
+                          {open ? (
+                            <ul className="mt-1 space-y-0.5 border-l border-slate-200 pl-3 text-[11px] text-slate-600">
+                              {c.soBreakdown.map((row, idx) => (
+                                <li key={`${row.prDocNo}-${idx}`}>
+                                  {(row.salesOrderDocNo || row.referenceLabel || row.prDocNo) +
+                                    `: ${fmtQty(row.demandQty, c.unit)}`}
+                                </li>
+                              ))}
+                              {c.excessToStockQty > 1e-9 ? (
+                                <li className="font-medium text-emerald-800">
+                                  Extra to RM Stock: {fmtQty(c.excessToStockQty, c.unit)}
+                                </li>
+                              ) : null}
+                            </ul>
+                          ) : null}
+                          <p className="mt-0.5 text-[10px] text-slate-500" data-testid={`rm-po-confirm-line-${c.rmItemId}`}>
+                            {formatRmPoExcessConfirmationLine(c)}
+                          </p>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[11px] text-slate-500">
+                  Same RM from multiple Regular SO PRs consolidates to one PO line; SO allocations stay separate.
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={requestClosePoModal}
+                    disabled={creating}
+                    data-testid="rm-po-create-modal-cancel"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={!canSubmitPo}
+                    onClick={() => void submitPo()}
+                    data-testid="rm-po-create-modal-submit"
+                  >
+                    {creating ? "Creating…" : "Create RM PO"}
+                  </Button>
+                </div>
               </div>
+            </div>
+          </div>
+        </ErpModal>
+      ) : null}
+
+      {confirmExcessOpen ? (
+        <ErpModal
+          onClose={() => setConfirmExcessOpen(false)}
+          escapeDisabled={() => creating}
+          backdropClassName="bg-black/40"
+          aria-labelledby="rm-po-excess-confirm-title"
+        >
+          <div className="mx-auto w-full max-w-lg rounded-lg bg-white p-5 shadow-xl ring-1 ring-slate-200" data-testid="rm-po-excess-confirm">
+            <h2 id="rm-po-excess-confirm-title" className="text-[16px] font-bold text-slate-900">
+              Confirm extra quantity to RM stock
+            </h2>
+            <p className="mt-2 text-[13px] leading-relaxed text-slate-700">
+              PO quantity is above selected Regular SO demand. Extra received stock will be unrestricted RM stock — not
+              additional SO demand.
+            </p>
+            <pre className="mt-3 whitespace-pre-wrap rounded-md border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-[12px] font-medium text-emerald-950">
+              {excessConfirmationText}
+            </pre>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => setConfirmExcessOpen(false)}>
+                Back
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                data-testid="rm-po-excess-confirm-submit"
+                onClick={() => {
+                  setConfirmExcessOpen(false);
+                  void submitPo({ confirmExcess: true });
+                }}
+              >
+                Confirm and create PO
+              </Button>
             </div>
           </div>
         </ErpModal>

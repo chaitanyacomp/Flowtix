@@ -6,6 +6,7 @@ const TITLES: Record<string, string> = {
   "/planning-dashboard": "Requirement & Cycle Planning",
   "/no-qty-agreements": "NO_QTY Execution",
   "/export-history": "Export history",
+  "/masters": "Masters",
   "/customers": "Customers",
   "/items": "Items",
   "/opening-stock": "Opening stock",
@@ -77,6 +78,9 @@ const TITLES: Record<string, string> = {
 };
 
 export function getPageTitle(pathname: string): string {
+  if (pathname.match(/^\/work-orders\/\d+/)) {
+    return "Work order details";
+  }
   if (pathname.startsWith("/work-orders/prepare")) {
     return TITLES["/work-orders/prepare"];
   }

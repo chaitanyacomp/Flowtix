@@ -8,6 +8,7 @@ const {
   hasCompletedStoreIssueTransfer,
   resolveWorkOrderLinePlannedQty,
   resolveProductionBatchRmCap,
+  resolveRmSupportedEntryCapacity,
   SUBMITTED_PMR_STATUSES,
   aggregatePmrRequiredByItem,
   computeMaxProducibleFromPmrBasis,
@@ -278,15 +279,40 @@ describe("productionRmReadinessService", () => {
     );
   });
 
-  it("REGULAR PMR basis stays capped at WO qty without allowSurplus", () => {
+  it("REGULAR PMR basis allows surplus when extra RM is issued (same as NO_QTY)", () => {
     const max = computeMaxProducibleFromPmrBasis({
       woQty: 4000,
       totalWoQty: 4000,
       pmrRequiredByItem: new Map([[10, 100]]),
       availableByItem: new Map([[10, 105]]),
-      allowSurplus: false,
+      allowSurplus: true,
     });
-    assert.equal(max, 4000);
+    assert.equal(max, 4200);
+  });
+
+  it("WO-26-0002 style: 72 Kg / 70 Kg BOM floor supports 5142 Nos (not 5000)", () => {
+    const perFg = 70 / 5000;
+    assert.equal(floorFgQty(70, perFg), 5000);
+    assert.equal(floorFgQty(72, perFg), 5142);
+  });
+
+  it("multiple RM lines: scarcest component governs max FG", () => {
+    const a = floorFgQty(72, 70 / 5000);
+    const b = floorFgQty(50, 50 / 5100);
+    assert.equal(Math.min(a, b), Math.min(5142, 5100));
+  });
+
+  it("REGULAR incremental capacity is not clamped to WO remaining when RM supports more", () => {
+    const capacity = resolveRmSupportedEntryCapacity({
+      productionAllowedNowQty: 5142,
+      otherUnapprovedQty: 0,
+    });
+    assert.equal(capacity.remainingQty, 5142);
+    const afterPartial = resolveRmSupportedEntryCapacity({
+      productionAllowedNowQty: 2142,
+      otherUnapprovedQty: 0,
+    });
+    assert.equal(afterPartial.remainingQty, 2142);
   });
 
   it("incremental batch validation allows remaining WO qty when RM headroom is higher", () => {

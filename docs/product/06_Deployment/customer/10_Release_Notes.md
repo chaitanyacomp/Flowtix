@@ -6,6 +6,14 @@
 | **Codename** | Commercial customer delivery (Milestone 4) |
 | **Status** | Customer-ready LAN package |
 
+## 2026-07-21 — Item Master Consumable create
+
+Items workbench **+ Add Item** lists Raw Material, Finished Good, Semi-finished Good, and **Consumable**. Schema remains `RM` / `FG` / `SFG` / `CONSUMABLE`. Type changes are blocked when the item is referenced. Opening stock is not posted by item create.
+
+## 2026-07-21 — Master Data Workbench
+
+Customers, Suppliers, Items (and Units/Locations list chrome) share one Master Data Workbench: **Back to Masters** → `/masters`, search/filters/sort/pagination, page-scoped multi-select, and server bulk Activate/Deactivate/Delete with partial blocked reporting. Tally Import and Backup & Restore remain non-grid tools. Activate/Deactivate maps to `isActive` (schema has no Suspend/Archive enums yet).
+
 ## 2026-07-19 — Combined Sales Billing Enhancement
 
 Sales Bill drafts can combine partial quantities from multiple dispatches for one SO/customer. Draft quantities are reserved, compatible lines aggregate without losing trace, and seller-charged transportation is proportionately allocated across GST-rate lines. Transporter-direct charges remain reference-only. Confirm GST/mixed-supply policy with the client's GST consultant.

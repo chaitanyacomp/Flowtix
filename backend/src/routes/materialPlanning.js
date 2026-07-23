@@ -4,6 +4,7 @@
 
 const express = require("express");
 const { z } = require("zod");
+const { Prisma } = require("../prismaClientPackage");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { MATERIAL_REQUISITION_WRITE_ROLES } = require("../constants/erpRoles");
 const {
@@ -15,6 +16,18 @@ const { blockProcurementDemandWhenPlanningDriven } = require("../middleware/plan
 const { transitionRmRequisition } = require("../services/rmRequisitionLifecycle");
 
 const materialPlanningRouter = express.Router();
+
+function orderRmPlanningRouteError(error) {
+  if (!(error instanceof Prisma.PrismaClientValidationError)) return error;
+  const wrapped = new Error(
+    "Order RM Planning could not be calculated because its server query is incompatible with the current data model. Contact Admin and quote ORDER_RM_PLANNING_QUERY_FAILED.",
+  );
+  wrapped.statusCode = 500;
+  wrapped.code = "ORDER_RM_PLANNING_QUERY_FAILED";
+  wrapped.expose = true;
+  wrapped.cause = error;
+  return wrapped;
+}
 
 const previewQuerySchema = z
   .object({
@@ -67,7 +80,7 @@ materialPlanningRouter.get(
       });
       return res.json(data);
     } catch (e) {
-      return next(e);
+      return next(orderRmPlanningRouteError(e));
     }
   },
 );

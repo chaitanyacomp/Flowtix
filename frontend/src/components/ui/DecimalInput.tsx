@@ -88,7 +88,10 @@ export const DecimalInput = React.forwardRef<HTMLInputElement, DecimalInputProps
     />
   );
 
-  if (!unit) return input;
+  if (!unit) {
+    if (!wrapperClassName) return input;
+    return <div className={cn("inline-flex w-full justify-end", wrapperClassName)}>{input}</div>;
+  }
 
   return (
     <div className={cn("relative inline-flex w-full justify-end", wrapperClassName)}>

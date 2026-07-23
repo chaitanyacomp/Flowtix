@@ -19,14 +19,85 @@ function firstFinitePositive(...candidates) {
 function clampBufferPercent(v) {
   const p = n(v);
   if (!Number.isFinite(p)) return 0;
-  return Math.min(10, Math.max(0, p));
+  const clamped = Math.min(10, Math.max(0, p));
+  // Preserve decimals (max 2 places) — do not integer-round.
+  return Math.round((clamped + Number.EPSILON) * 100) / 100;
 }
 
-function snapshotLineFromSalesOrderLine(line, bufferPercent, fgStockQty) {
+/** Apply FG UOM precision (default Nos = 0 dp) without rounding the WO qty upward. */
+function applyFgUomPrecisionToPlannedQty(qty, decimalPlaces = 0) {
+  const q = n(qty);
+  if (!Number.isFinite(q) || q <= 0) return 0;
+  const dp = Math.max(0, Math.floor(Number(decimalPlaces) || 0));
+  if (dp <= 0) return Math.floor(q + 1e-9);
+  const factor = 10 ** dp;
+  return Math.floor(q * factor + 1e-9) / factor;
+}
+
+function capPlannedQtyByRmSupportedMax(plannedQty, rmSupportedMaxQty) {
+  const planned = Math.max(0, n(plannedQty) || 0);
+  if (rmSupportedMaxQty == null || rmSupportedMaxQty === "") return planned;
+  const cap = Number(rmSupportedMaxQty);
+  if (!Number.isFinite(cap) || cap < 0) return planned;
+  return Math.min(planned, cap);
+}
+
+const REGULAR_SO_BUFFER_SOFT_MAX = 5;
+const REGULAR_SO_BUFFER_HARD_MAX = 10;
+
+/**
+ * Validate production buffer % for REGULAR SO planning snapshot.
+ * 0–5%: ok · >5–10%: Admin + reason · >10%: blocked.
+ * @returns {{ ok: true, bufferPercent: number } | { ok: false, statusCode: number, code: string, message: string }}
+ */
+function assertRegularSoBufferPercentForPersist(bufferPercent, { role = null, bufferReason = null } = {}) {
+  const raw = n(bufferPercent);
+  if (!Number.isFinite(raw) || raw < 0) {
+    return {
+      ok: false,
+      statusCode: 400,
+      code: "INVALID_BUFFER_PERCENT",
+      message: "Production buffer % must be a non-negative number.",
+    };
+  }
+  if (raw > REGULAR_SO_BUFFER_HARD_MAX + 1e-9) {
+    return {
+      ok: false,
+      statusCode: 400,
+      code: "BUFFER_PERCENT_BLOCKED",
+      message: `Production buffer above ${REGULAR_SO_BUFFER_HARD_MAX}% is blocked.`,
+    };
+  }
+  const normalized = clampBufferPercent(raw);
+  if (normalized > REGULAR_SO_BUFFER_SOFT_MAX + 1e-9) {
+    const r = String(role ?? "").trim().toUpperCase();
+    if (r !== "ADMIN") {
+      return {
+        ok: false,
+        statusCode: 403,
+        code: "BUFFER_PERCENT_ADMIN_REQUIRED",
+        message: "Buffer above 5% requires Admin approval.",
+      };
+    }
+    if (!String(bufferReason ?? "").trim()) {
+      return {
+        ok: false,
+        statusCode: 400,
+        code: "BUFFER_PERCENT_REASON_REQUIRED",
+        message: "A reason is required when Production buffer is above 5%.",
+      };
+    }
+  }
+  return { ok: true, bufferPercent: normalized };
+}
+
+function snapshotLineFromSalesOrderLine(line, bufferPercent, fgStockQty, opts = {}) {
   const customerCommittedQty = n(line.customerPoQty ?? line.qty);
   const productionBufferPercent = clampBufferPercent(bufferPercent);
-  const plannedProductionQty = computePlannedQtyFromCustomerBuffer(customerCommittedQty, productionBufferPercent);
-  const productionBufferQty = plannedProductionQty - customerCommittedQty;
+  const rawPlanned = computePlannedQtyFromCustomerBuffer(customerCommittedQty, productionBufferPercent);
+  let plannedProductionQty = applyFgUomPrecisionToPlannedQty(rawPlanned, opts.uomDecimalPlaces ?? 0);
+  plannedProductionQty = capPlannedQtyByRmSupportedMax(plannedProductionQty, opts.rmSupportedMaxQty);
+  const productionBufferQty = Math.max(0, plannedProductionQty - customerCommittedQty);
   const fgStockAdjustmentQty = Math.max(0, n(fgStockQty));
   // Full planned production drives RM demand — surplus FG in store is informational only (Decision 3/4).
   const rmPlanningQty = plannedProductionQty;
@@ -154,7 +225,10 @@ async function buildRegularSoPlanningSnapshotView(salesOrderId, db = prisma) {
   };
 }
 
-async function upsertRegularSoPlanningSnapshot({ salesOrderId, bufferPercent = 0, createdByUserId = null }, db = prisma) {
+async function upsertRegularSoPlanningSnapshot(
+  { salesOrderId, bufferPercent = 0, createdByUserId = null, actorRole = null, bufferReason = null },
+  db = prisma,
+) {
   const soId = Number(salesOrderId);
   if (!Number.isFinite(soId) || soId <= 0) {
     const err = new Error("Invalid salesOrderId");
@@ -186,7 +260,18 @@ async function upsertRegularSoPlanningSnapshot({ salesOrderId, bufferPercent = 0
     throw err;
   }
 
-  const normalizedBufferPercent = clampBufferPercent(bufferPercent);
+  const bufferGate = assertRegularSoBufferPercentForPersist(bufferPercent, {
+    role: actorRole,
+    bufferReason,
+  });
+  if (!bufferGate.ok) {
+    const err = new Error(bufferGate.message);
+    err.statusCode = bufferGate.statusCode;
+    err.code = bufferGate.code;
+    throw err;
+  }
+  const normalizedBufferPercent = bufferGate.bufferPercent;
+
   const fgStockRows = await Promise.all(
     fgLines.map(async (line) => {
       const fgStockRaw = await getItemStockQty(line.itemId, db, { stockBucket: "USABLE" });
@@ -226,10 +311,11 @@ async function upsertRegularSoPlanningSnapshot({ salesOrderId, bufferPercent = 0
     });
 
     const rows = fgLines.map((line) => {
-    const fgStock = fgStockByLineId.get(line.id) ?? 0;
-    const customerCommittedQty = n(line.customerPoQty ?? line.qty);
-      const plannedProductionQty = computePlannedQtyFromCustomerBuffer(customerCommittedQty, normalizedBufferPercent);
-      const productionBufferQty = plannedProductionQty - customerCommittedQty;
+      const fgStock = fgStockByLineId.get(line.id) ?? 0;
+      const customerCommittedQty = n(line.customerPoQty ?? line.qty);
+      const rawPlanned = computePlannedQtyFromCustomerBuffer(customerCommittedQty, normalizedBufferPercent);
+      const plannedProductionQty = applyFgUomPrecisionToPlannedQty(rawPlanned, 0);
+      const productionBufferQty = Math.max(0, plannedProductionQty - customerCommittedQty);
       const fgStockAdjustmentQty = Math.max(0, n(fgStock));
       const rmPlanningQty = plannedProductionQty;
       return {
@@ -367,4 +453,10 @@ module.exports = {
   resolveSuggestedFgPlanningBufferPercentForSalesOrder,
   snapshotLineFromSalesOrderLine,
   upsertRegularSoPlanningSnapshot,
+  clampBufferPercent,
+  assertRegularSoBufferPercentForPersist,
+  applyFgUomPrecisionToPlannedQty,
+  capPlannedQtyByRmSupportedMax,
+  REGULAR_SO_BUFFER_SOFT_MAX,
+  REGULAR_SO_BUFFER_HARD_MAX,
 };

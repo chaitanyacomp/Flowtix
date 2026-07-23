@@ -9,6 +9,7 @@ import {
   type ProductionWorkbenchState,
   type ProductionWorkbenchStateSource,
 } from "./productionWorkbenchState";
+import { canAcceptNewProductionEntry } from "./productionActiveEligibility";
 
 export type ProductionWorkbenchCardAction =
   | { kind: "resume" }
@@ -48,4 +49,29 @@ export function cardStateFromRow(row: ProductionWorkbenchStateSource): Productio
 /** Keyboard activation for focusable cards (Enter / Space). */
 export function isCardActivationKey(key: string): boolean {
   return key === "Enter" || key === " ";
+}
+
+export function resolveProductionWorkspaceRowAccess(row: ProductionWorkbenchStateSource & {
+  workOrderId?: number | null;
+  workOrderLineId?: number | null;
+  productionReportConfirmed?: boolean;
+}): { allowed: boolean; reason: string | null } {
+  if (!(Number(row.workOrderId) > 0)) {
+    return { allowed: false, reason: "Cannot open this item because its Work Order identity is missing." };
+  }
+  if (canAcceptNewProductionEntry(row)) return { allowed: true, reason: null };
+  if (
+    row.productionReportConfirmed ||
+    upperForAccess(row.productionExecutionStatus) === "SHORTFALL_PENDING"
+  ) {
+    return { allowed: true, reason: null };
+  }
+  return {
+    allowed: false,
+    reason: "This production item has no editable production or report action.",
+  };
+}
+
+function upperForAccess(value: unknown): string {
+  return String(value ?? "").trim().toUpperCase();
 }

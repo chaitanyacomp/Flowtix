@@ -21,6 +21,20 @@ const {
 } = require("./productionWastageClassificationService");
 
 const EPS = 1e-6;
+const RECONCILIATION_TOLERANCE = 0.0005;
+
+function computeRmReconciliation({ issuedQty, consumedQty, returnedQty = 0, classifiedWastageQty = 0 }) {
+  const issued = round3(n(issuedQty));
+  const consumed = round3(n(consumedQty));
+  const returned = round3(n(returnedQty));
+  const wastage = round3(n(classifiedWastageQty));
+  const physicalBalance = round3(Math.max(0, issued - consumed));
+  const rawRemaining = round3(issued - consumed - returned - wastage);
+  return {
+    physicalBalance,
+    remainingUnreconciled: Math.abs(rawRemaining) <= RECONCILIATION_TOLERANCE ? 0 : rawRemaining,
+  };
+}
 
 function n(v) {
   return qtyToNumber(v);
@@ -500,6 +514,17 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
   }
 
   const inputByItem = normalizeInputLines(input.lines);
+  const wastageDetails = normalizeWastageDetailsInput(input.wastageDetails);
+  const wastageByItem = new Map();
+  for (const row of wastageDetails) {
+    if (!(row.itemId > 0) && report.rmLines.length === 1) row.itemId = report.rmLines[0].itemId;
+    if (!(row.itemId > 0)) {
+      const err = new Error("Every wastage detail must identify its RM item.");
+      err.statusCode = 400;
+      throw err;
+    }
+    wastageByItem.set(row.itemId, round3(n(wastageByItem.get(row.itemId)) + n(row.qty)));
+  }
   const lineCreates = [];
   for (const rm of report.rmLines || []) {
     const issuedQty = rm.issuedQty == null ? 0 : round3(n(rm.issuedQty));
@@ -509,22 +534,28 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
         ? inputLine.rmConsumedQty
         : round3(n(rm.reportedConsumedQty ?? rm.ledgerConsumedQty ?? 0));
     const returnQty = round3(n(inputLine.rmReturnQty ?? 0));
-    const manualWasteQty = round3(n(inputLine.scrapWasteQty ?? 0));
+    const manualWasteQty = round3(n(wastageByItem.get(rm.itemId) ?? 0));
     const runnerWasteQty = round3(n(rm.runnerWasteQty ?? 0));
-    const scrapWasteQty = round3(manualWasteQty + runnerWasteQty);
-    const varianceQty = round3(issuedQty - consumedQty - returnQty - scrapWasteQty);
+    const scrapWasteQty = manualWasteQty;
+    const reconciliation = computeRmReconciliation({
+      issuedQty,
+      consumedQty,
+      returnedQty: returnQty,
+      classifiedWastageQty: scrapWasteQty,
+    });
+    const varianceQty = reconciliation.remainingUnreconciled;
 
     if (consumedQty < -EPS || returnQty < -EPS || scrapWasteQty < -EPS) {
       const err = new Error("Production Report quantities cannot be negative.");
       err.statusCode = 400;
       throw err;
     }
-    if (rm.returnableQty != null && returnQty > round3(n(rm.returnableQty)) + EPS) {
-      const err = new Error(`RM return qty exceeds returnable qty for ${rm.itemName || rm.itemId}.`);
+    if (returnQty > reconciliation.physicalBalance + RECONCILIATION_TOLERANCE) {
+      const err = new Error(`RM return qty exceeds available physical balance (${reconciliation.physicalBalance} ${rm.unit || ""}) for ${rm.itemName || rm.itemId}.`);
       err.statusCode = 400;
       throw err;
     }
-    if (Math.abs(varianceQty) > EPS) {
+    if (Math.abs(varianceQty) > RECONCILIATION_TOLERANCE) {
       const err = new Error(`RM reconciliation is incomplete for ${rm.itemName || rm.itemId}: unexplained balance ${varianceQty} ${rm.unit || ""}. Allocate it to RM return and/or classified wastage before confirming.`);
       err.statusCode = 409;
       err.code = "PRODUCTION_REPORT_RM_RECONCILIATION_INCOMPLETE";
@@ -551,7 +582,6 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
     lineCreates.find((ln) => n(ln.scrapWasteQty) > EPS && ln.unit)?.unit ||
     report.rmLines.find((ln) => ln.unit)?.unit ||
     "Kg";
-  const wastageDetails = normalizeWastageDetailsInput(input.wastageDetails);
   if (wastageDetails.length > 0 && db.wastageType?.findMany) {
     const activeTypes = await db.wastageType.findMany({ where: { isActive: true }, select: { id: true, code: true, name: true } });
     const activeTypeIds = new Set(activeTypes.map((row) => row.id));
@@ -563,12 +593,6 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
         throw err;
       }
       const type = typeById.get(row.wastageTypeId);
-      if (/runner/i.test(`${type?.code || ""} ${type?.name || ""}`)) {
-        const err = new Error("Runner Wastage is calculated automatically from Item Master and cannot be entered manually.");
-        err.statusCode = 400;
-        err.code = "RUNNER_WASTAGE_MANUAL_FORBIDDEN";
-        throw err;
-      }
       if (/^other$/i.test(String(type?.name || "").trim()) && !row.remarks) {
         const err = new Error("Remarks are required for Other wastage.");
         err.statusCode = 400;
@@ -604,19 +628,14 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
       ...(wastageDetails.length > 0 && db.productionWorkOrderReportWastageDetail?.create
         ? {
             wastageDetails: {
-              create: [
-                ...lineCreates.filter((line) => n(line.runnerWasteQty) > EPS).map((line, index) => ({
-                  wastageTypeId: null, itemId: line.itemId, source: "AUTO_ITEM_MASTER",
-                  qty: line.runnerWasteQty, remarks: "AUTO – Item Master", sortOrder: index,
-                })),
-                ...wastageDetails.map((row, index) => ({
+              create: wastageDetails.map((row, index) => ({
                 wastageTypeId: row.wastageTypeId,
                 itemId: row.itemId ?? null,
                 source: "MANUAL_PRODUCTION",
                 qty: String(row.qty),
                 remarks: row.remarks,
-                sortOrder: row.sortOrder ?? lineCreates.length + index,
-              }))],
+                sortOrder: row.sortOrder ?? index,
+              })),
             },
           }
         : {}),
@@ -640,12 +659,10 @@ async function confirmProductionWorkOrderReport(db, workOrderId, input = {}, act
     });
   }
 
-  // Wastage-only disposition (no return pending): post RM_WASTAGE immediately so
-  // PRODUCTION USABLE does not retain finalized process loss.
+  // Post classified RM wastage once inside the same confirmation transaction.
   for (const line of lineCreates) {
     const scrapQty = round3(n(line.scrapWasteQty));
-    const returnQty = round3(n(line.rmReturnQty));
-    if (scrapQty <= EPS || returnQty > EPS) continue;
+    if (scrapQty <= EPS) continue;
     const locations = await resolveSuggestedRmReturnLocations(db, {
       workOrderId: id,
       itemId: line.itemId,
@@ -887,17 +904,25 @@ async function receiveProductionRmReturnPending(input, actor = {}, db = prisma) 
   const report = await loadConfirmedReport(db, receivedPending.workOrderId);
   const reportLine = report?.lines?.find((ln) => ln.itemId === receivedPending.itemId);
   const scrapQty = reportLine ? round3(n(reportLine.scrapWasteQty)) : 0;
+  const postedWastage = db.materialWastageNote?.findMany
+    ? await db.materialWastageNote.findMany({
+        where: { workOrderId: receivedPending.workOrderId, itemId: receivedPending.itemId },
+        select: { qty: true },
+      })
+    : [];
+  const alreadyPostedWastageQty = round3(postedWastage.reduce((sum, row) => sum + n(row.qty), 0));
+  const wastageQtyToPost = round3(Math.max(0, scrapQty - alreadyPostedWastageQty));
   let wastageNote = null;
   // Finalized report wastage must leave PRODUCTION USABLE for Regular and NO_QTY.
   // Consumption (ISSUE) and return (LOCATION_TRANSFER) remain separate — no double deduction.
-  if (scrapQty > EPS) {
+  if (wastageQtyToPost > EPS) {
     try {
       wastageNote = await createMaterialWastageNote(
         {
           workOrderId: receivedPending.workOrderId,
           fromLocationId: input.fromLocationId,
           itemId: receivedPending.itemId,
-          qty: scrapQty,
+          qty: wastageQtyToPost,
           reason: "PROCESS_LOSS",
           remarks: `Auto-declared from Production Report after Store received RM return (pending #${pendingId}).`,
         },
@@ -921,6 +946,8 @@ async function receiveProductionRmReturnPending(input, actor = {}, db = prisma) 
 }
 
 module.exports = {
+  RECONCILIATION_TOLERANCE,
+  computeRmReconciliation,
   buildWorkOrderProductionReport,
   confirmProductionWorkOrderReport,
   assertProductionReportConfirmed,

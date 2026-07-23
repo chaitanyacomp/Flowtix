@@ -1,7 +1,8 @@
 /**
  * QC rollup helpers for reporting and dispatch guards.
  *
- * sumQcAcceptedForSoItem: active QcEntry.acceptedQty for WOs on this SO+FG + adjustment QC rows.
+ * sumQcAcceptedForSoItem: active production QC **final usable** for WOs on this SO+FG
+ * (QcEntry.acceptedQty first-pass + rework-recheck USABLE) + adjustment QC rows.
  *
  * Regular (NORMAL) SO dispatch-ready qty and lock/finalize gates use SO-linked QC remaining capped by
  * physical USABLE on-hand — see reportMetrics.getSoItemDispatchShipCap / buildDispatchableQtyBySalesOrderLineId.
@@ -10,6 +11,9 @@
  * Physical FG: assertSufficientStockForQtyOut (stockService) uses the full stock ledger — same on-hand as
  * GET /dispatch/sales-orders onHand. **REPLACEMENT** dispatch is capped by both the return-QC pool and **USABLE**
  * on-hand (dispatch still posts from USABLE only); see {@link getSoItemDispatchShipCap} for the pool leg.
+ *
+ * NO_QTY cycle headroom continues to compose first-pass + cycle-scoped recheck maps in dispatch.js —
+ * those cycle maps are separate from this SO+item final-usable pool.
  */
 
 const { STOCK_EPS, assertSufficientStockForQtyOut, getItemStockQty } = require("./stockService");
@@ -20,6 +24,7 @@ const {
   DISPATCH_ALLOC_MODE,
 } = require("./salesOrderDispatchAllocation");
 const { getSoItemDispatchShipCap } = require("./reportMetrics");
+const { sumReworkRecheckAcceptedForSoItem } = require("./qcLifecycleProjection");
 
 const {
   formatQuantityWithUnit,
@@ -37,10 +42,11 @@ async function itemUnitForMessage(tx, itemId) {
 }
 
 /**
+ * Cumulative final usable QC for SO+FG (first-pass accepted + rework recheck accepted).
  * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
  */
 async function sumQcAcceptedForSoItem(db, salesOrderId, itemId) {
-  const [prodAgg, adjAgg] = await Promise.all([
+  const [prodAgg, adjAgg, reworkAccepted] = await Promise.all([
     db.qcEntry.aggregate({
       where: {
         ...QC_ENTRY_ACTIVE_WHERE,
@@ -57,8 +63,13 @@ async function sumQcAcceptedForSoItem(db, salesOrderId, itemId) {
       where: { reversedAt: null, salesOrderId, itemId },
       _sum: { acceptedQty: true },
     }),
+    sumReworkRecheckAcceptedForSoItem(db, salesOrderId, itemId),
   ]);
-  return Number(prodAgg._sum.acceptedQty ?? 0) + Number(adjAgg._sum.acceptedQty ?? 0);
+  return (
+    Number(prodAgg._sum.acceptedQty ?? 0) +
+    Number(adjAgg._sum.acceptedQty ?? 0) +
+    Number(reworkAccepted ?? 0)
+  );
 }
 
 /**
@@ -111,7 +122,7 @@ async function buildReplacementReturnQcGrossBySoItemKey(db, salesOrders, qcAccep
 }
 
 async function buildQcAcceptedMap(db) {
-  const [prodRows, adjRows] = await Promise.all([
+  const [prodRows, adjRows, reworkTransfers] = await Promise.all([
     db.qcEntry.findMany({
       where: { ...QC_ENTRY_ACTIVE_WHERE },
       select: {
@@ -132,6 +143,40 @@ async function buildQcAcceptedMap(db) {
       where: { reversedAt: null },
       select: { acceptedQty: true, salesOrderId: true, itemId: true },
     }),
+    db.stockTransaction.findMany({
+      where: {
+        reversedAt: null,
+        transactionType: "BUCKET_TRANSFER",
+        stockBucket: "USABLE",
+        qcRejectedDispositionId: { not: null },
+      },
+      select: {
+        qtyIn: true,
+        refId: true,
+        qcRejectedDispositionId: true,
+        qcRejectedDisposition: {
+          select: {
+            voidedAt: true,
+            itemId: true,
+            sourceQcEntry: {
+              select: {
+                reversedAt: true,
+                production: {
+                  select: {
+                    workOrderLine: {
+                      select: {
+                        fgItemId: true,
+                        workOrder: { select: { salesOrderId: true } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    }),
   ]);
   /** @type {Map<string, number>} */
   const map = new Map();
@@ -146,6 +191,20 @@ async function buildQcAcceptedMap(db) {
   for (const r of adjRows) {
     const k = `${r.salesOrderId}:${r.itemId}`;
     map.set(k, (map.get(k) || 0) + Number(r.acceptedQty));
+  }
+  for (const t of reworkTransfers) {
+    const dispId = Number(t.qcRejectedDispositionId);
+    if (!Number.isFinite(dispId) || Number(t.refId) !== dispId) continue;
+    const disp = t.qcRejectedDisposition;
+    if (!disp || disp.voidedAt != null) continue;
+    const entry = disp.sourceQcEntry;
+    if (!entry || entry.reversedAt != null) continue;
+    const wol = entry.production?.workOrderLine;
+    if (!wol?.workOrder) continue;
+    const soId = wol.workOrder.salesOrderId;
+    const fgId = wol.fgItemId ?? disp.itemId;
+    const k = `${soId}:${fgId}`;
+    map.set(k, (map.get(k) || 0) + Number(t.qtyIn ?? 0));
   }
   return map;
 }

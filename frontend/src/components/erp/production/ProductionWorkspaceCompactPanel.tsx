@@ -1,24 +1,25 @@
 import * as React from "react";
 
 import { ProductionExecutionPanel } from "./ProductionExecutionPanel";
-
 import { ProductionReportPanel } from "./ProductionReportPanel";
-
 import type { ProductionNoQtyWoSummary } from "./ProductionNoQtyWoSummaryCard";
-
 import {
   initialProductionReportPanelStatus,
   isProductionQtyShort,
   type ProductionReportPanelStatus,
 } from "../../../lib/productionWorkspaceCompactUx";
-
 import type { ProductionExecutionClosedOutcome } from "../../../lib/productionCompletionUx";
-
 import type { ProductionExecutionSummary } from "../../../lib/productionExecutionApi";
-
 import { cn } from "../../../lib/utils";
 
 export type ProductionWorkspaceWoSummary = ProductionNoQtyWoSummary;
+
+function fmtQty(n: number | null | undefined): string {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  const r = Math.round(v * 1000) / 1000;
+  return Math.abs(r - Math.round(r)) < 1e-9 ? String(Math.round(r)) : String(r);
+}
 
 type Props = {
   workOrderId: number;
@@ -44,8 +45,8 @@ type Props = {
 };
 
 /**
- * Production Report workbench: one viewport, full-width report, compact summary strip.
- * Left-side summary cards are intentionally omitted (AP-03 / compact workbench).
+ * Production Report Mode workbench: compact WO header + full-width report.
+ * Hides Production Entry / Material Ready / Recent Entries / Other Open WOs (AP-03).
  */
 export function ProductionWorkspaceCompactPanel({
   workOrderId,
@@ -72,6 +73,10 @@ export function ProductionWorkspaceCompactPanel({
   const produced = Number(woSummary.producedQty ?? 0);
   const isShort = isProductionQtyShort(produced, planned);
   const shortQty = Math.max(0, planned - produced);
+  const isRegularReportMode =
+    String(orderType ?? "").toUpperCase() === "REGULAR" ||
+    String(orderType ?? "").toUpperCase() === "NORMAL" ||
+    Boolean(woSummary.flowBadge);
 
   const handleSummaryChange = React.useCallback(
     (summary: ProductionExecutionSummary | null) => {
@@ -125,30 +130,104 @@ export function ProductionWorkspaceCompactPanel({
     [executionSummary?.surplusQty, isShort, onExecutionClosed, onReportConfirmed, workOrderId],
   );
 
+  const unit = String(woSummary.unit ?? "").trim() || "Nos";
+
   return (
     <div
-      className={cn(
-        "flex min-h-0 flex-1 flex-col overflow-hidden max-[800px]:max-h-none max-[800px]:overflow-y-auto",
-        "lg:h-[calc(100dvh-12rem)] lg:max-h-[calc(100dvh-12rem)]",
-        className,
-      )}
+      className={cn("flex min-h-0 flex-1 flex-col", className)}
       data-testid="production-no-qty-viewport-shell"
+      data-report-mode="1"
     >
       <div
-        className="flex shrink-0 flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-slate-200/90 bg-white px-2.5 py-1.5"
+        className="sticky top-0 z-[12] shrink-0 border-b border-slate-200/90 bg-white px-2.5 py-1.5 shadow-sm"
         data-testid="production-report-wo-identity"
       >
-        <span className="text-[13px] font-bold tracking-tight text-slate-900">{woSummary.woLabel}</span>
-        <span className="text-[12px] font-semibold text-slate-700">{woSummary.soLabel}</span>
-        {woSummary.customerName ? (
-          <span className="text-[11px] font-medium text-slate-500">{woSummary.customerName}</span>
-        ) : null}
-        <span className="min-w-0 truncate text-[12px] font-medium text-slate-800" title={woSummary.itemName}>
-          {woSummary.itemName}
-        </span>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="text-[13px] font-bold tracking-tight text-slate-900">{woSummary.woLabel}</span>
+          <span className="text-[12px] font-semibold text-slate-700">{woSummary.soLabel}</span>
+          <span className="min-w-0 truncate text-[12px] font-medium text-slate-800" title={woSummary.itemName}>
+            {woSummary.itemName}
+          </span>
+          {woSummary.flowBadge ? (
+            <span
+              className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white"
+              data-testid="production-report-flow-badge"
+            >
+              {woSummary.flowBadge}
+            </span>
+          ) : null}
+          {woSummary.reportPending || !reportStatus.confirmed ? (
+            <span
+              className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-950"
+              data-testid="production-report-pending-badge"
+            >
+              Report Pending
+            </span>
+          ) : null}
+        </div>
+        <dl
+          className="mt-1.5 grid grid-cols-3 gap-x-3 gap-y-1 text-[11px] sm:grid-cols-6"
+          data-testid="production-report-mode-metrics"
+        >
+          <div>
+            <dt className="font-semibold uppercase tracking-wide text-slate-500">Planned</dt>
+            <dd className="font-bold tabular-nums text-slate-900">
+              {fmtQty(woSummary.plannedQty)} {unit}
+            </dd>
+          </div>
+          <div>
+            <dt className="font-semibold uppercase tracking-wide text-slate-500">Produced</dt>
+            <dd className="font-bold tabular-nums text-slate-900">
+              {fmtQty(woSummary.producedQty)} {unit}
+            </dd>
+          </div>
+          {woSummary.soQty != null && Number.isFinite(Number(woSummary.soQty)) ? (
+            <div>
+              <dt className="font-semibold uppercase tracking-wide text-slate-500">SO Qty</dt>
+              <dd className="font-bold tabular-nums text-slate-900">
+                {fmtQty(woSummary.soQty)} {unit}
+              </dd>
+            </div>
+          ) : (
+            <div>
+              <dt className="font-semibold uppercase tracking-wide text-slate-500">Remaining</dt>
+              <dd className="font-bold tabular-nums text-slate-900">
+                {fmtQty(woSummary.remainingQty)} {unit}
+              </dd>
+            </div>
+          )}
+          {isRegularReportMode ? (
+            <>
+              <div>
+                <dt className="font-semibold uppercase tracking-wide text-slate-500">WO Target</dt>
+                <dd className="font-bold tabular-nums text-slate-900">
+                  {fmtQty(woSummary.plannedQty)} {unit}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-semibold uppercase tracking-wide text-slate-500">Target Balance</dt>
+                <dd className="font-bold tabular-nums text-slate-900">
+                  {fmtQty(woSummary.remainingQty)} {unit}
+                </dd>
+              </div>
+            </>
+          ) : null}
+          {woSummary.customerName ? (
+            <div className="min-w-0 sm:col-span-1">
+              <dt className="font-semibold uppercase tracking-wide text-slate-500">Customer</dt>
+              <dd className="truncate font-medium text-slate-800">{woSummary.customerName}</dd>
+            </div>
+          ) : null}
+        </dl>
+        <p
+          className="mt-1 text-[11px] font-medium text-amber-950"
+          data-testid="production-report-mode-locked-line"
+        >
+          Production entry locked — complete the mandatory Production Report.
+        </p>
       </div>
 
-      {isShort ? (
+      {isShort && !isRegularReportMode ? (
         <p
           className="shrink-0 border-b border-amber-100 bg-amber-50/90 px-2.5 py-1 text-[11px] font-medium text-amber-950"
           data-testid="production-shortage-status"
@@ -179,17 +258,28 @@ export function ProductionWorkspaceCompactPanel({
         />
       </div>
 
+      {/* Intentionally omit: Production Entry, Material Ready, Recent Entries, Other Open WOs */}
       <ProductionReportPanel
         workOrderId={workOrderId}
         refreshKey={reportRefreshKey}
         compact
         premium
         enableDraftCache
-        className="flex h-full min-h-0 flex-1 flex-col overflow-hidden border-0 shadow-none"
+        className="min-h-0 flex-1 border-0 shadow-none"
         onStatusChange={handleReportStatusChange}
-        closeWorkOrderOnConfirm
+        closeWorkOrderOnConfirm={!isRegularReportMode}
         confirmButtonLabel="Confirm Report & Close WO"
         onConfirmed={handleReportConfirmed}
+        reportModeSummary={{
+          woLabel: woSummary.woLabel,
+          soLabel: woSummary.soLabel,
+          itemName: woSummary.itemName,
+          soQty: woSummary.soQty ?? null,
+          woTarget: woSummary.plannedQty,
+          produced: woSummary.producedQty,
+          targetBalance: woSummary.remainingQty,
+          unit,
+        }}
       />
     </div>
   );

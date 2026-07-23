@@ -524,8 +524,8 @@ Admin does not own planning document actions in standard product.
 | **Order RM queue** | ISO cases in RM Control Center | — |
 | **Cycle planning queue** | — | Open RS / locked cycles |
 | **Monthly planning queue** | — | Draft / release-pending MPRS |
-| **WO queue** | Ready for WO prepare | Ready for placement |
-| **KPIs** | Orders awaiting RM; ready WO count | Plans awaiting review/release; RS balance open |
+| **WO queue** | Ready for WO prepare — Regular `RM_RECEIVED_CREATE_WO` cases (same eligibility as RM Control Center / Create Work Order in Prepare WO PA) | Ready for placement (`PLACE_WO`) |
+| **KPIs** | Orders awaiting RM; **Ready for WO** = Regular RM-ready cases + NO_QTY PLACE_WO (no double-count of the same SO/FG demand) | Plans awaiting review/release; RS balance open |
 
 **Purchase Dashboard:** `PLN_MPRS_REVIEW`, `PLN_MPRS_PR` only for NO_QTY monthly governance.
 

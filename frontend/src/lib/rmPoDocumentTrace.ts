@@ -15,6 +15,7 @@ export type RmPoTraceDemandSource = {
   pr: { purchaseRequestId?: number | null; docNo: string | null } | null;
   workOrder?: { id: number; docNo: string | null } | null;
   salesOrder?: { id: number; docNo: string | null } | null;
+  allocatedQty?: number;
 };
 
 export type RmPoTraceLine = {
@@ -24,6 +25,13 @@ export type RmPoTraceLine = {
   receivedQty: number;
   pendingQty: number;
   rate: number;
+  demandAllocatedQty?: number;
+  excessToStockQty?: number;
+  soAllocationBreakdown?: Array<{
+    salesOrderId: number | null;
+    salesOrderDocNo: string | null;
+    allocatedQty: number;
+  }>;
   demandSources: RmPoTraceDemandSource[];
   traceChain: string[];
   grnLines: Array<{

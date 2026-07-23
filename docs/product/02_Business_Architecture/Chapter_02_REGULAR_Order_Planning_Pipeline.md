@@ -26,6 +26,9 @@
 
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
+| 1.0.3 | 2026-07-23 | FT ERP Product Team | Prepare WO RM Required uses buffered WO target (not SO qty); decimal production buffer |
+| 1.0.2 | 2026-07-22 | FT ERP Product Team | Interim — Prepare WO Ready-for-WO labels; create → Material Issue handoff; note execution closure is Ch. 4 |
+| 1.0.1 | 2026-07-22 | FT ERP Product Team | Interim — RM Control Center Create WO → Prepare WO deep-link; Ready for WO count |
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial REGULAR planning pipeline — commercial through Work Order creation |
 
 **Supersedes:** None.
@@ -87,7 +90,7 @@ Uses [Glossary](../01_Product_Foundation/Chapter_03_FT_ERP_Glossary_and_Standard
 
 ### 5.1 Fixed customer quantity
 
-REGULAR planning anchors on **committed FG quantities** on Internal Sales Order lines. RM requirement is derived from order quantity × approved BOM (including configured production buffer where applicable)—not from rolling monthly schedules.
+REGULAR planning anchors on **committed FG quantities** on Internal Sales Order lines (`salesOrderQty`). Prepare WO may apply an optional **production buffer %** (decimal, max 2 dp) to derive the **WO target** (`woTargetQty = salesOrderQty × (1 + buffer%/100)`, FG UOM precision applied to the result). **RM readiness / theoretical RM required** for Prepare WO and WO-level planning must explode approved BOM against **`woTargetQty`**, not the original SO qty. Example: SO 15,000 Nos, BOM 210 Kg, buffer 0.5% → WO target 15,075 Nos → theoretical RM **211.05 Kg**. Customer dispatch remains capped by original SO balance. Intentional production above the WO target still requires **actual net RM issued** (see Manufacturing Execution Pipeline).
 
 ### 5.2 RM readiness before production
 
@@ -184,6 +187,24 @@ Statuses are presentation of engine-normalized procurement and readiness keys, i
 | **Ready for WO prepare** | RM validation supports WO creation (full or partial) |
 | **Blocked** | BOM missing, duplicate MR resolved, or policy block |
 
+### 7.3.1 Create Work Order handoff (RM Control Center → Prepare WO)
+
+When the case is **RM Ready** (`CREATE_WO` / `RM_RECEIVED_CREATE_WO`):
+
+| Rule | Contract |
+|------|----------|
+| **Primary CTA** | **Create Work Order** (status chip shows **RM Ready**, not the CTA wording) |
+| **Deep-link** | `/work-orders/prepare?salesOrderId={id}&source=regular_so&from=rm-control-center` |
+| **Identifiers** | Internal Sales Order **id** in query (stable); business doc no (e.g. SO-26-0001) is **display only** |
+| **Landing** | Prepare Work Order workspace with that Regular SO selected and eligible FG line(s) loaded |
+| **Pre-create labels** | Next Owner = **Store Department**; active workflow stage = **Ready for WO** when eligible |
+| **Does not** | Create the Work Order on click of RM Control Center — Store reviews qty / BOM / RM readiness and confirms in Prepare WO |
+| **On confirm Create Work Order** | POST creates one WO → success toast with business WO number → open Material Issue deep-link for that WO (`/material-issue?workOrderId={id}&…&returnTo=prepare-wo`) after PMR ensure — **not** the generic Work Orders list |
+| **Refresh** | Route with `salesOrderId` survives browser refresh without losing selection; Material Issue deep-link with `workOrderId` survives refresh |
+| **Must not** | Redirect Store to Dashboard, Sales Orders, or a Production/Admin-only Work Orders dead page when the SO is valid and WO-eligible |
+| **Ineligible** | Remain on Prepare WO with a clear business message; no duplicate WO when eligible qty is fully allocated |
+| **Permissions** | Store + Admin (and Production open) via `WO_PLAN_PREP_ROLES` / `WO_WRITE_ROLES`; backend `rm-check` / WO create / Material Issue enforce the same ownership |
+
 Exact state keys are specified in Volume 4.
 
 ### 7.4 Coverage calculation
@@ -276,6 +297,7 @@ Suggestion is advisory; Store confirms on creation.
 Work Order is the **handoff artifact** to Manufacturing Execution Pipeline:
 
 - Next: PMR → Material Issue → Production Entry → QA → Dispatch (Chapter 4)
+- WO planned qty may exceed SO demand (rejection/wastage buffer) at planning; **REGULAR WO closure** uses SO-demand coverage rules in [Ch. 4 §9.5](./Chapter_04_Manufacturing_Execution_Pipeline.md) — not re-planning here
 - REGULAR planning artifacts (MR, snapshot, case) remain trace references; execution uses PMR freeze
 
 ---
@@ -292,8 +314,8 @@ Pending Actions are **Workflow Engine outputs only** (Constitution Art. 12). Rep
 | Raise or review Material Requirement | Coverage gap with no active MR |
 | Create Purchase Requisition | MR approved; awaiting PR |
 | Post GRN | PO line pending receipt |
-| Prepare Work Order | RM readiness supports WO qty |
-| Create Work Order | Preparation complete |
+| Prepare Work Order / Create Work Order in Prepare WO | RM Ready (`RM_RECEIVED_CREATE_WO`); deep-link `/work-orders/prepare?salesOrderId={id}&source=regular_so&from=pending-actions` — SO auto-selected; suppress when no eligible WO qty remains |
+| Create Work Order (confirm) | Operator confirms in Prepare WO (not on navigation alone) |
 
 ### 10.2 Purchase
 
@@ -436,6 +458,10 @@ flowchart TB
 ---
 
 ## Document navigation
+
+## REGULAR_SO Production Report closure reconciliation
+
+When REGULAR_SO demand is already covered, End Production still routes through the mandatory Production Report. WO completion occurs only after every RM line satisfies `Issued = Consumed + Returned + Valid Classified Wastage` within `0.0005` RM-UOM units. This RM gate does not change the completed SO-demand closure rule, production quantity, or QC handoff: all produced FG continues through QA/QC. Expected runner is already present in Production Entry consumption and is informational, not an automatic closing component.
 
 | | Link |
 |--|------|

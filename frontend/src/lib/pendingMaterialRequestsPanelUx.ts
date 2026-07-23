@@ -7,11 +7,15 @@ export const RM_PO_MODAL_HEADER_GRID_CLASS = "grid grid-cols-1 items-start gap-3
 export const RM_PO_MODAL_HEADER_FIELD_CLASS =
   "h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm";
 
-/** Compact right-aligned decimal fields in the PO lines table. */
+/** Compact right-aligned decimal fields in the PO lines table (shared height for Order Qty + Rate). */
 export const RM_PO_MODAL_QTY_INPUT_CLASS =
-  "ml-auto h-8 w-full max-w-[7.5rem] text-right tabular-nums";
+  "h-8 w-full max-w-[7.5rem] text-right tabular-nums";
 export const RM_PO_MODAL_RATE_INPUT_CLASS =
-  "ml-auto h-8 w-full max-w-[7.5rem] text-right tabular-nums";
+  "h-8 w-full max-w-[7.5rem] text-right tabular-nums";
+/** Shared input-row chrome so Order Qty (with unit) and Rate stay vertically aligned. */
+export const RM_PO_MODAL_LINE_INPUT_ROW_CLASS = "flex h-8 w-full items-center justify-end";
+export const RM_PO_MODAL_LINE_INPUT_HINT_CLASS =
+  "mt-0.5 block min-h-[14px] text-[10px] leading-[14px]";
 
 export type RmPoModalEntryBaseline = {
   supplierPoNumber: string;

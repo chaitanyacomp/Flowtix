@@ -27,6 +27,7 @@ import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue, ErpPageSkeleton }
 import { PendingMaterialRequestsPanel } from "../components/purchase/PendingMaterialRequestsPanel";
 
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
+import { formatProcurementSoFilterLabel } from "../lib/procurementSoFilterDisplay";
 import { useAuth } from "../hooks/useAuth";
 import { hasErpRole, PURCHASE_EXECUTION_ROLES } from "../config/erpRoles";
 import { canRoleCreatePurchaseRequestForMr } from "../lib/procurementPurchaseRequestOwnership";
@@ -138,6 +139,10 @@ type MrSummary = {
 
     remainingQty: number;
 
+    availableQty?: number;
+
+    existingPrQty?: number;
+
     planningStatus: string;
 
     multiSourceDemand?: boolean;
@@ -145,6 +150,9 @@ type MrSummary = {
     demandSourceTypes?: string[];
 
   }[];
+
+  /** True when row is a live SO shortage before MaterialRequirement exists. */
+  preMaterialRequirement?: boolean;
 
 };
 
@@ -277,8 +285,25 @@ function mrCanCreatePurchaseRequest(
   if (!canRoleCreatePurchaseRequestForMr(role, row, demandPool)) return false;
   if (row.canCreatePurchaseRequest === false) return false;
   if (row.canCreatePurchaseRequest === true) return true;
+  if (row.preMaterialRequirement && demandPool === "REGULAR_SO" && Number(row.salesOrderId ?? 0) > 0) {
+    return true;
+  }
   const s = String(row.status ?? "").trim();
   return s === "APPROVED" || s === "SENT_TO_PURCHASE";
+}
+
+function mrRowKey(mr: MrSummary): number {
+  const mrId = Number(mr.materialRequirementId ?? 0);
+  if (Number.isFinite(mrId) && mrId !== 0) return mrId;
+  const soId = Number(mr.salesOrderId ?? 0);
+  return soId > 0 ? -soId : 0;
+}
+
+function mrRefLabel(mr: MrSummary): string {
+  if (mr.preMaterialRequirement || Number(mr.materialRequirementId ?? 0) <= 0) {
+    return "SO shortage (raise on Create PR)";
+  }
+  return mr.docNo ?? `MR-${mr.materialRequirementId}`;
 }
 
 function mrPrimaryAction(
@@ -342,13 +367,17 @@ function formatPeriodKey(periodKey: string | null | undefined): string | null {
 function MrSourceBadge({ mr }: { mr: MrSummary }) {
   const src = mr.source;
   const type = src?.type ?? mr.sourceType ?? null;
-  if (type === "SALES_ORDER") {
+  if (type === "SALES_ORDER" || type === "WORK_ORDER_PLANNING") {
     const soLabel = mr.salesOrderId
       ? displaySalesOrderNo(mr.salesOrderId, mr.salesOrderDocNo)
-      : "Regular SO";
+      : PROCUREMENT_TERMS.SOURCE_BADGE_REGULAR_SO;
     return (
-      <span className="inline-flex items-center rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-900">
-        {soLabel}
+      <span
+        className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-900"
+        title={`${PROCUREMENT_TERMS.SOURCE_BADGE_REGULAR_SO}${soLabel !== PROCUREMENT_TERMS.SOURCE_BADGE_REGULAR_SO ? ` · ${soLabel}` : ""}`}
+      >
+        {PROCUREMENT_TERMS.SOURCE_BADGE_REGULAR_SO}
+        {soLabel !== PROCUREMENT_TERMS.SOURCE_BADGE_REGULAR_SO ? ` · ${soLabel}` : ""}
       </span>
     );
   }
@@ -358,7 +387,7 @@ function MrSourceBadge({ mr }: { mr: MrSummary }) {
       return (
         <span
           className="inline-flex items-center gap-1 rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-800"
-          title={planLabel}
+          title={`${PROCUREMENT_TERMS.SOURCE_BADGE_NO_QTY_SO} · ${planLabel}`}
         >
           {planLabel}
         </span>
@@ -369,9 +398,16 @@ function MrSourceBadge({ mr }: { mr: MrSummary }) {
     return (
       <span
         className="inline-flex items-center gap-1 rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-800"
-        title={`Monthly Plan${period ? ` · ${period}` : ""}${rev ? ` · ${rev}` : ""}`}
+        title={`${PROCUREMENT_TERMS.SOURCE_BADGE_NO_QTY_SO} · Monthly Plan${period ? ` · ${period}` : ""}${rev ? ` · ${rev}` : ""}`}
       >
         Monthly Plan{period ? ` · ${period}` : ""}{rev ? ` · ${rev}` : ""}
+      </span>
+    );
+  }
+  if (type === "STOCK_REPLENISHMENT") {
+    return (
+      <span className="inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-950">
+        {PROCUREMENT_TERMS.SOURCE_BADGE_STOCK_REPLENISHMENT}
       </span>
     );
   }
@@ -544,7 +580,9 @@ function PendingMaterialRequirementsTable({
   const [expandedMrId, setExpandedMrId] = React.useState<number | null>(null);
 
   React.useEffect(() => {
-    if (focusMaterialRequirementId && focusMaterialRequirementId > 0) setExpandedMrId(focusMaterialRequirementId);
+    if (focusMaterialRequirementId && focusMaterialRequirementId !== 0) {
+      setExpandedMrId(focusMaterialRequirementId);
+    }
   }, [focusMaterialRequirementId]);
 
   if (loading) {
@@ -605,15 +643,22 @@ function PendingMaterialRequirementsTable({
 
             const lines = mr.lines ?? [];
 
-            const isOpen = expandedMrId === mr.materialRequirementId;
+            const rowKey = mrRowKey(mr);
+
+            const isOpen = expandedMrId === rowKey;
+
+            const isFocused =
+              focusMaterialRequirementId != null &&
+              focusMaterialRequirementId !== 0 &&
+              rowKey === focusMaterialRequirementId;
 
             const canExpand = lines.length > 0;
 
             return (
 
-              <React.Fragment key={mr.materialRequirementId}>
+              <React.Fragment key={rowKey}>
 
-                <tr className={mr.materialRequirementId === focusMaterialRequirementId ? "bg-blue-50 ring-2 ring-inset ring-blue-300" : undefined}>
+                <tr className={isFocused ? "bg-blue-50 ring-2 ring-inset ring-blue-300" : undefined}>
 
                   <td className="w-8 px-1">
 
@@ -631,7 +676,7 @@ function PendingMaterialRequirementsTable({
 
                         onClick={() =>
 
-                          setExpandedMrId(isOpen ? null : mr.materialRequirementId)
+                          setExpandedMrId(isOpen ? null : rowKey)
 
                         }
 
@@ -674,7 +719,8 @@ function PendingMaterialRequirementsTable({
                         to={buildRmControlCenterHref({
                           workOrderId: mr.workOrderId && mr.workOrderId > 0 ? mr.workOrderId : undefined,
                           salesOrderId: mr.salesOrderId ?? undefined,
-                          materialRequirementId: mr.materialRequirementId,
+                          materialRequirementId:
+                            Number(mr.materialRequirementId ?? 0) > 0 ? mr.materialRequirementId : undefined,
                         })}
                         className="mt-1 inline-block text-[10px] font-bold text-blue-800 no-underline hover:underline"
                       >
@@ -698,7 +744,7 @@ function PendingMaterialRequirementsTable({
 
                   <td className="text-right tabular-nums font-bold text-amber-950">{fmtQty(mr.totalShortageQty)}</td>
 
-                  <td className="text-[10px] text-slate-500">{mr.docNo ?? `MR-${mr.materialRequirementId}`}</td>
+                  <td className="text-[10px] text-slate-500">{mrRefLabel(mr)}</td>
 
                   <td className="text-right">
 
@@ -714,13 +760,13 @@ function PendingMaterialRequirementsTable({
 
                         className="h-8 whitespace-nowrap px-3 text-xs"
 
-                        disabled={creatingMrId === mr.materialRequirementId}
+                        disabled={creatingMrId === rowKey}
 
                         onClick={() => onCreatePurchaseRequest(mr)}
 
                       >
 
-                        {creatingMrId === mr.materialRequirementId ? "Creating…" : action.label}
+                        {creatingMrId === rowKey ? "Creating…" : action.label}
 
                       </Button>
 
@@ -760,11 +806,11 @@ function PendingMaterialRequirementsTable({
 
                         <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
 
-                          RM lines (planning detail — no separate PR)
+                          RM requirement (SO-wise) — Create Purchase Request uses remaining shortage
 
                         </p>
 
-                        <table className="erp-table erp-table-dense w-full min-w-[40rem] text-[11px] [&_td]:py-1 [&_th]:py-1">
+                        <table className="erp-table erp-table-dense w-full min-w-[48rem] text-[11px] [&_td]:py-1 [&_th]:py-1">
 
                           <thead>
 
@@ -772,11 +818,19 @@ function PendingMaterialRequirementsTable({
 
                               <th className="text-left">RM item</th>
 
-                              <th className="text-right">Required qty</th>
+                              <th className="text-right">Required</th>
 
-                              <th className="text-right">Net requirement</th>
+                              <th className="text-right">Available</th>
 
-                              <th className="text-left">Planning status</th>
+                              <th className="text-right">Shortage</th>
+
+                              <th className="text-right">Existing PR</th>
+
+                              <th className="text-right">Balance for PR</th>
+
+                              <th className="text-left">Unit</th>
+
+                              <th className="text-left">Status</th>
 
                             </tr>
 
@@ -784,7 +838,16 @@ function PendingMaterialRequirementsTable({
 
                           <tbody>
 
-                            {lines.map((ln) => (
+                            {lines.map((ln) => {
+                              const available =
+                                ln.availableQty != null
+                                  ? ln.availableQty
+                                  : Math.max(0, Number(ln.requiredQty ?? 0) - Number(ln.shortageQty ?? 0));
+                              const existingPr =
+                                ln.existingPrQty != null
+                                  ? ln.existingPrQty
+                                  : Math.max(0, Number(ln.shortageQty ?? 0) - Number(ln.remainingQty ?? 0));
+                              return (
 
                               <tr key={ln.lineId}>
 
@@ -792,17 +855,30 @@ function PendingMaterialRequirementsTable({
 
                                 <td className="text-right tabular-nums">{fmtQty(ln.requiredQty, ln.unit)}</td>
 
+                                <td className="text-right tabular-nums">{fmtQty(available, ln.unit)}</td>
+
                                 <td className="text-right tabular-nums text-amber-950">
 
                                   {fmtQty(ln.shortageQty, ln.unit)}
 
                                 </td>
 
+                                <td className="text-right tabular-nums">{fmtQty(existingPr, ln.unit)}</td>
+
+                                <td className="text-right tabular-nums font-semibold text-violet-950">
+
+                                  {fmtQty(ln.remainingQty, ln.unit)}
+
+                                </td>
+
+                                <td className="text-slate-600">{ln.unit || "—"}</td>
+
                                 <td className="text-slate-600">{ln.planningStatus}</td>
 
                               </tr>
 
-                            ))}
+                            );
+                            })}
 
                           </tbody>
 
@@ -843,6 +919,7 @@ export function ProcurementPlanningPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const filterSoId = Number(searchParams.get("salesOrderId") ?? 0);
+  const filterSoDocNoParam = (searchParams.get("salesOrderDocNo") ?? "").trim() || null;
   const filterWorkOrderId = Number(searchParams.get("workOrderId") ?? 0);
   const focusRmItemId = Number(searchParams.get("rmItemId") ?? 0);
   const focusMaterialRequirementId = Number(searchParams.get("materialRequirementId") ?? 0);
@@ -935,29 +1012,28 @@ export function ProcurementPlanningPage() {
         return;
       }
 
-      const payload = buildPurchaseRequestPayloadFromMr(mr, { demandPool });
-
-      if (!payload) {
-
-        showError("No RM lines are eligible for a purchase request on this MR.");
-
-        return;
-
-      }
-
+      const rowKey = mrRowKey(mr);
       creatingPrRef.current = true;
-
-      setCreatingMrId(mr.materialRequirementId);
+      setCreatingMrId(rowKey);
 
       try {
-
-        await apiFetch("/api/procurement-planning/send-requirement", {
-
-          method: "POST",
-
-          body: JSON.stringify(payload),
-
-        });
+        // REGULAR_SO: Store creates PR via SO handoff (ensures MR + PR, idempotent on refresh).
+        if (demandPool === "REGULAR_SO" && Number(mr.salesOrderId ?? 0) > 0) {
+          await apiFetch(`/api/sales-orders/${mr.salesOrderId}/create-purchase-request`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+        } else {
+          const payload = buildPurchaseRequestPayloadFromMr(mr, { demandPool });
+          if (!payload) {
+            showError("No RM lines are eligible for a purchase request on this MR.");
+            return;
+          }
+          await apiFetch("/api/procurement-planning/send-requirement", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+        }
 
         showSuccess(PROCUREMENT_TERMS.PR_CREATE_SUCCESS);
 
@@ -977,7 +1053,7 @@ export function ProcurementPlanningPage() {
 
     },
 
-    [user?.role, demandPool, load, showError, showSuccess],
+    [demandPool, load, showError, showSuccess, user?.role],
 
   );
 
@@ -1037,14 +1113,24 @@ export function ProcurementPlanningPage() {
   const poolSectionCopy = procurementDemandPoolSectionCopy(demandPool);
 
   const focusMrRow = React.useMemo(() => {
-    if (focusMaterialRequirementId > 0) {
-      return pendingMrs.find((m) => m.materialRequirementId === focusMaterialRequirementId) ?? null;
+    if (focusMaterialRequirementId !== 0) {
+      return pendingMrs.find((m) => mrRowKey(m) === focusMaterialRequirementId) ?? null;
+    }
+    if (filterSoId > 0) {
+      return pendingMrs.find((m) => Number(m.salesOrderId ?? 0) === filterSoId) ?? null;
     }
     if (filterWorkOrderId > 0) return pendingMrs.find((m) => m.workOrderId === filterWorkOrderId) ?? pendingMrs[0] ?? null;
     return null;
-  }, [pendingMrs, focusMaterialRequirementId, filterWorkOrderId]);
+  }, [pendingMrs, focusMaterialRequirementId, filterWorkOrderId, filterSoId]);
 
+  const focusRowKey = focusMrRow ? mrRowKey(focusMrRow) : focusMaterialRequirementId;
 
+  const regularSoFilterMiss =
+    demandPool === "REGULAR_SO" &&
+    filterSoId > 0 &&
+    !loading &&
+    Boolean(ws) &&
+    pendingMrs.length === 0;
 
   const purchasePlanningCount = ws?.sections.supplierAllocationPending.length ?? 0;
 
@@ -1054,7 +1140,14 @@ export function ProcurementPlanningPage() {
 
   const completedCount = ws?.sections.procurementCompleted.length ?? 0;
 
-  const queueCounts = React.useMemo(() => deriveDemandPoolCountsFromWorkspace(ws), [ws]);
+  /** Tab badges: pending rows for loaded source; sibling sources from pools when API is scoped. Active tab matches displayed (filtered) rows. */
+  const queueCounts = React.useMemo(() => {
+    const base = deriveDemandPoolCountsFromWorkspace(ws);
+    return {
+      ...base,
+      [demandPool]: pendingMrs.length,
+    };
+  }, [ws, demandPool, pendingMrs.length]);
 
 
 
@@ -1091,7 +1184,13 @@ export function ProcurementPlanningPage() {
                     {focusMrRow?.primaryFgName ? ` · ${focusMrRow.primaryFgName}` : ""}
                   </>
                 ) : (
-                  <>Filtered to SO #{filterSoId}</>
+                  <>
+                    Filtered to{" "}
+                    {formatProcurementSoFilterLabel(
+                      filterSoId,
+                      focusMrRow?.salesOrderDocNo ?? filterSoDocNoParam,
+                    )}
+                  </>
                 )}
                 <Link
                   to={`/procurement-planning?demandPool=${encodeURIComponent(demandPool)}`}
@@ -1275,13 +1374,21 @@ export function ProcurementPlanningPage() {
           rows={pendingMrs}
           loading={loading}
           creatingMrId={creatingMrId}
-          focusMaterialRequirementId={focusMaterialRequirementId}
+          focusMaterialRequirementId={focusRowKey}
           onCreatePurchaseRequest={(mr) => void handleCreatePurchaseRequest(mr)}
           userRole={user?.role}
           demandPool={demandPool}
           canExecutePurchase={canExecutePurchase}
-          emptyTitle={poolSectionCopy.emptyTitle}
-          emptyDetail={poolSectionCopy.emptyDetail}
+          emptyTitle={
+            regularSoFilterMiss
+              ? PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR_REGULAR_SO_FILTER
+              : poolSectionCopy.emptyTitle
+          }
+          emptyDetail={
+            regularSoFilterMiss
+              ? PROCUREMENT_TERMS.SECTION_EMPTY_PENDING_MR_REGULAR_SO_FILTER_DETAIL
+              : poolSectionCopy.emptyDetail
+          }
         />
 
       </section>

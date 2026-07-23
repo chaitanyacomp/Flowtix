@@ -86,7 +86,18 @@ function createApp(options = {}) {
       credentials: true,
     }),
   );
-  app.use(express.json());
+  // Default JSON body limit (Express / body-parser default: 100kb).
+  // Tally Confirm Import uses a route-specific higher limit only for mapping tables —
+  // the XML upload remains multer 72 MB on the preview route alone.
+  // Keep in sync with TALLY_APPLY_JSON_LIMIT in tallyMasterImportService.js
+  const TALLY_APPLY_JSON_LIMIT = "256kb";
+  app.use((req, res, next) => {
+    const path = String(req.originalUrl || req.url || "").split("?")[0];
+    if (req.method === "POST" && /\/api\/admin\/tally-import\/apply\/?$/.test(path)) {
+      return express.json({ limit: TALLY_APPLY_JSON_LIMIT })(req, res, next);
+    }
+    return express.json({ limit: "100kb" })(req, res, next);
+  });
   app.use(performanceLoggingMiddleware);
 
   // Dev / API-only: JSON root. Production with packaged web/: SPA owns "/".

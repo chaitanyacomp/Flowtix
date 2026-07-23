@@ -76,14 +76,24 @@ describe("RmPoDocumentView P4D-B", () => {
     expect(internalTraceSource).toContain('data-testid={`grn-open-${grn.id}`}');
   });
 
-  it("create GRN edit cancel actions gated by documentOnly and grnAllowed", () => {
-    expect(documentSource).toContain("showWorkflowActions && grnAllowed");
-    expect(documentSource).toContain('data-testid="rm-po-create-grn-btn"');
+  it("toolbar keeps print/supplier/traceability; Create GRN is not duplicated in document toolbar", () => {
+    expect(documentSource).not.toContain('data-testid="rm-po-create-grn-btn"');
+    expect(documentSource).not.toMatch(/>\s*Create GRN\s*</);
     expect(documentSource).toContain("documentOnly");
     expect(documentSource).toContain("rm-po-edit-btn");
     expect(documentSource).toContain("rm-po-cancel-btn");
     expect(documentSource).toContain('data-testid="rm-po-print-btn"');
     expect(documentSource).toContain('data-testid="rm-po-supplier-copy-btn"');
+    expect(documentSource).toContain('data-testid="rm-po-view-traceability-btn"');
+  });
+
+  it("Create GRN remains only on the pending-receipt banner (Store-gated)", () => {
+    expect(detailSource).toContain('stripTestId: "rm-po-create-grn-banner"');
+    expect(detailSource).toContain('testId: "rm-po-create-grn-btn"');
+    expect(detailSource).toContain("const grnAllowed = grnReceiptPending && canPostGrn");
+    expect(detailSource).toContain("GRN_WRITE_ROLES");
+    const bannerCreateCount = (detailSource.match(/testId:\s*"rm-po-create-grn-btn"/g) ?? []).length;
+    expect(bannerCreateCount).toBe(1);
   });
 
   it("completed procurement record identity and lifecycle banner", () => {

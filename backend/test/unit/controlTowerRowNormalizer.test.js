@@ -339,7 +339,7 @@ describe("controlTowerRowNormalizer", () => {
     assert.equal(row.metadata.orderType, "NO_QTY");
   });
 
-  it("normalizeWoPlanningRow maps READY_FOR_WO to WO_PLANNING_PENDING with PRODUCTION owner", () => {
+  it("normalizeWoPlanningRow maps READY_FOR_WO to WO_PLANNING_PENDING with STORE owner", () => {
     const row = normalizeWoPlanningRow({
       salesOrderId: 12,
       salesOrderDocNo: "SO-12",
@@ -349,7 +349,7 @@ describe("controlTowerRowNormalizer", () => {
       canCreateWorkOrder: true,
     });
     assert.equal(row.currentStatus, CONTROL_TOWER_STATUSES.WO_PLANNING_PENDING);
-    assert.equal(row.currentOwner, VISIBLE_OWNERS.PRODUCTION);
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.STORE);
     assert.equal(row.metadata.sourceStageKey, "WO_PENDING");
   });
 

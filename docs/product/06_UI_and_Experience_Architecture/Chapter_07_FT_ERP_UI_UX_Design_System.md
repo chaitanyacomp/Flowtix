@@ -45,6 +45,8 @@
 | 1.0.9 | 2026-07-19 | FT ERP Product Team | §10.9 — Production Report compact viewport workbench (summary strip, sticky Confirm, unexplained balance) |
 | 1.0.10 | 2026-07-19 | FT ERP Product Team | §10.9 — RM wastage allocation precision (no whole-Kg rounding); disable Add when classified; no wastage scrollbar |
 | 1.0.11 | 2026-07-19 | FT ERP Product Team | §10.9 — post–Confirm Report close routes to Ready to Start; orphan NO_QTY Select-WO URLs redirected |
+| 1.0.12 | 2026-07-22 | FT ERP Product Team | §10.9 — Report Mode: hide operational panels; sticky header Confirm; REGULAR SO report layout |
+| 1.0.13 | 2026-07-22 | FT ERP Product Team | §17 — QC Report lifecycle columns/cards; compact Production QC grid @ 1366×768 |
 
 **Supersedes:** Ad hoc screen conventions; informal spacing and button patterns not recorded in product documentation.
 
@@ -539,16 +541,18 @@ When a WO is **Production Report Pending**, the Production Workspace **SHALL** p
 
 | Zone | Requirement |
 |------|-------------|
-| **WO identity** | One compact identity line (WO · SO · Item). **SHALL NOT** use a tall left summary card or two-column closure panel. |
-| **Summary strip** | Horizontal KPI strip: Planned · Produced · Shortage/Extra · RM Issued · Accounted · Balance · Status. One optional contextual shortage line only. |
-| **RM table** | Full-width compact columns: RM Item · Issued · Consumed · Returned · Wastage · **Unexplained Balance** · Remarks. Zero unexplained balance **SHALL NOT** render as a red “Variance”. |
+| **Report Mode** | When Production Report is pending, Production Workspace **SHALL** switch to a dedicated Report Mode. Production Entry, Material Ready, Recent Entries, and Other Open WOs **SHALL NOT** render as large sections. A single locked line **MAY** state: Production entry locked — complete the mandatory Production Report. |
+| **WO identity** | One compact sticky header: Back · WO · SO/FG · flow badge (e.g. REGULAR SALES ORDER) · Report Pending · Planned · Produced · SO Qty / Remaining. **SHALL NOT** use a tall left summary card or two-column closure panel. |
+| **Summary strip** | Compact one-row WO metrics inside the report (WO · SO/FG · SO Qty · WO Target · Produced · Target Balance) and/or Planned · Produced · Shortage/Extra · RM Issued · Accounted · Balance · Status for NO_QTY. |
+| **RM table** | Full-width compact columns: RM Item · Issued · Consumed · Returned · Classified Wastage · **Remaining Unreconciled** · Expected Runner · Actual Runner Variance · Remarks. Zero unexplained balance **SHALL NOT** render as a red “Variance”. |
 | **RM precision** | Kg (and other decimal RM UOM) values **SHALL** use authoritative 3-decimal precision for logic and display. **SHALL NOT** round to whole numbers (e.g. 0.77 **SHALL NOT** display as 1). |
 | **Allocation** | Per RM line: `requiredAllocation = issued − consumed − returned`. Default manual wastage fills remaining after auto runner so unexplained starts at 0. Classified wastage must equal required manual wastage. |
-| **Wastage** | Single-line rows (Type · Qty · Remarks · compact delete). One-line summary: Required wastage · Classified · Remaining to classify. **SHALL NOT** use an internal vertical scrollbar. **Add Wastage Reason** **SHALL** be disabled when remaining to classify is 0. |
-| **Remarks** | Optional; collapsible / expand-on-focus. **SHALL NOT** reserve a tall empty textarea. |
-| **Footer** | Sticky **Confirm Report & Close WO** with reconciliation status (`Balance 0 · Ready to close` / `Unexplained balance …`). Disabled while unexplained balance ≠ 0 or wastage classification is incomplete. |
+| **Wastage** | Single-line rows (Type · Qty · Remarks · compact delete). One-line summary: Required wastage · Classified · Remaining to classify. **SHALL NOT** use an internal nested vertical scrollbar. **Add Wastage Reason** **SHALL** be disabled when remaining to classify is 0. |
+| **Remarks** | Optional General Remarks; compact height. Recovered draft **SHALL** be a dismissible inline banner that does not push Confirm below the viewport. |
+| **Confirm action** | Sticky **Confirm Report & Close WO** in the **Production Report header** (top-right): `Production Report \| Mandatory` + button. Exact reconciliation blocker **SHALL** appear beside/below when disabled (e.g. `0.782 Kg PP is still unreconciled…`). **SHALL NOT** keep the only Confirm at the bottom or duplicate top+bottom Confirm buttons. |
 | **Continue CTA** | **SHALL NOT** appear while execution is Production Report Pending (`SHORTFALL_PENDING`). |
-| **Post-close route** | After Confirm Report & Close WO, navigate to card Production Workspace → Ready to Start. **SHALL NOT** land on obsolete Select Work Order / Log production / Complete QA chrome. Navigate before refresh. |
+| **Post-close route** | After Confirm Report & Close WO, navigate per return context (card Production Workspace → Ready to Start / Pending Actions). **SHALL NOT** land on obsolete Select Work Order / Log production chrome. Success toast **SHALL** include the WO business number. On backend failure, keep the report open with entered values. |
+| **Viewport** | Target 1366×768 / 1440×900 / 1920×1080: report starts near top; Confirm visible without scrolling; no horizontal page scrollbar. |
 
 Lifecycle, backend reconciliation rules, and the Opening Production Report transition gate are unchanged — this section is presentation and client allocation display.
 
@@ -1096,7 +1100,7 @@ Presentation audit only. **No redesign required** by this snapshot unless Priori
 | Operations Exception | Operational | **Pass** | Tall stacked sections | Compact section headers | Low |
 | Batch Traceability | Operational / Audit | **Pass** | `min-width` scroll risk | Freeze identity; secondary cols → expand | Low |
 | RM Wastage | Analytical | **Pass** | Borderline column count | Sticky header | Low |
-| QC Report | Operational / Audit | **Needs Improvement** | Very wide grid (~15–22 cols) | Progress/recovery to badge+modal; cut scan cols | **High** |
+| QC Report | Operational / Audit | **Compliant (lifecycle)** | Compact core cols + Trace drawer | First-pass / Final usable / Final unusable explicit | **Done** |
 | Production Wastage — WO | Analytical | **Needs Improvement** | ~19 cols + forced H-scroll | Group qty into variance blocks; expand detail | **High** |
 | Sales Matching | Financial | **Needs Improvement** | ~15 cols + min-width scroll | Move rare cols to expand/drawer | **High** |
 | Purchase Matching | Financial | **Needs Improvement** | ~14 cols + scroll | Same as Sales Matching | **High** |

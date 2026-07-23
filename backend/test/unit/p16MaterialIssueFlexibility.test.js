@@ -109,6 +109,7 @@ describe("P16-13 material issue flexibility", () => {
 
   it("waive reasons are fixed set", () => {
     assert.ok(PMR_SHORT_ISSUE_WAIVE_REASONS.includes("SCALE_LIMITATION"));
+    assert.ok(PMR_SHORT_ISSUE_WAIVE_REASONS.includes("ROUNDING_TOLERANCE"));
     assert.ok(PMR_SHORT_ISSUE_WAIVE_REASONS.includes("OTHER"));
   });
 

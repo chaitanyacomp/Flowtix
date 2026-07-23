@@ -71,14 +71,15 @@ export const CUSTOMER_RETURN_READ_ROLES = ["ADMIN", "STORE"] as const;
 export const NO_QTY_FLOW_STATE_READ_ROLES = ["ADMIN", "STORE", "PRODUCTION", "QA"] as const;
 
 /** PRODUCTION */
-export const WO_WRITE_ROLES = ["ADMIN", "PRODUCTION"] as const;
-export const WO_PLAN_PREP_ROLES = ["ADMIN", "PRODUCTION"] as const;
+/** STORE owns Regular WO prepare/placement (ownership matrix); PRODUCTION may open prepare. */
+export const WO_WRITE_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
+export const WO_PLAN_PREP_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
 /** STORE — Green Level replenishment WO placement (monthly plan handoff) */
 export const GREEN_LEVEL_WO_PLACEMENT_ROLES = ["ADMIN", "STORE"] as const;
 export const PRODUCTION_WRITE_ROLES = ["ADMIN", "PRODUCTION"] as const;
 export const PRODUCTION_READ_ROLES = ["ADMIN", "PRODUCTION", "STORE", "QA"] as const;
 export const PRODUCTION_DASHBOARD_ROLES = ["ADMIN", "PRODUCTION"] as const;
-export const WO_PREPARE_CREATION_DASHBOARD_ROLES = ["ADMIN", "PRODUCTION"] as const;
+export const WO_PREPARE_CREATION_DASHBOARD_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
 
 /** QA (user role; workflow/domain strings may still say QC) */
 export const QA_WRITE_ROLES = ["ADMIN", "QA"] as const;

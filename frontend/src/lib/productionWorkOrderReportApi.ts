@@ -128,6 +128,8 @@ export type ProductionWorkOrderReport = {
     wastageDetails: Array<{
       id: number;
       wastageTypeId: number;
+      itemId: number | null;
+      itemName?: string | null;
       wastageTypeName: string | null;
       qty: number;
       remarks: string | null;
@@ -157,6 +159,7 @@ export type ConfirmProductionWorkOrderReportInput = {
   }>;
   wastageDetails?: Array<{
     wastageTypeId: number;
+    itemId: number;
     qty: number;
     remarks?: string | null;
     sortOrder?: number;

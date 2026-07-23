@@ -30,7 +30,7 @@ function snap(partial: Partial<PostGrnContinuitySnapshot> & { salesOrderId: numb
 describe("rmPurchaseWoContinuity", () => {
   it("builds WO preparation deep-link with sales order context", () => {
     expect(buildContinueWoPreparationHref(42)).toBe("/work-orders?salesOrderId=42&from=rm-purchase");
-    expect(buildCreateWorkOrderHref(42)).toBe("/work-orders/prepare?salesOrderId=42");
+    expect(buildCreateWorkOrderHref(42)).toBe("/work-orders/prepare?salesOrderId=42&source=regular_so");
     expect(buildViewWorkOrderHref(42, 101)).toContain("salesOrderId=42");
     expect(buildViewWorkOrderHref(42, 101)).toContain("workOrderId=101");
     expect(buildViewRmStockHref()).toBe("/stock");

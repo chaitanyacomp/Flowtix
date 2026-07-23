@@ -79,31 +79,35 @@ export const PROCUREMENT_TERMS = {
   STORE_MONITOR_SUBTITLE: "Monitor procurement readiness — open workspace or GRN for drill-down. No execution on dashboard.",
   LOADING_PROCUREMENT: "Loading procurement cases…",
   MORE_IN_WORKSPACE: "more in Procurement Workspace",
-  DEMAND_POOL_REGULAR_SO: "Sales Orders",
-  DEMAND_POOL_MPRS: "Monthly Planning",
+  DEMAND_POOL_REGULAR_SO: "Regular SO",
+  DEMAND_POOL_MPRS: "No Qty SO",
   DEMAND_POOL_STOCK_REPLENISHMENT: "Stock Replenishment",
-  PROCUREMENT_SOURCE_SALES_ORDERS: "Sales Orders",
-  PROCUREMENT_SOURCE_MONTHLY_PLANNING: "Monthly Planning",
+  PROCUREMENT_SOURCE_SALES_ORDERS: "Regular SO",
+  PROCUREMENT_SOURCE_MONTHLY_PLANNING: "No Qty SO",
   PROCUREMENT_SOURCE_STOCK_REPLENISHMENT: "Stock Replenishment",
   DEMAND_POOL_SELECTOR_LABEL: "Procurement source",
   PROCUREMENT_SOURCE_LABEL: "Demand Source",
   EXECUTION_LABEL: "Execution",
   SECTION_PROCUREMENT_DEMAND_POOLS: "Procurement Sources",
-  SECTION_PROCUREMENT_CASES_REGULAR_SO: "Procurement Sources",
+  SECTION_PROCUREMENT_CASES_REGULAR_SO: "Regular SO",
   SECTION_PROCUREMENT_CASES_REGULAR_SO_HELPER:
-    "Approved material requirements linked to sales orders.",
-  SECTION_PROCUREMENT_CASES_MPRS: "Procurement Sources",
+    "Regular sales-order RM requirements awaiting Store Purchase Request handoff.",
+  SECTION_PROCUREMENT_CASES_MPRS: "No Qty SO",
   SECTION_PROCUREMENT_CASES_MPRS_HELPER:
-    "Approved material requirements from monthly production planning.",
-  SECTION_PROCUREMENT_CASES_STOCK: "Procurement Sources",
+    "No Qty SO demand from Monthly Planning / RS cycles awaiting purchase handoff.",
+  SECTION_PROCUREMENT_CASES_STOCK: "Stock Replenishment",
   SECTION_PROCUREMENT_CASES_STOCK_HELPER:
     "Minimum-stock and replenishment material requirements awaiting purchase handoff.",
-  SECTION_EMPTY_PENDING_MR_REGULAR_SO: "No sales order procurement requirements",
+  SECTION_EMPTY_PENDING_MR_REGULAR_SO: "No Regular SO procurement requirements",
+  SECTION_EMPTY_PENDING_MR_REGULAR_SO_FILTER:
+    "This sales order no longer has an actionable Create Purchase Request requirement. Clear the filter or refresh Pending Actions.",
   SECTION_EMPTY_PENDING_MR_REGULAR_SO_DETAIL:
-    "Sales-order procurement requirements approved for purchase will appear here.",
-  SECTION_EMPTY_PENDING_MR_MPRS: "No monthly planning procurement requirements",
+    "Regular SO procurement requirements ready for Purchase Request creation will appear here.",
+  SECTION_EMPTY_PENDING_MR_REGULAR_SO_FILTER_DETAIL:
+    "Clear the Regular SO filter to browse other Regular SO demand, or return to Pending Actions.",
+  SECTION_EMPTY_PENDING_MR_MPRS: "No No Qty SO procurement requirements",
   SECTION_EMPTY_PENDING_MR_MPRS_DETAIL:
-    "Monthly planning procurement requirements approved for purchase will appear here.",
+    "No Qty SO procurement requirements from Monthly Planning will appear here. Plan and RS Cycle details stay on each row.",
   SECTION_EMPTY_PENDING_MR_STOCK: "No stock replenishment requirements",
   SECTION_EMPTY_PENDING_MR_STOCK_DETAIL:
     "Stock replenishment requirements approved for purchase will appear here.",
@@ -112,6 +116,9 @@ export const PROCUREMENT_TERMS = {
   PROCUREMENT_QUEUE_POOL_HINT:
     "Purchase Request lines show procurement source context. Create RM PO from one source at a time.",
   INCOMING_PO_INFORMATIONAL: "Incoming PO quantity is informational until GRN is posted.",
+  SOURCE_BADGE_REGULAR_SO: "Regular SO",
+  SOURCE_BADGE_NO_QTY_SO: "No Qty SO",
+  SOURCE_BADGE_STOCK_REPLENISHMENT: "Stock Replenishment",
 } as const;
 
 export type ProcurementDemandPoolKey = "REGULAR_SO" | "MPRS" | "STOCK_REPLENISHMENT";

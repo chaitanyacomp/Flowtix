@@ -33,15 +33,28 @@ export function shouldShowProductionWorkspaceCompactLayout(input: {
   canOperate: boolean;
   navigateNoQtyContext: boolean;
   isGreenLevelContext?: boolean;
+  /** REGULAR_SO Production Report Pending — dedicated Report Mode workbench. */
+  regularReportPending?: boolean;
   hideNoQtyAddProductionEntry: boolean;
   woIdFromUrlValid: boolean;
   workOrderLineIdFromUrlValid: boolean;
 }): boolean {
   if (!input.showProductionReport || !(input.workOrderId > 0) || !input.canOperate) return false;
+  if (input.regularReportPending) return true;
   if (input.isGreenLevelContext) return true;
   if (!input.navigateNoQtyContext) return false;
   if (input.hideNoQtyAddProductionEntry) return true;
   return input.woIdFromUrlValid || input.workOrderLineIdFromUrlValid;
+}
+
+/**
+ * Report Mode hides non-actionable Production Entry / Material Ready / Recent Entries / Other Open WOs.
+ * Presentation-only — reconciliation rules are unchanged.
+ */
+export function shouldHideOperationalPanelsInProductionReportMode(input: {
+  reportModeActive: boolean;
+}): boolean {
+  return Boolean(input.reportModeActive);
 }
 
 /** Green Level scoped card uses viewport-height workbench when report/close is active. */

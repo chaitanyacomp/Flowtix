@@ -6,9 +6,9 @@
 | **Volume** | 5 — Data Architecture |
 | **Chapter** | 3 — Master Data & Reference Architecture |
 | **Title** | Master Data & Reference Architecture |
-| **Version** | 1.0.1 |
+| **Version** | 1.0.4 |
 | **Status** | Draft — Architecture Review |
-| **Effective date** | 2026-05-29 |
+| **Effective date** | 2026-07-21 |
 | **Author** | FT ERP Product Team |
 | **Owner** | FT ERP Product Architecture |
 | **Audience** | Data architects, master data owners, domain authors, backend leads |
@@ -31,6 +31,8 @@
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Master Data & Reference Architecture specification |
 | 1.0.1 | 2026-07-15 | FT ERP Product Team | Audit-safe BOM deletion — Phase-2 Future Enhancement for BOM Revision FK (docs only) |
 | 1.0.2 | 2026-07-15 | FT ERP Product Team | Customer Delivery Address = canonical Delivery Location; Dispatch snapshot ship-to |
+| 1.0.3 | 2026-07-21 | FT ERP Product Team | Clarify implemented lifecycle: Customer/Supplier/Item/Unit/Location use `isActive` boolean (Activate/Deactivate). Suspend/Archive remain logical targets until schema expands. Bulk mutation APIs return partial blocked/changed results. |
+| 1.0.4 | 2026-07-21 | FT ERP Product Team | ItemType authoritative list RM/FG/SFG/CONSUMABLE; manual Consumable create via Add Item menu; type-change lock when referenced. |
 
 **Supersedes:** None.
 
@@ -360,6 +362,12 @@ For each entity: **purpose**, **business identity**, **owner**, **lifecycle**, *
 | **SFG** | Multi-level BOM; requires child BOM when used as component |
 | **FG** | Commercial, WO output, dispatch, billing |
 | **Consumable** | Shop-floor consumables where modeled |
+
+**Implemented schema (`ItemType` enum):** `RM`, `FG`, `SFG`, `CONSUMABLE` only. All four are manually creatable from Items → **+ Add Item**. Packing Material / Stores & Spares / Tool / Scrap are **not** separate types — Tally packing groups map to `CONSUMABLE` when approved. Labour, Service, Fixed Asset, and Expense ledgers are not stock items.
+
+**Type change:** Blocked with a business-readable 409 when the item is referenced by orders, stock, BOM, WO, production, QA, dispatch, or billing. Prefer correcting type only on unused masters.
+
+**Opening quantity:** Item create does **not** post opening stock; use Opening Stock workflow.
 
 #### Item Category
 

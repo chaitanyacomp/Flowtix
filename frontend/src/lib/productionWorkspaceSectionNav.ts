@@ -57,6 +57,7 @@ export function resolveProductionWorkspaceSectionFromSearch(
   const raw = String(pwSectionRaw ?? "").trim();
   if (
     raw === "ready" ||
+    raw === "draftPending" ||
     raw === "active" ||
     raw === "paused" ||
     raw === "reportPending" ||

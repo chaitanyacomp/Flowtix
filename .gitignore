@@ -25,3 +25,14 @@ ERP_DATA/
 
 # FT-DEP-001 Batch 10 — Inno Setup build output
 /deployment/installer/output/
+
+# Lab / auth certification scratch (never commit)
+/_lab_auth_cert/
+/artifacts/auth-cert-server.err.log
+/artifacts/auth-cert-server.out.log
+/artifacts/*.log
+/debug.log
+
+# TypeScript incremental build info
+**/tsconfig.tsbuildinfo
+frontend/tsconfig.tsbuildinfo

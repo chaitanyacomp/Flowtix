@@ -34,6 +34,11 @@ export type DashboardProductionStatusSource = {
   status?: string;
   holdReason?: string | null;
   productionExecutionStatus?: string | null;
+  productionReportConfirmed?: boolean;
+  productionReportId?: number | null;
+  productionReportConfirmedAt?: string | null;
+  regularClosurePending?: boolean;
+  regularShortfallQty?: number;
   productionBlockReason?: string | null;
   productionBlockReasonLabel?: string | null;
   productionBlockRemarks?: string | null;
@@ -263,6 +268,9 @@ function operationalStatusFromRegularRow(row: DashboardProductionStatusSource): 
       return { label: mapped.label || "Blocked", tone: mapped.tone === "idle" ? "partial" : mapped.tone };
     }
     return { label: "Paused", tone: "paused" };
+  }
+  if (workState === "DRAFT_PENDING" || row.hasOpenDraft || String(row.nextAction ?? "").toUpperCase() === "PRODUCTION_DRAFT_REVIEW") {
+    return { label: "Draft Pending", tone: "partial" };
   }
   if (workState === "READY_TO_START") {
     return { label: "Ready to Start", tone: "ready" };

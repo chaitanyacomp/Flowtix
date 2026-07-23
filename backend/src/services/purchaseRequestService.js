@@ -25,7 +25,8 @@ const {
   demandPoolLabel,
 } = require("./procurementDemandPoolService");
 const { assertActorMayCreatePurchaseRequest } = require("./procurementPurchaseRequestOwnership");
-const { consolidateRmPoAllocations } = require("./rmPoLineConsolidation");
+const { consolidateRmPoAllocations, assertRegularSoNotMixedWithMprs } = require("./rmPoLineConsolidation");
+const { splitOrderQtyAgainstPendingDemand } = require("./rmPoDemandExcessSplit");
 
 const OPEN_PURCHASE_REQUEST_STATUSES = ["PENDING_PURCHASE", "PARTIALLY_ORDERED"];
 const SUPPLIER_PO_NUMBER_REQUIRED = "Supplier PO Number is required.";
@@ -550,7 +551,11 @@ async function applyMrProcuredFromPoLine(tx, purchaseRequestLineId, poQty) {
   const totalSource = sources.reduce((s, lk) => s + qtyToNumber(lk.allocatedQty), 0);
   if (totalSource <= QUEUE_EPS) return;
 
-  const ratio = poQty / totalSource;
+  // Cap at source allocation total — excess PO qty must not inflate SO/MR procured demand.
+  const cappedPoQty = Math.min(qtyToNumber(poQty), totalSource);
+  if (cappedPoQty <= QUEUE_EPS) return;
+
+  const ratio = cappedPoQty / totalSource;
   for (const lk of sources) {
     const srcQty = qtyToNumber(lk.allocatedQty);
     const delta = srcQty * ratio;
@@ -597,7 +602,14 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
             materialRequirementLine: {
               include: {
                 materialRequirement: {
-                  select: { id: true, docNo: true, status: true, sourceType: true },
+                  select: {
+                    id: true,
+                    docNo: true,
+                    status: true,
+                    sourceType: true,
+                    salesOrderId: true,
+                    salesOrder: { select: { id: true, docNo: true } },
+                  },
                 },
               },
             },
@@ -631,17 +643,24 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
         throw err;
       }
       const spec = inputByPrLineId.get(prLine.id);
+      const pendingDemandQty = linePendingPoQty(prLine);
       const qty = validatePurchaseRequestPoLineQty(prLine, spec.qty);
+      const split = splitOrderQtyAgainstPendingDemand(qty, pendingDemandQty);
       assertPositiveRate(spec.rate);
       const resolved = resolveLineTaxFromItem(prLine.rmItem, { relaxed });
       warn.push(...resolved.warnings);
+      const primarySource = (prLine.sourceLinks || [])[0];
+      const primaryMr = primarySource?.materialRequirementLine?.materialRequirement;
       allocationInputs.push({
         purchaseRequestLineId: prLine.id,
         purchaseRequestId: prLine.purchaseRequestId,
         purchaseRequestDocNo: prHeader?.docNo ?? null,
         itemId: prLine.rmItemId,
         itemName: prLine.rmItem?.itemName ?? "",
-        qty,
+        qty: split.orderQty,
+        pendingDemandQty,
+        demandQty: split.demandQty,
+        excessToStockQty: split.excessToStockQty,
         rate: qtyToNumber(spec.rate),
         unit: resolved.unit,
         hsn: resolved.hsn,
@@ -649,11 +668,19 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
         sourceTypes: (prLine.sourceLinks || [])
           .map((s) => s.materialRequirementLine?.materialRequirement?.sourceType)
           .filter(Boolean),
+        salesOrderDocNo: primaryMr?.salesOrder?.docNo ?? null,
+        salesOrderId: primaryMr?.salesOrderId ?? primaryMr?.salesOrder?.id ?? null,
+        materialRequirementLineId: primarySource?.materialRequirementLineId ?? null,
       });
     }
 
     // Commercial PO may span pools; PR create still enforces single-pool firewall.
-    const demandPoolsOnPo = assertKnownDemandPoolsForCommercialRmPo(poSourceTypes);
+    assertRegularSoNotMixedWithMprs(poSourceTypes);
+    const knownPools = assertKnownDemandPoolsForCommercialRmPo(poSourceTypes);
+    const hasExcessToStock = allocationInputs.some((a) => qtyToNumber(a.excessToStockQty) > QUEUE_EPS);
+    const demandPoolsOnPo = [
+      ...new Set([...knownPools, ...(hasExcessToStock ? ["STOCK_REPLENISHMENT"] : [])]),
+    ].sort();
 
     const consolidated = consolidateRmPoAllocations(allocationInputs, { computeLineAmount });
 
@@ -694,6 +721,7 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
             hsn: c.hsn,
             gstRate: String(c.gstRate),
             amount: String(c.amount),
+            excessToStockQty: String(c.excessToStockQty ?? 0),
           })),
         },
       },
@@ -722,12 +750,26 @@ async function createRmPoFromPurchaseRequestLines(input, actor = {}) {
             allocatedQty: String(alloc.qty),
           },
         });
+        // orderedQty includes demand + this line's excess share so pending clears and no duplicate PO.
+        const inputRow = allocationInputs.find((a) => a.purchaseRequestLineId === alloc.purchaseRequestLineId);
+        const orderedIncrement = inputRow ? qtyToNumber(inputRow.qty) : qtyToNumber(alloc.qty);
         await tx.purchaseRequestLine.update({
           where: { id: alloc.purchaseRequestLineId },
-          data: { orderedQty: { increment: alloc.qty } },
+          data: { orderedQty: { increment: orderedIncrement } },
         });
         await applyMrProcuredFromPoLine(tx, alloc.purchaseRequestLineId, alloc.qty);
         touchedPrIds.add(alloc.purchaseRequestId);
+      }
+      // Excess-only order (demand 0) still increments orderedQty on the contributing PR lines.
+      if (!group.allocations.length && qtyToNumber(group.excessToStockQty) > QUEUE_EPS) {
+        for (const inputRow of allocationInputs.filter((a) => a.itemId === group.itemId)) {
+          if (qtyToNumber(inputRow.qty) <= QUEUE_EPS) continue;
+          await tx.purchaseRequestLine.update({
+            where: { id: inputRow.purchaseRequestLineId },
+            data: { orderedQty: { increment: qtyToNumber(inputRow.qty) } },
+          });
+          touchedPrIds.add(inputRow.purchaseRequestId);
+        }
       }
     }
 

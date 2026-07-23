@@ -38,6 +38,7 @@ export type ProductionWorkspaceOverviewOpts = {
 
   pwSection?:
     | "ready"
+    | "draftPending"
     | "active"
     | "paused"
     | "reportPending"

@@ -111,13 +111,25 @@ function mapPrismaClientError(err) {
     return mapPrismaKnownRequest(err);
   }
   if (err instanceof Prisma.PrismaClientValidationError) {
+    const raw = typeof err.message === "string" ? err.message : "";
     // Prefer actionable message when callers already annotated the error.
-    const annotated = typeof err.message === "string" && /tally|identity|migration/i.test(err.message)
-      ? err.message
-      : "The request could not be processed.";
+    const annotated = /tally|identity|migration/i.test(raw) ? raw : null;
+    // Unknown select/include fields are programmer bugs (not client input) — do not mask as 400.
+    const looksLikeServerSchemaBug = /Unknown field|Invalid `[^`]+` invocation/i.test(raw);
+    if (looksLikeServerSchemaBug) {
+      const isProd = process.env.NODE_ENV === "production";
+      const firstLine = raw.split("\n").map((l) => l.trim()).find((l) => l.length > 0) || raw;
+      return {
+        status: 500,
+        message: isProd
+          ? "Something went wrong. Please try again later."
+          : firstLine.slice(0, 500),
+        code: "INTERNAL_PRISMA_VALIDATION",
+      };
+    }
     return {
       status: 400,
-      message: annotated,
+      message: annotated || "The request could not be processed.",
       code: "VALIDATION",
     };
   }
@@ -127,6 +139,26 @@ function mapPrismaClientError(err) {
 function errorHandler(err, req, res, next) {
   // eslint-disable-next-line no-console
   console.error(err);
+
+  // Express / body-parser PayloadTooLargeError (default 100kb; Tally apply uses 256kb route limit).
+  const isPayloadTooLarge =
+    err &&
+    (err.type === "entity.too.large" ||
+      err.status === 413 ||
+      err.statusCode === 413 ||
+      /request entity too large/i.test(String(err.message || "")));
+  if (isPayloadTooLarge) {
+    const path = String(req.originalUrl || req.url || "");
+    const tallyConfirm = /\/api\/admin\/tally-import\/apply/i.test(path);
+    return res.status(413).json({
+      error: {
+        message: tallyConfirm
+          ? "The import confirmation request was too large. No stock items were imported."
+          : "The request body is too large.",
+        code: tallyConfirm ? "CONFIRM_PAYLOAD_TOO_LARGE" : "PAYLOAD_TOO_LARGE",
+      },
+    });
+  }
 
   if (err instanceof ZodError) {
     const isProd = process.env.NODE_ENV === "production";
@@ -175,7 +207,7 @@ function errorHandler(err, req, res, next) {
     });
   }
 
-  if (status >= 500 && isProd) {
+  if (status >= 500 && isProd && err.expose !== true) {
     return res.status(500).json({
       error: {
         message: "Something went wrong. Please try again later.",

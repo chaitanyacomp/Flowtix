@@ -77,12 +77,27 @@ async function cascadeShortCloseFromPoLine(tx, poLine, deltaShortClose) {
   const totalAllocated = links.reduce((sum, link) => sum + qtyToNumber(link.allocatedQty), 0);
   if (totalAllocated <= QUEUE_EPS || deltaShortClose <= QUEUE_EPS) return { prIds: [], mrLineIds: [] };
 
+  // Excess-to-stock is closed first and never cascades into SO / PR / MR demand.
+  const ordered = qtyToNumber(poLine.qty);
+  const excessQty = qtyToNumber(poLine.excessToStockQty);
+  const priorShort = qtyToNumber(poLine.shortClosedQty);
+  const excessAlreadyClosed = Math.min(priorShort, Math.max(0, excessQty));
+  const excessStillOpen = Math.max(0, excessQty - excessAlreadyClosed);
+  const cascadeDelta = round3(Math.max(0, deltaShortClose - Math.min(deltaShortClose, excessStillOpen)));
+  if (cascadeDelta <= QUEUE_EPS) return { prIds: [], mrLineIds: [] };
+
+  // Never cascade more than remaining demand allocation on the PO line.
+  const demandAlreadyClosed = Math.max(0, priorShort - excessAlreadyClosed);
+  const demandStillOpen = Math.max(0, totalAllocated - demandAlreadyClosed);
+  const cappedCascade = round3(Math.min(cascadeDelta, demandStillOpen, ordered));
+  if (cappedCascade <= QUEUE_EPS) return { prIds: [], mrLineIds: [] };
+
   const prIds = new Set();
   const mrLineIds = new Set();
 
   for (const link of links) {
     const share = qtyToNumber(link.allocatedQty) / totalAllocated;
-    const linkDelta = round3(deltaShortClose * share);
+    const linkDelta = round3(cappedCascade * share);
     if (linkDelta <= QUEUE_EPS) continue;
 
     if (link.purchaseRequestLine) {

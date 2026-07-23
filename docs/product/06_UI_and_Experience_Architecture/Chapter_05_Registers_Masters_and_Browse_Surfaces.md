@@ -6,9 +6,9 @@
 | **Volume** | 6 — UI & Experience Architecture |
 | **Chapter** | 5 — Registers, Masters & Browse Surfaces |
 | **Title** | Registers, Masters & Browse Surfaces |
-| **Version** | 1.0.0 |
+| **Version** | 1.1.1 |
 | **Status** | Draft — Architecture Review |
-| **Effective date** | 2026-05-29 |
+| **Effective date** | 2026-07-21 |
 | **Author** | FT ERP Product Team |
 | **Owner** | FT ERP Product Architecture |
 | **Audience** | Product, UX architects, frontend leads, domain authors |
@@ -29,6 +29,8 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Registers, Masters & Browse Surfaces specification |
+| 1.1.0 | 2026-07-21 | FT ERP Product Team | Master Data Workbench: shared header, search/filter/sort/pagination, page-scoped multi-select, bulk activate/deactivate/delete semantics |
+| 1.1.1 | 2026-07-21 | FT ERP Product Team | Items: single Add Item menu including Consumable; type filter aligned to ItemType enum |
 
 **Supersedes:** None.
 
@@ -526,6 +528,84 @@ Remain **technology-neutral**.
 - **Workspace = Do Work**
 
 Registers and Masters **must never become execution surfaces**.
+
+---
+
+## 16. Master Data Workbench (implementation standard)
+
+Canonical list UI for Customer, Supplier, Item, Unit, Location (and light header alignment for Opening Stock / BOM). **Not** applied as a data-grid to Tally Import or Backup & Restore.
+
+### 16.1 Standard header
+
+| Control | Behaviour |
+|---------|-----------|
+| **Back to Masters** | Explicit navigation to `/masters` (Masters landing hub). Must not rely only on browser history. |
+| **Title + description** | Business-readable; e.g. Customers — “Customer master, GST details and delivery locations.” |
+| **Primary Add** | Right-aligned in the header. Items uses a single **+ Add Item ▾** menu listing every manually creatable type (RM, FG, SFG, CONSUMABLE). |
+
+Shell sidebar collapse chevron remains shell-only; page back is the workbench **Back to Masters** control.
+
+### 16.2 Search, filters, sort, pagination
+
+- Search: case-insensitive, trimmed, ~300 ms debounce, Escape / clear icon clears, no Enter required, no full-page reload.
+- Result label: `N records` or `N of M records` when filtered.
+- Search/filter runs across the loaded master set (client-side today; Items list also accepts optional server `q` / `isActive`). For thousands of Items, only the current page is rendered in the DOM.
+- Page sizes: **25 / 50 / 100**. Default sort: **Name ascending**, with secondary **id** for stable paging.
+- Preserve sort while searching/filtering. Changing search/filter/sort/page/pageSize clears selection (§16.3).
+
+### 16.3 Selection semantics
+
+| Rule | Detail |
+|------|--------|
+| Row checkbox | Selects one visible row |
+| Header checkbox | Selects **all visible rows on the current page only** |
+| Indeterminate | Some (not all) page rows selected |
+| Label | “N selected (current page)” — never claim “all records” when only the page is selected |
+| Context change | Selection clears when search, filters, sort, page, or page size change |
+| Cross-page selection | **Not supported** in this release |
+
+Edit/Delete actions must not toggle row selection (stop propagation on action cells).
+
+### 16.4 Bulk actions
+
+| Master | Activate / Deactivate | Delete |
+|--------|----------------------|--------|
+| Customers | ADMIN — sets `isActive` | ADMIN — hard delete only if unreferenced; blocked IDs reported |
+| Suppliers | ADMIN, STORE | ADMIN only — same protection pattern |
+| Items | ADMIN | ADMIN — dependency summary; prefer deactivate when referenced |
+
+**API shape** (POST `/api/{customers\|suppliers\|items}/bulk-{activate\|deactivate\|delete}`): `{ ids: number[] }` → `{ requested, changed, skipped, blocked, failed }` with per-id reasons.
+
+- No client-only bulk mutations; no silent cascade of operational documents.
+- Destructive confirm states count + consequence; protected records remain and are reported.
+- Double-submit guarded on the client.
+
+**Lifecycle note (docs vs schema):** Product docs describe Suspend/Archive enums; implemented schema uses boolean **`isActive`**. UI Activate/Deactivate maps to `isActive` true/false. Do not invent Suspend/Archive columns without a schema change.
+
+### 16.5 Operator quick guide
+
+1. Open **Masters hub** (`/masters`) or a master from the sidebar.
+2. Search by name (Items also match HSN when present); apply Status / State / Type filters as needed.
+3. Clear filters from the toolbar; Escape clears search.
+4. Sort column headers; change page size; use page controls.
+5. Select rows on the **current page**; use Activate / Deactivate / Delete when permitted.
+6. If delete is blocked, the record is kept — usually because it is referenced by SO/PO/GRN/BOM/WO/stock/production/billing.
+7. Save/Cancel on Add/Edit returns to the same list (search/filters/page preserved where practical).
+
+### 16.6 Tally import relationship
+
+- Imported Customers, Suppliers, and Items appear in the same workbenches.
+- Search/pagination must remain usable for thousands of imported Items.
+- Tally Import apply logic and Opening Stock posting rules are unchanged by this workbench.
+- Unknown supplier state must not silently default to Maharashtra (existing import rules remain authoritative).
+
+### 16.7 Reference screenshots (2026-07-21)
+
+| Master | File |
+|--------|------|
+| Customers | [screenshots/master-workbench-customers.png](./screenshots/master-workbench-customers.png) |
+| Suppliers | [screenshots/master-workbench-suppliers.png](./screenshots/master-workbench-suppliers.png) |
+| Items | [screenshots/master-workbench-items.png](./screenshots/master-workbench-items.png) |
 
 ---
 

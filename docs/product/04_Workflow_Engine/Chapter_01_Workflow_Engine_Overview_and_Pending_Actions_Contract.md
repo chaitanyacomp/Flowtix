@@ -41,6 +41,9 @@
 | 1.0.10 | 2026-07-14 | FT ERP Product Team | §7.12 / stage SSOT — Ready to Close only when assessNoQtySoClosure COMPLETE |
 | 1.0.11 | 2026-07-14 | FT ERP Product Team | Decision-only recovery cycle — zero-demand RS finalize after KEEP/WAIVE |
 | 1.0.12 | 2026-07-19 | FT ERP Product Team | §7.13 — RM Allowance Approval Pending Actions (Admin; async; no stock on approve) |
+| 1.0.13 | 2026-07-22 | FT ERP Product Team | §7.14 — Store Create GRN deep-links to Purchase & GRN PO + open form |
+| 1.0.14 | 2026-07-22 | FT ERP Product Team | §7.15 — REGULAR Create Work Order in Prepare WO deep-link + Ready for WO KPI |
+| 1.0.15 | 2026-07-22 | FT ERP Product Team | §7.15 — Prepare WO create → Material Issue; Ready for WO / Store next-owner labels |
 
 **Supersedes:** None.
 
@@ -411,6 +414,50 @@ Store owns **creation/submission** of an RM allowance approval request when Plan
 
 **Counts rule:** Admin Pending Actions badge includes these rows while `PENDING_APPROVAL`. After Approve/Reject/Issue, rows leave the actionable inbox; history remains on `RmAllowanceApprovalRequest` + audit log.
 
+### 7.14 Store Create GRN (Purchase & GRN deep-link)
+
+Store owns goods receipt ([Volume 2, Ch. 5](../02_Business_Architecture/Chapter_05_Document_Ownership_and_Responsibility_Matrix.md) OWN-07; [Volume 3, Ch. 3](../03_Domain_Specifications/Chapter_03_Procurement_Domain_Specification.md) `PRC_GRN_POST` / `PRC_GRN_PARTIAL`).
+
+| Rule | Contract |
+|------|----------|
+| **Action label** | **Create GRN** (stable Pending Action class; legacy “GRN Pending” may still resolve for dedupe) |
+| **Owner** | Store only (Purchase/Production/QA **SHALL NOT** receive this actionable PA) |
+| **Emit when** | Open RM PO (`PENDING` / `PARTIAL`) with remaining receipt qty &gt; 0 |
+| **Suppress when** | Fully received; cancelled/closed/ineligible PO; remaining qty ≤ 0 |
+| **Deep-link** | `/rm-po-grn/{rmPoId}?openGrn=1&from=pending-actions` — internal `RmPurchaseOrder.id` in the path; business PO number is **display only** |
+| **Landing behaviour** | Purchase & GRN → correct PO loaded → Create GRN form opens automatically |
+| **Must not route to** | Store Dashboard, RM Control Center, or an unselected Purchase & GRN list |
+| **Card display** | Business RM PO number · supplier name · pending receipt qty + UOM · Create GRN CTA — **no** internal database IDs in the card |
+| **Ineligible deep-link** | Remain on Purchase & GRN PO detail with a clear message; do **not** silently redirect to Dashboard |
+| **Permissions** | UI gated by Store GRN write roles; `POST /api/purchase/grns` enforces the same; unauthorized roles cannot complete the action |
+| **Partial / multiple GRN** | Partial receipt retains Create GRN with remaining qty; multiple GRNs per PO remain allowed until fully received |
+
+Refresh and direct URL access **SHALL** preserve `{rmPoId}` and re-open Create GRN when still eligible.
+
+### 7.15 Store Create Work Order in Prepare WO (REGULAR_SO)
+
+Store owns Regular WO preparation / placement ([Volume 2, Ch. 5](../02_Business_Architecture/Chapter_05_Document_Ownership_and_Responsibility_Matrix.md) OWN-12; [Volume 2, Ch. 2](../02_Business_Architecture/Chapter_02_REGULAR_Order_Planning_Pipeline.md) §7.3.1).
+
+| Rule | Contract |
+|------|----------|
+| **Action label** | **Create Work Order in Prepare WO** |
+| **Owner** | Store (Admin may act; Purchase/QA **SHALL NOT** create via this PA) |
+| **Emit when** | Regular SO case is RM Ready (`RM_RECEIVED_CREATE_WO` / `CREATE_WO`) and no WO yet for that eligible demand |
+| **Suppress when** | Eligible remaining FG demand is fully placed on WO(s); SO ineligible; duplicate allocation blocked |
+| **Deep-link** | `/work-orders/prepare?salesOrderId={id}&source=regular_so&from=pending-actions` — internal Sales Order **id**; business SO number is **display only** |
+| **Same link from** | RM Control Center Create Work Order CTA (`from=rm-control-center`) |
+| **Landing** | Prepare WO with SO selected and eligible FG line(s) shown — **does not** create the WO until Store confirms |
+| **On confirm** | Create once via API → toast with business WO number → Material Issue `/material-issue?workOrderId={id}&pmrId={id}&bucket=readyToIssue&returnTo=prepare-wo` (PMR ensured) |
+| **Must not route to** | Store Dashboard; Sales Orders; obsolete generic Work Orders page when Store cannot operate there |
+| **Pre-create labels** | Next Owner = Store Department; active stage = Ready for WO |
+| **Post-create owner** | Store (Material Issue / PMR); Production after issue |
+| **Refresh** | `salesOrderId` (+ `source`) survive refresh / Pending Actions list open; Material Issue keeps `workOrderId` |
+| **Ready for WO KPI** | Store Dashboard **Ready for WO** = NO_QTY `PLACE_WO` count **+** unique Regular `rmReceivedCreateWoCount` (same eligibility as RM Control Center / this PA; no double-count of the same SO/FG case); decreases after WO consumes eligible demand |
+| **Duplicate submit** | Disable Create while in flight; reuse existing WO id when already created; backend remaining-demand cap blocks duplicate allocation |
+| **Permissions** | Frontend `WO_PLAN_PREP_ROLES` / `WO_WRITE_ROLES` include Store; backend `GET …/rm-check`, `POST /work-orders`, Material Issue enforce authorization |
+
+NO_QTY Place WO deep-links remain on the Requirement Sheet / Execution Register path — unchanged by this contract.
+
 ### 7.12 NO_QTY close / FG disposition Pending Actions (navigation)
 
 Recovery/closure Pending Actions emitted by `fetchNoQtyRecoveryPendingActions` **SHALL NOT** deep-link to Regular Orders (`/sales-orders` without `soType=NO_QTY`, or legacy `focusSalesOrderId`).
@@ -717,6 +764,9 @@ flowchart TB
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Workflow Engine overview and Pending Actions contract |
 | 1.0.12 | 2026-07-19 | FT ERP Product Team | §7.13 RM Allowance Approval Pending Actions (async Admin approve/reject; no stock on approve) |
+| 1.0.13 | 2026-07-22 | FT ERP Product Team | §7.14 Store Create GRN deep-link to `/rm-po-grn/{id}?openGrn=1` |
+| 1.0.14 | 2026-07-22 | FT ERP Product Team | §7.15 REGULAR Create Work Order → Prepare WO deep-link; Ready for WO KPI |
+| 1.0.15 | 2026-07-22 | FT ERP Product Team | §7.15 create confirm → Material Issue handoff; Store Ready for WO labels |
 
 ---
 

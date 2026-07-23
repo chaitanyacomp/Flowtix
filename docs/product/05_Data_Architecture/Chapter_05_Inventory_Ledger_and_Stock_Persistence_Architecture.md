@@ -335,6 +335,8 @@ For each movement class: **source document**, **ledger impact**, **inventory dom
 
 ### 8.4 Manufacturing — Material Return
 
+Production Report reconciliation is a conservation guard, not a substitute ledger. For each RM item, `Issued - Consumed - Returned - Valid Classified Wastage` must be within `0.0005` RM-UOM units before confirmation. Consumed already includes the engineering runner share. Expected runner is read-only analytical metadata and creates no ledger entry. Confirmed classified wastage posts one `RM_WASTAGE` effect transactionally; a declared return remains subject to the Store-owned Material Return receipt/posting transition. Retry/idempotency must not duplicate either disposition.
+
 | Attribute | Value |
 |-----------|-------|
 | **Source document** | Material Return Note |

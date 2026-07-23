@@ -36,7 +36,10 @@ const {
   DISPATCH_ALLOC_MODE,
 } = require("../services/salesOrderDispatchAllocation");
 const { mapSoLinesToDispatchFifoInputs } = require("../services/regularSoBufferQty");
-const { upsertRegularSoPlanningSnapshot } = require("../services/regularSoPlanningSnapshotService");
+const {
+  upsertRegularSoPlanningSnapshot,
+  buildRegularSoPlanningSnapshotView,
+} = require("../services/regularSoPlanningSnapshotService");
 const {
   ensureSubmittedProductionMaterialRequestForWorkOrder,
 } = require("../services/productionMaterialRequestService");
@@ -112,8 +115,16 @@ const {
   holdWorkOrder,
   resumeWorkOrder,
   closeWorkOrderWithShortfall,
+  requestRegularEndProduction,
   assertWorkOrderAllowsProduction,
+  regularWoLifecycleActions,
+  cancelRegularWorkOrder,
+  reopenRegularWorkOrder,
 } = require("../services/workOrderLifecycleService");
+const {
+  computeRegularSoWorkOrderDemandCoverage,
+} = require("../services/regularSoProductionClosure");
+const { buildWorkOrderDetail } = require("../services/regularSoWorkOrderDetailService");
 const {
   isWorkOrderProductionOperationallyClosed,
   filterWorkOrdersByOperationalClosure,
@@ -606,7 +617,7 @@ function normalizeWorkOrderLinePayloads(lines) {
 productionRouter.post(
   "/work-orders",
   requireAuth,
-  requireRole(["ADMIN", "PRODUCTION"]),
+  requireRole(["ADMIN", "STORE", "PRODUCTION"]),
   async (req, res, next) => {
     let parsedWorkOrderBody = null;
     try {
@@ -631,7 +642,7 @@ productionRouter.post(
       });
       const body = schema.parse(req.body);
       parsedWorkOrderBody = body;
-      const normalizedLines = normalizeWorkOrderLinePayloads(body.lines);
+      let normalizedLines = normalizeWorkOrderLinePayloads(body.lines);
 
       const wo = await prisma.$transaction(async (tx) => {
         await lockSalesOrderForUpdate(tx, body.salesOrderId);
@@ -648,6 +659,19 @@ productionRouter.post(
             },
             tx,
           );
+        }
+        if ((soMeta?.orderType ?? "NORMAL") !== "NO_QTY") {
+          const planningView = await buildRegularSoPlanningSnapshotView(body.salesOrderId, tx);
+          const authoritativeByFg = new Map(
+            (planningView.lines || []).map((line) => [
+              Number(line.fgItemId),
+              Number(line.plannedProductionQty),
+            ]),
+          );
+          normalizedLines = normalizedLines.map((line) => ({
+            ...line,
+            qty: authoritativeByFg.get(Number(line.fgItemId)) || line.qty,
+          }));
         }
         await assertWorkOrderLinesAgainstSalesOrder(tx, {
           salesOrderId: body.salesOrderId,
@@ -854,7 +878,7 @@ productionRouter.post(
 productionRouter.put(
   "/work-orders/:id",
   requireAuth,
-  requireRole(["ADMIN", "PRODUCTION"]),
+  requireRole(["ADMIN", "STORE"]),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);
@@ -944,7 +968,15 @@ productionRouter.delete(
       const reason = body.reason.trim();
       await prisma.$transaction(async (tx) => {
         await lockWorkOrderForUpdate(tx, id);
-        await assertWorkOrderAllowsStructuralEdit(tx, id);
+        const lifecycle = await regularWoLifecycleActions(tx, id, req.user?.role);
+        if (!lifecycle.hardDelete.enabled) {
+          const err = new Error(
+            `Hard delete is blocked: ${lifecycle.hardDelete.blockers.join("; ")}. Use Cancel WO when permitted.`,
+          );
+          err.statusCode = 409;
+          err.code = "REGULAR_WO_HARD_DELETE_BLOCKED";
+          throw err;
+        }
         const wo = await tx.workOrder.findUnique({
           where: { id },
           include: { lines: true, salesOrder: true, cycle: true },
@@ -977,6 +1009,82 @@ productionRouter.delete(
         await tx.workOrder.delete({ where: { id } });
       });
       return res.status(204).send();
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+productionRouter.get(
+  "/work-orders/:id",
+  requireAuth,
+  requireRole(["ADMIN", "STORE", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id) || id <= 0) {
+        const err = new Error("Invalid work order id.");
+        err.statusCode = 400;
+        throw err;
+      }
+      return res.json(await buildWorkOrderDetail(prisma, id, req.user?.role));
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+productionRouter.get(
+  "/work-orders/:id/lifecycle-actions",
+  requireAuth,
+  requireRole(["ADMIN", "STORE", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      return res.json(await regularWoLifecycleActions(prisma, Number(req.params.id), req.user?.role));
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+productionRouter.post(
+  "/work-orders/:id/cancel",
+  requireAuth,
+  requireRole(["ADMIN", "STORE"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const body = z.object({ reason: z.string().trim().min(1) }).parse(req.body ?? {});
+      const updated = await prisma.$transaction((tx) =>
+        cancelRegularWorkOrder(tx, id, {
+          reason: body.reason,
+          actorUserId: req.user?.userId,
+          actorRole: req.user?.role,
+        }),
+      );
+      return res.json(updated);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+productionRouter.post(
+  "/work-orders/:id/reopen",
+  requireAuth,
+  requireRole(["ADMIN"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const body = z.object({ reason: z.string().trim().min(1) }).parse(req.body ?? {});
+      const updated = await prisma.$transaction((tx) =>
+        reopenRegularWorkOrder(tx, id, {
+          reason: body.reason,
+          actorUserId: req.user?.userId,
+          actorRole: req.user?.role,
+        }),
+      );
+      return res.json(updated);
     } catch (e) {
       return next(e);
     }
@@ -1061,6 +1169,55 @@ productionRouter.post(
 );
 
 /**
+ * REGULAR_SO: End Production when SO demand is covered (WO-plan remainder optional),
+ * or park for Production Report before shortage close. Does not close the WO.
+ */
+productionRouter.post(
+  "/work-orders/:id/end-production",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION", "STORE"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const body = z
+        .object({
+          decision: z.enum(["END_COVERED", "END_SHORTAGE"]),
+          closureReason: z.string().max(500).optional().nullable(),
+        })
+        .parse(req.body ?? {});
+      const result = await prisma.$transaction(async (tx) => {
+        await lockWorkOrderForUpdate(tx, id);
+        return requestRegularEndProduction(tx, id, {
+          decision: body.decision,
+          closureReason: body.closureReason,
+          actorUserId: req.user?.userId,
+          actorRole: req.user?.role,
+        });
+      });
+      return res.json(result);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/** REGULAR_SO: authoritative SO-demand vs WO-plan coverage for End Production UI. */
+productionRouter.get(
+  "/work-orders/:id/so-demand-coverage",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION", "STORE", "QA"]),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      const coverage = await computeRegularSoWorkOrderDemandCoverage(prisma, id);
+      return res.json(coverage);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/**
  * Read-only production report / RM consumption authority for a work order.
  * Visible after approved production batches exist (REGULAR + NO_QTY).
  */
@@ -1100,6 +1257,7 @@ const confirmProductionReportSchema = z.object({
     .array(
       z.object({
         wastageTypeId: z.number().int().positive(),
+        itemId: z.number().int().positive(),
         qty: z.number().positive(),
         remarks: z.string().max(500).optional().nullable(),
         sortOrder: z.number().int().nonnegative().optional(),
@@ -1164,6 +1322,26 @@ productionRouter.post(
             actorUserId: req.user?.userId,
             actorRole: req.user?.role,
             source: "PRODUCTION_REPORT_EXECUTION_CLOSE",
+          });
+        } else if (orderType !== "NO_QTY" && !isGreenLevel) {
+          // REGULAR: a confirmed report ends Production's report obligation even
+          // when the WO still needs an explicit CLOSED_WITH_SHORTFALL decision.
+          // Do not leave the pre-report SHORTFALL_PENDING parking state behind.
+          await tx.workOrderProductionExecution.updateMany({
+            where: { workOrderId: id, executionStatus: "SHORTFALL_PENDING" },
+            data: {
+              executionStatus: "COMPLETED",
+              completedAt: new Date(),
+              completedByUserId: req.user?.userId ?? null,
+              blockReason: null,
+              blockRemarks: "REGULAR: Production Report confirmed. WO shortfall closure/reconciliation is separate.",
+            },
+          });
+          // Production Report confirm is the final RM gate; auto-complete when SO demand covered.
+          await reconcileWorkOrderStatusFromProduction(tx, id, {
+            actorUserId: req.user?.userId,
+            actorRole: req.user?.role,
+            source: "PRODUCTION_REPORT_CONFIRM_REGULAR",
           });
         }
         return { confirmed, executionClose };
@@ -1412,7 +1590,7 @@ productionRouter.get(
 productionRouter.get(
   "/eligible-sales-orders-for-wo",
   requireAuth,
-  requireRole(["ADMIN", "PRODUCTION"]),
+  requireRole(["ADMIN", "STORE", "PRODUCTION"]),
   async (req, res, next) => {
     try {
       const includeRaw = req.query.includeSalesOrderId;
@@ -1522,7 +1700,7 @@ productionRouter.get(
 productionRouter.get(
   "/work-orders",
   requireAuth,
-  requireRole(["ADMIN", "PRODUCTION"]),
+  requireRole(["ADMIN", "STORE", "PRODUCTION"]),
   async (req, res, next) => {
     try {
       const soIdRaw = req.query.salesOrderId;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { assessProductionEntryEligibility } from "../../src/lib/productionActiveEligibility";
 import {
+  buildProductionWorkspaceSectionCounts,
   buildProductionWorkspaceSectionRows,
   classifyProductionWorkspaceSection,
   filterProductionWorkspaceRows,
@@ -91,6 +92,35 @@ describe("production pause / entry QC separation", () => {
     expect(classifyProductionWorkspaceSection(row)).toBe("reportPending");
   });
 
+  it("places a finalized Regular report in Pending QA, not Report Pending", () => {
+    const finalizedRegular = {
+      workOrderId: 639,
+      workOrderNo: "WO-26-0001",
+      itemName: "Nozzle",
+      requiredQty: 15075,
+      producedQty: 14958,
+      balanceQty: 117,
+      orderType: "NORMAL",
+      status: "IN_PROGRESS",
+      productionExecutionStatus: "SHORTFALL_PENDING",
+      productionReportConfirmed: true,
+      productionReportId: 197,
+      nextAction: "QC_PENDING",
+      hasPendingQc: true,
+      canAcceptProductionEntry: false,
+    };
+    const built = buildProductionWorkspaceSectionRows([finalizedRegular]);
+    expect(built.reportPending).toHaveLength(0);
+    expect(built.pendingQa.map((row) => row.workOrderId)).toEqual([639]);
+    const counts = buildProductionWorkspaceSectionCounts(
+      [finalizedRegular],
+      [{ id: 52, workOrderId: 639, requestedQty: 1, unit: "Kg", status: "PENDING" }],
+    );
+    expect(counts.reportPending).toBe(0);
+    expect(counts.pendingQa).toBe(1);
+    expect(counts.awaitingStore).toBe(1);
+  });
+
   it("sections keep paused and active independent in same cycle", () => {
     const paused = {
       workOrderId: 4,
@@ -159,7 +189,7 @@ describe("production pause / entry QC separation", () => {
     expect(filtered.every((r) => r.itemName.toLowerCase().includes("square"))).toBe(true);
   });
 
-  it("uses backend work-state and keeps an existing draft in its correct section", () => {
+  it("uses backend work-state and parks every blocking draft under Draft Awaiting Approval", () => {
     const draftReady = {
       workOrderId: 501,
       workOrderNo: "WO-26-0501",
@@ -179,7 +209,7 @@ describe("production pause / entry QC separation", () => {
       balanceQty: 3000,
       productionWorkState: "CONTINUE_PRODUCTION" as const,
     };
-    expect(classifyProductionWorkspaceSection(draftReady)).toBe("ready");
-    expect(classifyProductionWorkspaceSection(draftContinue)).toBe("active");
+    expect(classifyProductionWorkspaceSection(draftReady)).toBe("draftPending");
+    expect(classifyProductionWorkspaceSection(draftContinue)).toBe("draftPending");
   });
 });

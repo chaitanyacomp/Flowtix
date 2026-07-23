@@ -86,6 +86,11 @@ describe("pendingActionsWorkBuckets", () => {
         "/material-issue?bucket=readyToIssue&returnTo=pending-actions&workOrderId=101&pmrId=9",
       ),
     ).toBe("/material-issue?bucket=readyToIssue&returnTo=pending-actions&from=pending-actions");
+    expect(
+      pendingActionWorkspaceListHref(
+        "/work-orders/prepare?salesOrderId=258&source=regular_so&from=pending-actions",
+      ),
+    ).toBe("/work-orders/prepare?salesOrderId=258&source=regular_so&from=pending-actions");
     expect(pendingActionWorkspaceListHref("/dispatch?salesOrderId=42&source=pending-actions")).toBe(
       "/dispatch?source=pending-actions",
     );

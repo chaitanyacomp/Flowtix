@@ -236,8 +236,8 @@ describe("buildPreviewPayload / applyFromPreviewToken", () => {
     assert.ok(unresolved.length === 1);
     assert.equal(unresolved[0].action, "SKIPPED");
     assert.match(String(unresolved[0].error || ""), /State|unresolved/i);
-    // Retry is idempotent: session consumed
-    await assert.rejects(() => applyFromPreviewToken(db, token), /Preview session expired|invalid/i);
+    // Retry is idempotent: session consumed after successful apply
+    await assert.rejects(() => applyFromPreviewToken(db, token), /already imported|expired|invalid/i);
   });
 
   it("ambiguous match requires mapping (ERROR) and does not invent a party", async () => {

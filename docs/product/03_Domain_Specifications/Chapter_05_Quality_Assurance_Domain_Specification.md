@@ -6,7 +6,7 @@
 | **Volume** | 3 — Domain Specifications |
 | **Chapter** | 5 — Quality Assurance Domain Specification |
 | **Title** | Quality Assurance Domain Specification |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.1 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -29,6 +29,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial QA domain — inspection through FG acceptance for dispatch |
+| 1.0.1 | 2026-07-22 | FT ERP Product Team | QC lifecycle quantity definitions (first-pass / final usable / final unusable); report & dispatch pool date authority |
 
 **Supersedes:** None.
 
@@ -261,6 +262,26 @@ Posted scrap is **terminal** for scrapped qty — no transition to accepted.
 - Traceable to batch, WO, Production Entry
 
 Partial accept permitted: e.g. 80 accept, 20 rework from 100 produced.
+
+#### 7.2.1 QC lifecycle quantities (reporting & dispatch pool)
+
+Stored first-pass fields on the inspection posting (`acceptedQty`, `rejectedQty`) are **immutable audit snapshots**. Rework recheck does **not** rewrite them. Authoritative lifecycle projection:
+
+| Term | Definition |
+|------|------------|
+| **First-pass accepted** | Qty accepted on the original QC posting |
+| **Initial rejected** | Qty rejected on that posting (audit). **Not** “still unusable after rework” |
+| **Rework routed** | Portion of initial rejected sent to rework |
+| **Rework accepted** | Qty returned to usable FG via rework recheck |
+| **Rework pending** | Open remaining on rework dispositions |
+| **Final usable** | `firstPassAccepted + reworkAccepted` |
+| **Final unusable** | Terminal scrap only (direct scrap + rework-final scrap). Open hold/rework are **not** final unusable |
+
+**Date authority (summary “today” cards):** first-pass / initial rejected use QC posting date; rework accepted / final-usable additions from rework use recheck stock-transfer date; final unusable uses scrap record date; report rows use QC posting date for inclusion, with cumulative lifecycle totals on the row.
+
+**Stock non-duplication:** first-pass acceptance posts usable FG once; rework acceptance posts only the reworked qty once via bucket transfer. Total usable FG for the posting = final usable. Do not count the same Nos as both final rejected and final usable.
+
+**REGULAR SO dispatch pool:** cumulative **final usable** for SO+FG, capped by SO remaining quantity and USABLE on-hand. Excess beyond SO remaining remains general usable FG stock.
 
 ### 7.3 Rejected quantity
 

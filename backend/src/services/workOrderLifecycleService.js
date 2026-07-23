@@ -127,6 +127,7 @@ async function assertWorkOrderAllowsProduction(tx, workOrderId) {
       cycleId: true,
       requirementSheetId: true,
       salesOrder: { select: { orderType: true } },
+      productionExecution: { select: { executionStatus: true } },
     },
   });
   if (!wo) {
@@ -139,6 +140,15 @@ async function assertWorkOrderAllowsProduction(tx, workOrderId) {
     const err = new Error(productionBlockedMessage(wo.status, wo.holdReason));
     err.statusCode = 409;
     err.code = "WO_PRODUCTION_BLOCKED";
+    throw err;
+  }
+  const exec = String(wo.productionExecution?.executionStatus ?? "").toUpperCase();
+  if (exec === "SHORTFALL_PENDING") {
+    const err = new Error(
+      "Production Report is pending. Confirm the report to close this work order, or resume only if further production is intended.",
+    );
+    err.statusCode = 409;
+    err.code = "PRODUCTION_REPORT_PENDING";
     throw err;
   }
 }
@@ -289,17 +299,228 @@ async function closeWorkOrderWithShortfall(tx, workOrderId, { closureReason, act
   };
 }
 
-const { GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");
+async function regularWoLifecycleActions(db, workOrderId, actorRole = null) {
+  const { wo, so } = await assertRegularWorkOrderLifecycleScope(db, workOrderId);
+  const lineIds = (wo.lines || []).map((line) => line.id);
+  const [productionCount, approvedProductionCount, qaCount, pmrCount, issueCount, allocationCount, reportCount] =
+    await Promise.all([
+      db.productionEntry.count({ where: { workOrderLineId: { in: lineIds } } }),
+      db.productionEntry.count({ where: { workOrderLineId: { in: lineIds }, workflowStatus: "APPROVED" } }),
+      db.qcEntry.count({ where: { production: { workOrderLineId: { in: lineIds } }, reversedAt: null } }),
+      db.productionMaterialRequest.count({ where: { workOrderId } }),
+      db.materialIssueNote.count({ where: { workOrderId } }),
+      db.materialAllocation.count({ where: { workOrderId } }),
+      db.productionWorkOrderReport.count({ where: { workOrderId } }),
+    ]);
+  const isAdmin = String(actorRole || "").toUpperCase() === "ADMIN";
+  const isStore = String(actorRole || "").toUpperCase() === "STORE";
+  const editableStatus = ["PENDING", "HOLD", "PAUSED"].includes(wo.status);
+  const editBlockers = [];
+  if (!editableStatus) editBlockers.push(`WO status is ${wo.status}`);
+  if (approvedProductionCount) editBlockers.push("Production finalized");
+  if (qaCount) editBlockers.push("QA completed");
+  if (reportCount) editBlockers.push("Reconciliation finalized");
+  if (!isAdmin && !isStore) editBlockers.push("User lacks permission");
+
+  const deleteBlockers = [];
+  if (wo.status !== "PENDING") deleteBlockers.push("WO is not an untouched draft");
+  if (pmrCount) deleteBlockers.push("PMR exists");
+  if (allocationCount) deleteBlockers.push("RM reservation/allocation exists");
+  if (issueCount) deleteBlockers.push("RM issue exists");
+  if (productionCount) deleteBlockers.push("Production exists");
+  if (qaCount) deleteBlockers.push("QA completed");
+  if (reportCount) deleteBlockers.push("Reconciliation exists");
+  if (!isAdmin) deleteBlockers.push("User lacks permission");
+
+  const cancelBlockers = [];
+  if (["COMPLETED", "CLOSED_WITH_SHORTFALL"].includes(wo.status)) {
+    cancelBlockers.push("WO is finally closed; use controlled reopen/reversal");
+  }
+  if (qaCount) cancelBlockers.push("QA completed");
+  if (!isAdmin && !isStore) cancelBlockers.push("User lacks permission");
+
+  const reopenBlockers = [];
+  if (!["COMPLETED", "CLOSED_WITH_SHORTFALL"].includes(wo.status)) reopenBlockers.push("WO is not closed");
+  if (qaCount) reopenBlockers.push("QA completed");
+  if (reportCount) reopenBlockers.push("Reconciliation finalized");
+  if (!isAdmin) reopenBlockers.push("User lacks permission");
+  return {
+    workOrderId,
+    salesOrderId: so.id,
+    edit: { enabled: editBlockers.length === 0, blockers: editBlockers },
+    hardDelete: { enabled: deleteBlockers.length === 0, blockers: deleteBlockers },
+    cancel: { enabled: cancelBlockers.length === 0, blockers: cancelBlockers },
+    reopen: { enabled: reopenBlockers.length === 0, blockers: reopenBlockers },
+    facts: { productionCount, approvedProductionCount, qaCount, pmrCount, issueCount, allocationCount, reportCount },
+  };
+}
+
+async function cancelRegularWorkOrder(tx, workOrderId, { reason, actorUserId, actorRole }) {
+  const actions = await regularWoLifecycleActions(tx, workOrderId, actorRole);
+  if (!actions.cancel.enabled) {
+    const err = new Error(`Cannot cancel work order: ${actions.cancel.blockers.join("; ")}.`);
+    err.statusCode = 409;
+    err.code = "REGULAR_WO_CANCEL_BLOCKED";
+    throw err;
+  }
+  await tx.materialAllocation.updateMany({
+    where: { workOrderId, status: { in: ["ACTIVE", "PARTIALLY_ISSUED"] }, qtyIssued: "0" },
+    data: { status: "RELEASED", releasedByUserId: actorUserId ?? null, remarks: `Released on WO cancellation: ${reason}` },
+  });
+  await tx.productionMaterialRequest.updateMany({
+    where: { workOrderId, status: { in: ["DRAFT", "REQUESTED"] } },
+    data: { status: "CANCELLED", remarks: `WO cancelled: ${reason}` },
+  });
+  return tx.workOrder.update({
+    where: { id: workOrderId },
+    data: { status: "REJECTED", closureReason: reason, closedAt: new Date(), closedByUserId: actorUserId ?? null },
+  });
+}
+
+async function reopenRegularWorkOrder(tx, workOrderId, { reason, actorUserId, actorRole }) {
+  const actions = await regularWoLifecycleActions(tx, workOrderId, actorRole);
+  if (!actions.reopen.enabled) {
+    const err = new Error(`Cannot reopen work order: ${actions.reopen.blockers.join("; ")}.`);
+    err.statusCode = 409;
+    err.code = "REGULAR_WO_REOPEN_BLOCKED";
+    throw err;
+  }
+  const updated = await tx.workOrder.update({
+    where: { id: workOrderId },
+    data: { status: "PENDING", closureReason: null, closedAt: null, closedByUserId: null },
+  });
+  if (typeof actorUserId === "number") {
+    await auditLog.write(tx, {
+      action: auditLog.AuditAction.UPDATE,
+      entityType: auditLog.AuditEntityType.SETTINGS,
+      entityId: `WORK_ORDER:${workOrderId}`,
+      actorUserId,
+      actorRole,
+      summary: `Work order ${workOrderId} reopened: ${reason}`,
+      payload: { module: "WORK_ORDER_LIFECYCLE", actionLabel: "REOPEN", reason },
+    });
+  }
+  return updated;
+}
+
+/**
+ * REGULAR: End Production when SO demand is covered (WO-plan remainder optional),
+ * or park for Production Report before shortage close when SO demand is unmet.
+ *
+ * Does not close the WO — Production Report confirm + reconcile / shortfall close does.
+ *
+ * @param {import('@prisma/client').Prisma.TransactionClient} tx
+ * @param {number} workOrderId
+ * @param {{ decision: 'END_COVERED' | 'END_SHORTAGE'; closureReason?: string | null; actorUserId?: number | null; actorRole?: string | null }} input
+ */
+async function requestRegularEndProduction(tx, workOrderId, input) {
+  await assertRegularWorkOrderLifecycleScope(tx, workOrderId);
+  const decision = String(input.decision ?? "").toUpperCase();
+  if (decision !== "END_COVERED" && decision !== "END_SHORTAGE") {
+    const err = new Error("decision must be END_COVERED or END_SHORTAGE.");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const { computeRegularSoWorkOrderDemandCoverage } = require("./regularSoProductionClosure");
+  const coverage = await computeRegularSoWorkOrderDemandCoverage(tx, workOrderId);
+
+  if (coverage.producedQty <= EPS) {
+    const err = new Error("Record and approve at least one production batch before ending production.");
+    err.statusCode = 409;
+    err.code = "NO_APPROVED_PRODUCTION";
+    throw err;
+  }
+
+  if (decision === "END_COVERED") {
+    if (!coverage.soDemandCovered) {
+      const err = new Error(
+        `SO demand is not covered yet (produced ${coverage.producedQty}, remaining SO demand ${coverage.remainingSoDemand}). Continue production or End with Shortage.`,
+      );
+      err.statusCode = 409;
+      err.code = "SO_DEMAND_NOT_COVERED";
+      throw err;
+    }
+  } else if (!coverage.hasSoShortage) {
+    const err = new Error(
+      "No SO-demand shortage. Use End Production & Complete Report when SO demand is already covered.",
+    );
+    err.statusCode = 409;
+    err.code = "NO_SO_SHORTAGE";
+    throw err;
+  }
+
+  if (WO_TERMINAL.has(coverage.workOrderStatus)) {
+    const err = new Error(`Work order is already ${coverage.workOrderStatus}.`);
+    err.statusCode = 409;
+    throw err;
+  }
+
+  await tx.workOrderProductionExecution.upsert({
+    where: { workOrderId },
+    create: {
+      workOrderId,
+      executionStatus: "SHORTFALL_PENDING",
+      blockRemarks:
+        decision === "END_COVERED"
+          ? "REGULAR: SO demand covered — Production Report pending before WO close."
+          : `REGULAR: End with SO shortage — Production Report pending.${input.closureReason ? ` ${String(input.closureReason).trim()}` : ""}`,
+    },
+    update: {
+      executionStatus: "SHORTFALL_PENDING",
+      blockReason: null,
+      blockRemarks:
+        decision === "END_COVERED"
+          ? "REGULAR: SO demand covered — Production Report pending before WO close."
+          : `REGULAR: End with SO shortage — Production Report pending.${input.closureReason ? ` ${String(input.closureReason).trim()}` : ""}`,
+    },
+  });
+
+  if (typeof input.actorUserId === "number") {
+    await auditLog.write(tx, {
+      action: auditLog.AuditAction.UPDATE,
+      entityType: auditLog.AuditEntityType.SETTINGS,
+      entityId: `WORK_ORDER:${workOrderId}`,
+      actorUserId: input.actorUserId,
+      actorRole: input.actorRole,
+      summary: `Work order ${coverage.workOrderDocNo || workOrderId} end production (${decision}) — Production Report pending`,
+      payload: {
+        module: "WORK_ORDER_LIFECYCLE",
+        actionLabel: "REGULAR_END_PRODUCTION",
+        decision,
+        soDemandCovered: coverage.soDemandCovered,
+        producedQty: coverage.producedQty,
+        remainingSoDemand: coverage.remainingSoDemand,
+        woTargetBalance: coverage.woTargetBalance,
+        expectedExcessBeforeQc: coverage.expectedExcessBeforeQc,
+      },
+    });
+  }
+
+  const nextCoverage = await computeRegularSoWorkOrderDemandCoverage(tx, workOrderId);
+  return {
+    outcome: "AWAITING_PRODUCTION_REPORT",
+    decision,
+    coverage: nextCoverage,
+  };
+}
+
 const { EPS: WO_SO_EPS } = require("./workOrderSoValidation");
 
 const PRODUCTION_ENTRY_WO_TOLERANCE_PCT = 0.05;
 
 function allowsWorkOrderProductionOverPlan(wo, orderType) {
-  return orderType === "NO_QTY" || String(wo?.sourceType ?? "").toUpperCase() === GREEN_LEVEL_WO_SOURCE_TYPE;
+  // Shop-floor entry hard cap is issued-RM readiness (limiting BOM/PMR line), not WO plan.
+  // WO plan remains Target Remaining / Use Remaining and a closure signal. REGULAR, NO_QTY,
+  // and Green Level may exceed plan when issued RM supports the quantity.
+  void wo;
+  void orderType;
+  return true;
 }
 
 /**
- * REGULAR WO line plan cap (+5% tolerance). Skipped for NO_QTY and Green Level over-plan flows.
+ * Legacy WO line plan cap (+5% tolerance). Skipped for all flows — RM readiness is authoritative.
+ * Kept for call-site compatibility; does not reject when allowOverproduction is true.
  *
  * @param {import("@prisma/client").Prisma.TransactionClient} tx
  */
@@ -357,5 +578,9 @@ module.exports = {
   holdWorkOrder,
   resumeWorkOrder,
   closeWorkOrderWithShortfall,
+  requestRegularEndProduction,
+  regularWoLifecycleActions,
+  cancelRegularWorkOrder,
+  reopenRegularWorkOrder,
   loadWorkOrderLifecycleContext,
 };

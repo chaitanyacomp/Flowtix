@@ -142,6 +142,7 @@ const navGroups: NavGroup[] = [
     icon: <Package className="h-4 w-4 shrink-0" />,
     collapsible: true,
     items: [
+      { to: "/masters", navKey: "masters-hub", label: "Masters hub", roles: [...opsRoles], icon: <Package className="h-4 w-4 shrink-0" /> },
       { to: "/customers", navKey: "cust", label: "Customers", roles: [...ENQUIRY_QUOTATION_WRITE_ROLES], icon: <Users className="h-4 w-4 shrink-0" /> },
       { to: "/items", navKey: "items", label: "Items", roles: ["ADMIN", "STORE"], icon: <Package className="h-4 w-4 shrink-0" /> },
       { to: "/opening-stock", navKey: "opening-stock", label: "Opening Stock", roles: ["ADMIN", "STORE"], icon: <Boxes className="h-4 w-4 shrink-0" /> },
@@ -290,7 +291,7 @@ const navGroups: NavGroup[] = [
         roles: [...PLANNING_DASHBOARD_ROLES],
         icon: <FileSpreadsheet className="h-4 w-4 shrink-0" />,
       },
-      { to: "/work-orders", navKey: "wo", label: "Work Order", roles: ["ADMIN", "PRODUCTION"], icon: <Factory className="h-4 w-4 shrink-0" /> },
+      { to: "/work-orders?flow=REGULAR_SO", navKey: "wo", label: "Work Order", roles: ["ADMIN", "STORE", "PRODUCTION"], icon: <Factory className="h-4 w-4 shrink-0" /> },
       { to: "/production", navKey: "prod", label: "Production Workspace", roles: ["ADMIN", "PRODUCTION"], icon: <GitBranch className="h-4 w-4 shrink-0" /> },
       {
         to: "/production/material-requests",
@@ -397,12 +398,14 @@ function groupDefaultOpen(pathname: string, group: NavGroup): boolean {
   if (!group.collapsible) return false;
   if (group.key === "masters")
     return (
+      pathname === "/masters" ||
       pathname === "/customers" ||
       pathname === "/items" ||
       pathname === "/units" ||
       pathname === "/locations" ||
       pathname === "/suppliers" ||
       pathname === "/boms" ||
+      pathname === "/opening-stock" ||
       pathname.startsWith("/admin/backup-restore") ||
       pathname.startsWith("/masters/tally-import")
     );

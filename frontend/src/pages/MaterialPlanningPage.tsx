@@ -92,6 +92,16 @@ type PlanningPreview = {
     unit: string;
     requiredQty: number;
     availableQty: number;
+    freeAvailableQty?: number;
+    reservedForThisSoQty?: number;
+    reservedForThisWoQty?: number;
+    netIssuedQty?: number;
+    openIncomingQty?: number;
+    coveredQty?: number;
+    remainingIssueBalanceQty?: number;
+    uncoveredProcurementQty?: number;
+    roundingToleranceAcknowledged?: boolean;
+    approvedRoundingDifferenceQty?: number;
     shortageQty: number;
     status: "AVAILABLE" | "PARTIAL" | "SHORTAGE";
   }[];
@@ -363,6 +373,12 @@ export function MaterialPlanningPage() {
       else params.set("salesOrderId", String(id));
       setSearchParams(params, { replace: true });
     } catch (e) {
+      console.error("Order RM Planning preview request failed", {
+        endpoint: "/api/material-planning/preview",
+        sourceKind: kind,
+        sourceId: id,
+        error: e,
+      });
       setPreview(null);
       setError(presentOperationalError(e).userMessage);
     } finally {
@@ -674,9 +690,9 @@ export function MaterialPlanningPage() {
               </p>
             <div className="mp-vp-ops-summary shrink-0">
               <div className="mp-vp-ops-card">
-                <div className="mp-vp-ops-label">Stock available</div>
+                <div className="mp-vp-ops-label">Stock available / covered</div>
                 <div className="mp-vp-ops-value text-emerald-700">{opsSummary.stockAvailable} RM lines</div>
-                <div className="mp-vp-ops-hint">Fully covered from store</div>
+                <div className="mp-vp-ops-hint">Free, reserved, issued, or incoming</div>
               </div>
               <div className="mp-vp-ops-card">
                 <div className="mp-vp-ops-label">Supply pending</div>
@@ -697,9 +713,9 @@ export function MaterialPlanningPage() {
                 >
                   {opsSummary.liveShortageLines > 0
                     ? `${opsSummary.liveShortageLines} RM line(s)`
-                    : "None (live store)"}
+                    : "None"}
                 </div>
-                <div className="mp-vp-ops-hint">Confirm in RM Control Center before issue</div>
+                <div className="mp-vp-ops-hint">Authoritative procurement gap</div>
               </div>
               <div className="mp-vp-ops-card">
                 <div className="mp-vp-ops-label">Pending procurement</div>
@@ -792,14 +808,24 @@ export function MaterialPlanningPage() {
                   : "RM demand vs live store availability"}
             </div>
             <div className="mp-vp-panel-scroll mp-vp-panel-scroll--tall">
-              <table className={cn("mp-vp-table w-full", activeRequirement && "mp-vp-table--operational")}>
+              <table className={cn("mp-vp-table mp-vp-rm-coverage-table w-full", activeRequirement && "mp-vp-table--operational")}>
+                <colgroup>
+                  <col className="w-[18%]" />
+                  {Array.from({ length: 8 }).map((_, index) => <col key={index} className="w-[9%]" />)}
+                  <col className="w-[10%]" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th className="text-left">RM item</th>
-                    <th className="text-right">Required qty</th>
-                    <th className="text-right">Available qty</th>
-                    <th className="text-right">Shortage</th>
-                    <th className="text-center">Action needed</th>
+                    <th className="text-right">Theoretical required</th>
+                    <th className="text-right">Net issued</th>
+                    <th className="text-right">Free Store stock</th>
+                    <th className="text-right">Reserved</th>
+                    <th className="text-right">Incoming</th>
+                    <th className="text-right">Total coverage</th>
+                    <th className="text-right">Issue balance</th>
+                    <th className="text-right">Procurement shortage</th>
+                    <th className="text-center">Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -812,21 +838,45 @@ export function MaterialPlanningPage() {
                       <td className="text-right text-[13px] font-semibold tabular-nums text-slate-900">
                         {formatQty(r.requiredQty, r.unit)}
                       </td>
-                      <td className="text-right text-[13px] font-semibold tabular-nums text-emerald-800">
-                        {formatQty(r.availableQty, r.unit)}
+                      <td className="whitespace-nowrap text-right text-[13px] font-semibold tabular-nums text-sky-800">
+                        {formatQty(r.netIssuedQty ?? 0, r.unit)}
                       </td>
-                      <td
-                        className={cn(
-                          "text-right text-[13px] tabular-nums",
-                          !preview.operationalState?.sourceCompleted && r.shortageQty > 0 ? "font-bold text-red-800" : "font-semibold text-slate-600",
-                        )}
-                      >
-                        {formatQty(displayShortage, r.unit)}
+                      <td className="whitespace-nowrap text-right text-[13px] font-semibold tabular-nums text-emerald-800">
+                        {formatQty(r.freeAvailableQty ?? r.availableQty, r.unit)}
+                      </td>
+                      <td className="whitespace-nowrap text-right text-[13px] font-semibold tabular-nums text-slate-700">
+                        {formatQty(r.reservedForThisSoQty ?? 0, r.unit)}
+                      </td>
+                      <td className="whitespace-nowrap text-right text-[13px] font-semibold tabular-nums text-violet-800">
+                        {formatQty(r.openIncomingQty ?? 0, r.unit)}
+                      </td>
+                      <td className="whitespace-nowrap text-right text-[13px] font-bold tabular-nums text-emerald-800">
+                        {formatQty(r.coveredQty ?? r.availableQty, r.unit)}
+                      </td>
+                      <td className="whitespace-nowrap text-right text-[13px] font-semibold tabular-nums text-amber-800">
+                        {formatQty(r.remainingIssueBalanceQty ?? Math.max(0, r.requiredQty - (r.netIssuedQty ?? 0)), r.unit)}
+                      </td>
+                      <td className={cn(
+                        "whitespace-nowrap text-right text-[13px] tabular-nums",
+                        displayShortage > 0 ? "font-bold text-red-800" : "font-semibold text-emerald-800",
+                      )}>
+                        {formatQty(r.uncoveredProcurementQty ?? displayShortage, r.unit)}
                       </td>
                       <td className="text-center">
                         <Badge className={cn("text-[10px] font-semibold", rmStatusClass(displayStatus))}>
-                          {rmOperationalLabel(displayStatus)}
+                          {r.roundingToleranceAcknowledged
+                            ? "Fully Issued – Within Rounding Tolerance"
+                            : (r.netIssuedQty ?? 0) + 1e-6 >= r.requiredQty
+                              ? "Fully Issued"
+                              : (r.netIssuedQty ?? 0) > 0 && r.shortageQty <= 1e-6
+                                ? "Procurement Complete – RM Issued"
+                                : rmOperationalLabel(displayStatus)}
                         </Badge>
+                        {r.roundingToleranceAcknowledged && (r.approvedRoundingDifferenceQty ?? 0) > 0 ? (
+                          <div className="mt-1 whitespace-nowrap text-[10px] font-medium text-slate-500">
+                            Approved difference {formatQty(r.approvedRoundingDifferenceQty ?? 0, r.unit)}
+                          </div>
+                        ) : null}
                       </td>
                     </tr>
                   );

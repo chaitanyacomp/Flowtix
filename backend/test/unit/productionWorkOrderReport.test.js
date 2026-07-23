@@ -7,9 +7,19 @@ const {
   assertProductionReportNotConfirmed,
   receiveProductionRmReturnPending,
   sumQcForProduction,
+  computeRmReconciliation,
 } = require("../../src/services/productionWorkOrderReportService");
 
 describe("productionWorkOrderReportService", () => {
+  it("reconciles returned and classified wastage without subtracting expected runner", () => {
+    assert.deepEqual(
+      computeRmReconciliation({ issuedQty: 143, consumedQty: 141.218, returnedQty: 1, classifiedWastageQty: 0 }),
+      { physicalBalance: 1.782, remainingUnreconciled: 0.782 },
+    );
+    assert.equal(computeRmReconciliation({ issuedQty: 143, consumedQty: 141.218, returnedQty: 1, classifiedWastageQty: 0.782 }).remainingUnreconciled, 0);
+    assert.equal(computeRmReconciliation({ issuedQty: 143, consumedQty: 141.218, returnedQty: 1.782, classifiedWastageQty: 0 }).remainingUnreconciled, 0);
+    assert.equal(computeRmReconciliation({ issuedQty: 143, consumedQty: 141.218, returnedQty: 2, classifiedWastageQty: 0 }).remainingUnreconciled, -0.218);
+  });
   it("sumQcForProduction computes accepted, rejected, and pending", () => {
     const qc = sumQcForProduction({
       producedQty: 100,
@@ -598,7 +608,7 @@ describe("productionWorkOrderReportService", () => {
   }
   });
 
-  it("confirmProductionWorkOrderReport rejects wastage classification mismatch", async () => {
+  it("confirmProductionWorkOrderReport rejects an RM line with remaining unclassified balance", async () => {
     const returnPath = require.resolve("../../src/services/materialReturnService");
     const reportPath = require.resolve("../../src/services/productionWorkOrderReportService");
     const origReturn = require(returnPath).buildReturnableLinesForWorkOrder;
@@ -673,7 +683,7 @@ describe("productionWorkOrderReportService", () => {
             },
             { userId: 9 },
           ),
-        (err) => err.code === "WASTAGE_CLASSIFICATION_MISMATCH",
+        (err) => err.code === "PRODUCTION_REPORT_RM_RECONCILIATION_INCOMPLETE" && /0.5 Kg/.test(err.message),
       );
     } finally {
       require(returnPath).buildReturnableLinesForWorkOrder = origReturn;

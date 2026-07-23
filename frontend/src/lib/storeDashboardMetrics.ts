@@ -40,6 +40,8 @@ export type MaterialAvailabilitySummaryLike = {
   queueCount?: number;
   readyIssueCount?: number;
   purchaseWaitingCount?: number;
+  /** REGULAR_SO cases with RM received / ready — Create Work Order in Prepare WO. */
+  rmReceivedCreateWoCount?: number;
 };
 
 export function computeNoQtyExecutionSummaryMetrics(
@@ -110,11 +112,13 @@ export function computeStoreDashboardKpiMetrics(input: {
   const execution = computeNoQtyExecutionSummaryMetrics(input.inboxRows);
   const monitor = computeStoreProcurementMonitorMetrics(input.procurementWorkspace, input.inboxRows);
   const rmcc = computeStoreRmccSummaryMetrics(input.rmccSummary);
+  /** Same Regular SO eligibility as RM Control Center / Pending Actions (RM_RECEIVED_CREATE_WO). */
+  const regularReadyForWo = Math.max(0, Number(input.rmccSummary?.rmReceivedCreateWoCount ?? 0));
 
   const awaitProcurement = monitor.awaitProcurement;
   const grnPending = monitor.grnPending;
   return {
-    readyForWo: execution.readyForWo,
+    readyForWo: execution.readyForWo + regularReadyForWo,
     materialIssuePending: input.materialIssuePendingCount,
     rmccCases: rmcc.openCases,
     awaitProcurement,

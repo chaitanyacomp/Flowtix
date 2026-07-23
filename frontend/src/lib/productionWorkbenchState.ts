@@ -26,10 +26,11 @@ export type ProductionWorkbenchState =
   | "COMPLETED_OR_CLOSED";
 
 export type ProductionWorkbenchStateSource = ProductionEligibilitySource & {
-  productionWorkState?: "READY_TO_START" | "CONTINUE_PRODUCTION" | "PAUSED_PRODUCTION" | null;
+  productionWorkState?: "READY_TO_START" | "CONTINUE_PRODUCTION" | "PAUSED_PRODUCTION" | "DRAFT_PENDING" | null;
   hasOpenDraft?: boolean | null;
   nextAction?: string | null;
   actionLabel?: string | null;
+  productionReportConfirmed?: boolean | null;
 };
 
 function upper(v: unknown): string {
@@ -68,12 +69,29 @@ export function classifyProductionWorkbenchState(
   const produced = n(row.producedQty);
   const backendState = String(row.productionWorkState ?? "").trim().toUpperCase();
 
-  if (eligibility.isPausedProduction || backendState === "PAUSED_PRODUCTION") {
-    return "PAUSED_PRODUCTION";
+  // Mutually exclusive priority (REGULAR + NO_QTY):
+  // Report Pending → Draft Awaiting → Paused → Continue → Ready → QC-only → …
+  if (
+    !row.productionReportConfirmed &&
+    (
+      next === "PRODUCTION_SHORTFALL_DECISION" ||
+      upper(row.productionExecutionStatus) === "SHORTFALL_PENDING" ||
+      backendState === "PRODUCTION_REPORT_PENDING"
+    )
+  ) {
+    return "PRODUCTION_REPORT_PENDING";
   }
 
-  if (row.hasOpenDraft && (eligibility.canAcceptNewProductionEntry || produced > EPS || backendState === "READY_TO_START")) {
+  if (
+    row.hasOpenDraft ||
+    next === "PRODUCTION_DRAFT_REVIEW" ||
+    backendState === "DRAFT_PENDING"
+  ) {
     return "DRAFT_PENDING";
+  }
+
+  if (eligibility.isPausedProduction || backendState === "PAUSED_PRODUCTION") {
+    return "PAUSED_PRODUCTION";
   }
 
   if (backendState === "CONTINUE_PRODUCTION" && eligibility.canAcceptNewProductionEntry) {
@@ -85,14 +103,6 @@ export function classifyProductionWorkbenchState(
 
   if (eligibility.canAcceptNewProductionEntry) {
     return produced > EPS ? "CONTINUE_PRODUCTION" : "READY_TO_START";
-  }
-
-  // Report/RM reconciliation takes priority over entry QC-only classification.
-  if (
-    next === "PRODUCTION_SHORTFALL_DECISION" ||
-    upper(row.productionExecutionStatus) === "SHORTFALL_PENDING"
-  ) {
-    return "PRODUCTION_REPORT_PENDING";
   }
 
   if (eligibility.isPendingQaOnly || next === "QC_PENDING") {
@@ -115,8 +125,9 @@ export function workbenchStateToSection(
 ): Exclude<ProductionWorkspaceSectionId, "awaitingStore" | "recent"> | null {
   switch (state) {
     case "READY_TO_START":
+      return "ready";
     case "DRAFT_PENDING":
-      return state === "DRAFT_PENDING" ? "ready" : "ready";
+      return "draftPending";
     case "CONTINUE_PRODUCTION":
       return "active";
     case "PAUSED_PRODUCTION":
@@ -130,15 +141,11 @@ export function workbenchStateToSection(
   }
 }
 
-/** Drafts sit with Ready when never started; with Continue when produced already exists. */
+/** Mutually exclusive workspace section from canonical workbench state. */
 export function classifyProductionWorkspaceSectionFromState(
   row: ProductionWorkbenchStateSource,
 ): Exclude<ProductionWorkspaceSectionId, "awaitingStore" | "recent"> | null {
-  const state = classifyProductionWorkbenchState(row);
-  if (state === "DRAFT_PENDING") {
-    return n(row.producedQty) > EPS ? "active" : "ready";
-  }
-  return workbenchStateToSection(state);
+  return workbenchStateToSection(classifyProductionWorkbenchState(row));
 }
 
 export function workbenchStateStatusLabel(state: ProductionWorkbenchState): string {
@@ -185,8 +192,9 @@ export function workbenchStatePrimaryActionLabel(state: ProductionWorkbenchState
 
 export function productionBucketForWorkbenchState(
   state: ProductionWorkbenchState,
-): "readyToStart" | "inProgress" | null {
-  if (state === "READY_TO_START" || state === "DRAFT_PENDING") return "readyToStart";
+): "readyToStart" | "inProgress" | "draftPending" | null {
+  if (state === "READY_TO_START") return "readyToStart";
+  if (state === "DRAFT_PENDING") return "draftPending";
   if (state === "CONTINUE_PRODUCTION") return "inProgress";
   return null;
 }

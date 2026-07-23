@@ -7,21 +7,65 @@ const { normalizeGstinOnSave, resolveImportGstin, cleanGstinChars } = require(".
 const { normalizeHsnOnSave } = require("../hsnNormalize");
 const { normalizeUnitKey } = require("../unitMaster");
 const { parseTallyMastersXml, strVal } = require("./parseTallyMastersXml");
-const { mapLedgerToParty, buildPartyMapDiagnostics, TALLY_IMPORT_PIPELINE_ID } = require("./mapLedgerToParty");
+const { mapLedgerToParty, buildPartyMapDiagnostics, ledgerDisplayName, TALLY_IMPORT_PIPELINE_ID } = require("./mapLedgerToParty");
 const {
   mapStockItemToItem,
   mapTallyUnitMaster,
   buildStockGroupTaxLookup,
   resolveStockItemTaxFromStockGroups,
 } = require("./mapStockItemToItem");
+const {
+  buildGroupMappingTable,
+  buildUnitMappingTable,
+  normalizeGroupKey,
+  resolveErpItemType,
+  suggestUnitMapping,
+  suggestGroupMapping,
+} = require("./tallyMasterGroupUnitMapping");
+const { logActivity } = require("../activityLogService");
 
 /** @typedef {"SKIP" | "UPDATE_EMPTY_FIELDS_ONLY"} DuplicateAction */
 /** @typedef {"RM" | "FG"} DefaultItemType */
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
-const MAX_XML_BYTES = 15 * 1024 * 1024;
+/** Pilot stock master XML ~64.5 MB UTF-16 — scoped to this router only (does not raise global API limits). */
+const MAX_XML_BYTES = 72 * 1024 * 1024;
+/** Apply writes in transactional batches so a failed batch does not leave an unexplained half-import. */
+const IMPORT_BATCH_SIZE = 100;
+/**
+ * Confirm Import JSON body is intentionally tiny (token + mapping tables only).
+ * Route-specific parser limit (see createApp) — measured max with large group/unit maps stays well under this.
+ */
+const TALLY_APPLY_JSON_LIMIT = "256kb";
 
-/** @type {Map<string, { xmlUtf8: string; options: NormalizedOptions; expiresAt: number }>} */
+/**
+ * Allow tests to shrink batch size (e.g. simulate batch 20 of 43 with small fixtures).
+ * @param {{ importBatchSize?: number } | null | undefined} options
+ */
+function resolveImportBatchSize(options) {
+  const fromOpt = options && Number(options.importBatchSize);
+  if (Number.isFinite(fromOpt) && fromOpt >= 1 && fromOpt <= 500) return Math.floor(fromOpt);
+  const fromEnv = Number(process.env.TALLY_IMPORT_BATCH_SIZE);
+  if (Number.isFinite(fromEnv) && fromEnv >= 1 && fromEnv <= 500) return Math.floor(fromEnv);
+  return IMPORT_BATCH_SIZE;
+}
+
+/**
+ * @typedef {{
+ *   xmlUtf8: string;
+ *   options: NormalizedOptions;
+ *   decodeMeta: Record<string, unknown> | null;
+ *   expiresAt: number;
+ *   createdAt: number;
+ *   ownerUserId: number | null;
+ *   sourceFingerprint: string | null;
+ *   sourceFilename: string | null;
+ *   status: "ready" | "importing" | "consumed" | "failed";
+ *   mappingSummary: Record<string, unknown> | null;
+ * }} TallyPreviewSession
+ */
+
+/** @type {Map<string, TallyPreviewSession>} */
 const previewSessions = new Map();
 
 /**
@@ -42,34 +86,126 @@ function gcSessions() {
 }
 
 /**
+ * SHA-256 fingerprint of decoded XML text (hex).
+ * @param {string} xmlUtf8
+ */
+function fingerprintXmlText(xmlUtf8) {
+  return crypto.createHash("sha256").update(String(xmlUtf8 || ""), "utf8").digest("hex");
+}
+
+/**
  * @param {string} xmlUtf8
  * @param {NormalizedOptions} options
+ * @param {Record<string, unknown> | null} [decodeMeta]
+ * @param {{
+ *   ownerUserId?: number | null;
+ *   sourceFilename?: string | null;
+ *   sourceFingerprint?: string | null;
+ *   mappingSummary?: Record<string, unknown> | null;
+ * }} [meta]
  * @returns {string}
  */
-function createPreviewSession(xmlUtf8, options) {
+function createPreviewSession(xmlUtf8, options, decodeMeta = null, meta = {}) {
   gcSessions();
   const token = crypto.randomBytes(24).toString("hex");
+  const now = Date.now();
   previewSessions.set(token, {
     xmlUtf8,
     options,
-    expiresAt: Date.now() + SESSION_TTL_MS,
+    decodeMeta: decodeMeta || null,
+    expiresAt: now + SESSION_TTL_MS,
+    createdAt: now,
+    ownerUserId: meta.ownerUserId != null && Number.isFinite(Number(meta.ownerUserId)) ? Number(meta.ownerUserId) : null,
+    sourceFingerprint: meta.sourceFingerprint || fingerprintXmlText(xmlUtf8),
+    sourceFilename: meta.sourceFilename || options?.sourceFilename || null,
+    status: "ready",
+    mappingSummary: meta.mappingSummary || null,
   });
   return token;
 }
 
 /**
  * @param {string} token
- * @returns {{ xmlUtf8: string; options: NormalizedOptions } | null}
+ * @returns {TallyPreviewSession | null}
+ */
+function getPreviewSessionRaw(token) {
+  gcSessions();
+  const s = previewSessions.get(String(token || ""));
+  if (!s) return null;
+  if (s.expiresAt < Date.now()) {
+    previewSessions.delete(String(token || ""));
+    return null;
+  }
+  return s;
+}
+
+/**
+ * @param {string} token
+ * @returns {{ xmlUtf8: string; options: NormalizedOptions; decodeMeta: Record<string, unknown> | null } | null}
  */
 function getPreviewSession(token) {
-  gcSessions();
-  const s = previewSessions.get(token);
-  if (!s || s.expiresAt < Date.now()) return null;
-  return { xmlUtf8: s.xmlUtf8, options: s.options };
+  const s = getPreviewSessionRaw(token);
+  if (!s) return null;
+  return { xmlUtf8: s.xmlUtf8, options: s.options, decodeMeta: s.decodeMeta || null };
+}
+
+/**
+ * Validate ownership / expiry / status for Confirm Import.
+ * @param {string} token
+ * @param {{ actorUserId?: number | null; allowConsumedRetry?: boolean }} [opts]
+ */
+function claimPreviewSessionForApply(token, opts = {}) {
+  const s = getPreviewSessionRaw(token);
+  if (!s) {
+    const err = new Error("Preview session expired or invalid. Run Preview again.");
+    err.statusCode = 400;
+    err.code = "PREVIEW_SESSION_INVALID";
+    throw err;
+  }
+  if (s.status === "consumed") {
+    const err = new Error("This preview was already imported. Run Preview again to import the same file.");
+    err.statusCode = 409;
+    err.code = "PREVIEW_SESSION_CONSUMED";
+    throw err;
+  }
+  if (s.status === "importing") {
+    const err = new Error("This preview import is already in progress. Wait for it to finish.");
+    err.statusCode = 409;
+    err.code = "PREVIEW_SESSION_IN_FLIGHT";
+    throw err;
+  }
+  const actorId = opts.actorUserId != null ? Number(opts.actorUserId) : null;
+  if (s.ownerUserId != null && actorId != null && s.ownerUserId !== actorId) {
+    const err = new Error("This preview belongs to another user. Run Preview again under your account.");
+    err.statusCode = 403;
+    err.code = "PREVIEW_SESSION_FORBIDDEN";
+    throw err;
+  }
+  s.status = "importing";
+  s.expiresAt = Date.now() + SESSION_TTL_MS; // refresh TTL while importing
+  return s;
+}
+
+function markPreviewSessionConsumed(token) {
+  const s = previewSessions.get(String(token || ""));
+  if (!s) return;
+  s.status = "consumed";
+  // Keep briefly so a duplicate submit gets CONSUMED rather than INVALID, then GC by TTL.
+}
+
+function markPreviewSessionReady(token) {
+  const s = previewSessions.get(String(token || ""));
+  if (!s) return;
+  if (s.status === "importing" || s.status === "failed") s.status = "ready";
 }
 
 function deletePreviewSession(token) {
-  previewSessions.delete(token);
+  previewSessions.delete(String(token || ""));
+}
+
+/** Test helper */
+function _resetPreviewSessionsForTests() {
+  previewSessions.clear();
 }
 
 /**
@@ -354,6 +490,7 @@ function pushFieldIssue(warnings, fieldIssues, issue) {
  */
 function rowPreviewStatus(proposedAction, rowWarnings, rowErrors) {
   if (proposedAction === "ERROR" || rowErrors.length) return "ERROR";
+  if (proposedAction === "CONFLICT") return "WARNING";
   if (rowWarnings.length) return "WARNING";
   return "OK";
 }
@@ -575,38 +712,72 @@ async function upsertRegisteredOfficeSupplierLocation(db, supplierId, src, mode)
 
 /**
  * @param {number | null} gstRate
+ * @returns {number | null} null = Unresolved/Inherited (never silently coerce blank → 0%)
  */
 function normalizeGstRateForItem(gstRate) {
-  if (gstRate == null || !Number.isFinite(gstRate)) return 0;
-  if (gstRate < 0) return 0;
+  if (gstRate == null || !Number.isFinite(gstRate)) return null;
+  if (gstRate < 0) return null;
   if (gstRate > 100) return 100;
   return Math.round(gstRate * 100) / 100;
 }
 
 /**
  * @param {{ tallyName: string; mapped: Record<string, unknown> }} row
- * @param {Record<string, string> | undefined} overrides
- * @param {{ defaultItemType: "RM" | "FG" }} options
- * @returns {"RM" | "FG"}
+ * @param {Record<string, string> | undefined} itemOverrides
+ * @param {Record<string, string> | undefined} groupOverrides
+ * @param {NormalizedOptions} options
+ * @returns {"RM" | "FG" | "SFG" | "CONSUMABLE" | null}
  */
-function resolveItemTypeForApply(row, overrides, options) {
-  const raw = overrides && typeof overrides === "object" ? overrides[row.tallyName] : undefined;
-  if (raw === "RM" || raw === "FG") return raw;
+function resolveItemTypeForApply(row, itemOverrides, groupOverrides, options) {
+  const perItem = itemOverrides && typeof itemOverrides === "object" ? itemOverrides[row.tallyName] : undefined;
+  if (perItem != null && String(perItem).trim() !== "") {
+    return resolveErpItemType(perItem);
+  }
+  const groupKey = normalizeGroupKey(/** @type {string} */ (row.mapped?.parentGroup));
+  const fromGroupRaw =
+    groupOverrides && typeof groupOverrides === "object"
+      ? groupOverrides[groupKey] || groupOverrides[/** @type {string} */ (row.mapped?.parentGroup)]
+      : undefined;
+  if (fromGroupRaw != null && String(fromGroupRaw).trim() !== "") {
+    return resolveErpItemType(fromGroupRaw);
+  }
+  const mappedChoice = row.mapped?.mappingChoice || row.mapped?.suggestedItemType;
+  const fromMapped = resolveErpItemType(/** @type {string} */ (mappedChoice));
+  if (fromMapped) return fromMapped;
   const auto = row.mapped?.autoDetectedItemType;
-  if (auto === "RM" || auto === "FG") return auto;
-  return options.defaultItemType === "RM" ? "RM" : "FG";
+  if (auto === "RM" || auto === "FG" || auto === "SFG" || auto === "CONSUMABLE") return auto;
+  if (row.mapped?.importAction === "EXCLUDE") return null;
+  void options;
+  return null;
 }
 
 /**
  * @param {import("@prisma/client").PrismaClient} db
  * @param {string} xmlString
  * @param {NormalizedOptions} options
+ * @param {Record<string, unknown> | null} [decodeMeta]
+ * @param {{ onProgress?: (p: { phase?: string; percent?: number; message?: string; recordsDetected?: number | null; recordsProcessed?: number | null; stockItemsProcessed?: number | null; stockItemsTotal?: number | null }) => void; preParsed?: object | null } | null} [progressOpts]
  */
-async function buildPreviewPayload(db, xmlString, options) {
-  const parsed = parseTallyMastersXml(xmlString);
+async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, progressOpts = null) {
+  const onProgress = progressOpts && typeof progressOpts.onProgress === "function" ? progressOpts.onProgress : null;
+  /** @type {any} */
+  let parsed = progressOpts && progressOpts.preParsed ? progressOpts.preParsed : null;
+  if (!parsed) {
+    onProgress?.({ phase: "analysing", percent: 40, message: "Parsing Tally XML…" });
+    parsed = parseTallyMastersXml(xmlString, decodeMeta, { onProgress });
+  }
   if (!parsed.ok) {
     return { ok: false, error: parsed.error, warnings: [], parseStats: null };
   }
+  onProgress?.({
+    phase: "analysing",
+    percent: 86,
+    message: `Parsed ${parsed.parseStats?.stockItemsParsed ?? 0} stock item(s), ${parsed.parseStats?.ledgersParsed ?? 0} ledger row(s)…`,
+    recordsDetected: parsed.parseStats?.stockItemsParsed ?? null,
+    recordsProcessed: parsed.parseStats?.stockItemsParsed ?? null,
+    stockItemsProcessed: parsed.parseStats?.stockItemsParsed ?? null,
+    stockItemsTotal: parsed.parseStats?.stockItemsParsed ?? null,
+  });
 
   const parseStats = parsed.parseStats;
 
@@ -650,7 +821,17 @@ async function buildPreviewPayload(db, xmlString, options) {
     });
   }
   const itemsDb = await db.item.findMany({
-    select: { id: true, itemName: true, hsnCode: true, gstRate: true, unitId: true, unit: true, itemType: true },
+    select: {
+      id: true,
+      itemName: true,
+      hsnCode: true,
+      gstRate: true,
+      unitId: true,
+      unit: true,
+      itemType: true,
+      tallyName: true,
+      tallyGuid: true,
+    },
   });
   const unitsDb = await db.unit.findMany({ where: { isActive: true }, select: { id: true, unitName: true, unitCode: true } });
 
@@ -689,12 +870,25 @@ async function buildPreviewPayload(db, xmlString, options) {
       .map((s) => [s.gstNorm, s]),
   );
   const itemByKey = new Map(itemsDb.map((it) => [normalizeMasterNameKey(it.itemName), it]));
+  const itemByTallyName = new Map(
+    itemsDb.filter((it) => it.tallyName).map((it) => [normalizeMasterNameKey(it.tallyName), it]),
+  );
+  const itemByGuid = new Map(
+    itemsDb.filter((it) => it.tallyGuid).map((it) => [String(it.tallyGuid).trim().toLowerCase(), it]),
+  );
   const unitByKey = new Map(unitsDb.map((u) => [normalizeUnitKey(u.unitName), u]));
 
   const stockKeywordOpts = {
     fgKeywords: options.itemTypeFgKeywords,
     rmKeywords: options.itemTypeRmKeywords,
   };
+
+  onProgress?.({
+    phase: "analysing",
+    percent: 70,
+    message: "Mapping parties and stock items for preview…",
+    recordsDetected: parsed.parseStats?.stockItemsParsed ?? null,
+  });
 
   const warnings = [...parsed.warnings];
   if (!identityColumnsAvailable) {
@@ -728,9 +922,27 @@ async function buildPreviewPayload(db, xmlString, options) {
     });
   }
 
+  /** Single mapStockItemToItem pass — reused for unit harvest and preview rows. */
+  /** @type {NonNullable<ReturnType<typeof mapStockItemToItem>>[]} */
+  const mappedStockItems = [];
+  const stockTotal = parsed.stockItems.length;
+  let stockMapped = 0;
   for (const sRaw of parsed.stockItems) {
     const mi = mapStockItemToItem(sRaw, stockKeywordOpts);
+    stockMapped += 1;
+    if (stockMapped % 100 === 0 || stockMapped === stockTotal) {
+      onProgress?.({
+        phase: "analysing",
+        percent: stockTotal > 0 ? Math.min(92, Math.round(86 + (stockMapped / stockTotal) * 6)) : 88,
+        message: `Mapping stock items… ${stockMapped.toLocaleString("en-IN")} of ${stockTotal.toLocaleString("en-IN")}`,
+        recordsDetected: stockTotal,
+        recordsProcessed: stockMapped,
+        stockItemsProcessed: stockMapped,
+        stockItemsTotal: stockTotal,
+      });
+    }
     if (!mi) continue;
+    mappedStockItems.push(mi);
     if (mi.baseUnit) {
       const k = normalizeUnitKey(mi.baseUnit);
       if (k && !tallyUnitsToImport.has(k)) {
@@ -888,6 +1100,9 @@ async function buildPreviewPayload(db, xmlString, options) {
           contactPerson: cust.contact || null,
           phone: cust.phone || null,
           email: safeEmailOrNull(cust.email),
+          openingBalance: cust.openingBalance ?? 0,
+          sourceSerial: cust.sourceSerial || null,
+          parentGroup: cust.parentGroup || null,
         },
       });
 
@@ -1022,6 +1237,9 @@ async function buildPreviewPayload(db, xmlString, options) {
           contactPerson: sup.contact || null,
           phone: sup.phone || null,
           email: safeEmailOrNull(sup.email),
+          openingBalance: sup.openingBalance ?? 0,
+          sourceSerial: sup.sourceSerial || null,
+          parentGroup: sup.parentGroup || null,
         },
       });
     }
@@ -1029,38 +1247,56 @@ async function buildPreviewPayload(db, xmlString, options) {
 
   const stockGroupTaxLookup = buildStockGroupTaxLookup(parsed.stockGroups);
 
-  for (const sRaw of parsed.stockItems) {
-    const mi = mapStockItemToItem(sRaw, stockKeywordOpts);
-    if (!mi) continue;
+  let conflictChecked = 0;
+  for (const mi of mappedStockItems) {
+    conflictChecked += 1;
+    if (conflictChecked % 200 === 0 || conflictChecked === mappedStockItems.length) {
+      onProgress?.({
+        phase: "preparing_preview",
+        percent: mappedStockItems.length
+          ? Math.min(95, Math.round(90 + (conflictChecked / mappedStockItems.length) * 5))
+          : 92,
+        message: `Checking conflicts… ${conflictChecked.toLocaleString("en-IN")} of ${mappedStockItems.length.toLocaleString("en-IN")}`,
+        recordsDetected: mappedStockItems.length,
+        recordsProcessed: conflictChecked,
+        stockItemsProcessed: conflictChecked,
+        stockItemsTotal: mappedStockItems.length,
+      });
+    }
     const tax = resolveStockItemTaxFromStockGroups(
       { hsnCode: mi.hsnCode, gstRate: mi.gstRate, parentGroup: mi.parentGroup },
       stockGroupTaxLookup,
     );
     const effectiveHsn = tax.hsnCode;
     const effectiveGst = tax.gstRate;
-    const nk = normalizeMasterNameKey(mi.itemName);
-    const existing = itemByKey.get(nk);
+    const guidKey = mi.tallyGuid ? String(mi.tallyGuid).trim().toLowerCase() : "";
+    const existing =
+      (guidKey && itemByGuid.get(guidKey)) ||
+      itemByTallyName.get(normalizeMasterNameKey(mi.tallyName)) ||
+      itemByKey.get(normalizeMasterNameKey(mi.itemName)) ||
+      null;
     const rowWarnings = [];
     const rowErrors = [];
     /** @type {ReturnType<typeof formatFieldIssue>[]} */
     const fieldIssues = [];
 
     if (!mi.baseUnit) {
-      pushFieldIssue(rowErrors, fieldIssues, {
+      pushFieldIssue(rowWarnings, fieldIssues, {
         masterName: mi.itemName,
         masterType: "Item",
         field: "Base unit",
         actualValue: mi.baseUnit,
-        reason: "Base unit missing in Tally stock item.",
+        reason: "Base unit missing in Tally stock item — map or exclude before import.",
       });
     }
     if (!effectiveHsn) {
-      pushFieldIssue(rowErrors, fieldIssues, {
+      pushFieldIssue(rowWarnings, fieldIssues, {
         masterName: mi.itemName,
         masterType: "Item",
         field: "HSN",
         actualValue: effectiveHsn,
         reason: "HSN missing in Tally stock item and parent stock groups.",
+        disposition: "May import with blank HSN; review in preview",
       });
     } else if (tax.hsnInheritedFrom) {
       fieldIssues.push(
@@ -1086,7 +1322,16 @@ async function buildPreviewPayload(db, xmlString, options) {
       });
     }
     const gstPct = normalizeGstRateForItem(effectiveGst);
-    if (tax.gstInheritedFrom && gstPct != null) {
+    if (gstPct == null) {
+      pushFieldIssue(rowWarnings, fieldIssues, {
+        masterName: mi.itemName,
+        masterType: "Item",
+        field: "GST rate",
+        actualValue: null,
+        reason: "GST Unresolved/Inherited — IGST blank on latest GSTDETAILS (not coerced to 0%).",
+        disposition: "Resolve during preview or import with blank GST",
+      });
+    } else if (tax.gstInheritedFrom) {
       fieldIssues.push(
         formatFieldIssue({
           masterName: mi.itemName,
@@ -1099,15 +1344,43 @@ async function buildPreviewPayload(db, xmlString, options) {
       );
     }
 
-    const unitKey = mi.baseUnit ? normalizeUnitKey(mi.baseUnit) : "";
+    const unitAlias = suggestUnitMapping(mi.baseUnit);
+    const unitKey = unitAlias.aliasKey || (mi.baseUnit ? normalizeUnitKey(mi.baseUnit) : "");
+    const suggestedErpUnitName = unitAlias.suggestedErpUnitName;
+    const erpUnit = suggestedErpUnitName ? unitByKey.get(normalizeUnitKey(suggestedErpUnitName)) : unitKey ? unitByKey.get(unitKey) : null;
     const unitRow = unitKey ? tallyUnitsToImport.get(unitKey) : null;
-    const erpUnit = unitKey ? unitByKey.get(unitKey) : null;
 
     let proposedAction = "CREATE";
+    let matchClass = "NEW";
     if (rowErrors.length) {
       proposedAction = "ERROR";
     } else if (existing) {
-      if (options.duplicateAction === "UPDATE_EMPTY_FIELDS_ONLY") {
+      const conflictFields = [];
+      if (
+        !isEmptyField(existing.hsnCode) &&
+        hsnNorm &&
+        String(existing.hsnCode).trim() !== String(hsnNorm).trim()
+      ) {
+        conflictFields.push("HSN");
+      }
+      const eg = existing.gstRate != null ? Number(existing.gstRate) : null;
+      if (eg != null && Number.isFinite(eg) && gstPct != null && Math.abs(eg - gstPct) > 0.001) {
+        conflictFields.push("GST");
+      }
+      if (
+        !isEmptyField(existing.itemType) &&
+        mi.autoDetectedItemType &&
+        existing.itemType !== mi.autoDetectedItemType
+      ) {
+        conflictFields.push("itemType");
+      }
+      if (conflictFields.length) {
+        proposedAction = "CONFLICT";
+        matchClass = "CONFLICT";
+        rowWarnings.push(
+          `Existing ERP item differs on ${conflictFields.join(", ")} — will not overwrite without explicit confirmation.`,
+        );
+      } else if (options.duplicateAction === "UPDATE_EMPTY_FIELDS_ONLY") {
         const gstExisting = existing.gstRate != null ? Number(existing.gstRate) : NaN;
         const gstEmpty = existing.gstRate == null || !Number.isFinite(gstExisting);
         const empties =
@@ -1115,19 +1388,21 @@ async function buildPreviewPayload(db, xmlString, options) {
           gstEmpty ||
           isEmptyField(existing.unitId) ||
           isEmptyField(existing.unit);
-        const tallyHas = Boolean(hsnNorm) || effectiveGst != null || Boolean(mi.baseUnit);
+        const tallyHas = Boolean(hsnNorm) || gstPct != null || Boolean(mi.baseUnit);
         proposedAction = empties && tallyHas ? "UPDATE_EMPTY_FIELDS" : "SKIP_DUPLICATE";
-        if (proposedAction === "SKIP_DUPLICATE" && !empties) rowWarnings.push("Duplicate item name.");
+        matchClass = proposedAction === "UPDATE_EMPTY_FIELDS" ? "SAFE_UPDATE" : "EXACT_MATCH";
+        if (proposedAction === "SKIP_DUPLICATE" && !empties) rowWarnings.push("Duplicate item — Exact Match; business fields skipped.");
       } else {
         proposedAction = "SKIP_DUPLICATE";
-        rowWarnings.push("Duplicate item name.");
+        matchClass = "EXACT_MATCH";
+        rowWarnings.push("Duplicate item name / Tally GUID — skipped (idempotent).");
       }
     }
 
-    const suggestedItemType =
-      mi.autoDetectedItemType === "RM" || mi.autoDetectedItemType === "FG"
-        ? mi.autoDetectedItemType
-        : options.defaultItemType;
+    const groupSuggestion = suggestGroupMapping(mi.parentGroup);
+    const mappingChoice = groupSuggestion.suggested;
+    const erpFromGroup = resolveErpItemType(mappingChoice);
+    const suggestedItemType = erpFromGroup || mi.autoDetectedItemType || null;
 
     items.push({
       entityType: "ITEM",
@@ -1145,17 +1420,25 @@ async function buildPreviewPayload(db, xmlString, options) {
         parentGroup: mi.parentGroup,
         autoDetectedItemType: mi.autoDetectedItemType,
         defaultItemType: options.defaultItemType,
+        mappingChoice,
         suggestedItemType,
         itemType: suggestedItemType,
+        importAction: erpFromGroup ? "IMPORT" : "EXCLUDE",
+        matchClass,
         baseUnit: mi.baseUnit ? normalizeMasterNameDisplay(mi.baseUnit) : "",
+        proposedErpUnitName: suggestedErpUnitName,
+        proposedErpUnitId: erpUnit ? erpUnit.id : null,
+        unitUnresolved: !erpUnit,
         hsnCode: hsnNorm,
         gstRate: gstPct,
+        gstStatus: gstPct == null ? "Unresolved/Inherited" : "Resolved",
         hsnSource: tax.hsnSource,
-        gstSource: tax.gstSource,
+        gstSource: tax.gstSource || mi.gstSource,
         hsnInheritedFrom: tax.hsnInheritedFrom,
         gstInheritedFrom: tax.gstInheritedFrom,
         unitKey: unitKey || null,
         unitWillCreate: Boolean(unitRow && !erpUnit),
+        openingBalanceNotPosted: true,
       },
     });
   }
@@ -1191,6 +1474,107 @@ async function buildPreviewPayload(db, xmlString, options) {
     },
   };
 
+  let excludedParentGroupRows = 0;
+  let partyInvalidNameRows = 0;
+  for (const lRaw of parsed.ledgers) {
+    const ledger = /** @type {Record<string, unknown>} */ (lRaw);
+    const display = ledgerDisplayName(ledger);
+    if (!display) {
+      partyInvalidNameRows += 1;
+      continue;
+    }
+    const asCust = mapLedgerToParty(lRaw, "CUSTOMER");
+    const asSup = mapLedgerToParty(lRaw, "SUPPLIER");
+    if (!asCust && !asSup) excludedParentGroupRows += 1;
+  }
+
+  const partyRows = {
+    totalRowsDetected:
+      (parseStats.customFlatRowsDetected ?? 0) > 0
+        ? parseStats.customFlatRowsDetected
+        : parsed.ledgers.length,
+    eligibleCustomers: customers.length,
+    eligibleSuppliers: suppliers.length,
+    excludedParentGroup: excludedParentGroupRows,
+    duplicates:
+      customers.filter((r) => r.proposedAction === "SKIP_DUPLICATE").length +
+      suppliers.filter((r) => r.proposedAction === "SKIP_DUPLICATE").length,
+    invalidRows: (parseStats.customFlatInvalidRows ?? 0) + partyInvalidNameRows,
+  };
+  summary.partyRows = partyRows;
+
+  const groupTypeOverrides =
+    options.groupTypeOverrides && typeof options.groupTypeOverrides === "object" ? options.groupTypeOverrides : {};
+  const unitMapOverrides =
+    options.unitMapOverrides && typeof options.unitMapOverrides === "object" ? options.unitMapOverrides : {};
+
+  const groupMapping = buildGroupMappingTable(
+    items.map((r) => ({ parentGroup: r.mapped?.parentGroup, tallyStockGroup: r.mapped?.tallyStockGroup })),
+    groupTypeOverrides,
+  );
+  const unitMapping = buildUnitMappingTable(
+    items.map((r) => ({ baseUnit: r.mapped?.baseUnit })),
+    unitMapOverrides,
+    unitsDb,
+  );
+  const groupChoiceByKey = new Map(groupMapping.map((g) => [g.groupKey, g]));
+  const unitChoiceByKey = new Map(unitMapping.map((u) => [u.aliasKey, u]));
+
+  // Gate stock import on resolved group + unit mapping (never silently import Labour Charges etc.).
+  for (const row of items) {
+    if (row.proposedAction === "ERROR" || row.proposedAction === "CONFLICT") continue;
+    const gKey = normalizeGroupKey(row.mapped?.parentGroup) || "(blank)";
+    const gRow = groupChoiceByKey.get(gKey);
+    const erpType = gRow ? resolveErpItemType(gRow.choice) : null;
+    row.mapped.mappingChoice = gRow?.choice || row.mapped.mappingChoice;
+    row.mapped.itemType = erpType;
+    row.mapped.suggestedItemType = erpType || row.mapped.suggestedItemType;
+    row.mapped.importAction = erpType ? "IMPORT" : "EXCLUDE";
+
+    const uKey = normalizeUnitKey(row.mapped?.baseUnit) || "(blank)";
+    const uRow = unitChoiceByKey.get(uKey);
+    if (uRow) {
+      row.mapped.proposedErpUnitName = uRow.proposedErpUnitName;
+      row.mapped.proposedErpUnitId = uRow.proposedErpUnitId;
+      row.mapped.unitUnresolved = uRow.unresolved;
+    }
+
+    if (!erpType) {
+      if (row.proposedAction === "CREATE" || row.proposedAction === "UPDATE_EMPTY_FIELDS") {
+        row.proposedAction = "EXCLUDED";
+        row.warnings.push("Excluded by stock-group mapping (review Stage 2 mapping table).");
+        row.status = rowPreviewStatus(row.proposedAction, row.warnings, row.errors);
+      }
+      continue;
+    }
+    if (row.mapped.unitUnresolved) {
+      if (row.proposedAction === "CREATE" || row.proposedAction === "UPDATE_EMPTY_FIELDS") {
+        row.proposedAction = "EXCLUDED";
+        row.warnings.push("Unit unresolved — map to an existing ERP unit or exclude.");
+        row.status = rowPreviewStatus(row.proposedAction, row.warnings, row.errors);
+      }
+    }
+  }
+
+  const stockPreview = {
+    encoding: parseStats.encoding || decodeMeta?.encoding || null,
+    totalStockItems: parseStats.stockItemsParsed ?? items.length,
+    sanitizedInvalidRefCount: parseStats.sanitizedInvalidRefCount ?? 0,
+    importable: items.filter((r) => r.proposedAction === "CREATE" || r.proposedAction === "UPDATE_EMPTY_FIELDS").length,
+    excluded: items.filter((r) => r.proposedAction === "EXCLUDED").length,
+    duplicates: items.filter((r) => r.proposedAction === "SKIP_DUPLICATE").length,
+    conflicts: items.filter((r) => r.proposedAction === "CONFLICT").length,
+    missingNames: Math.max(0, (parseStats.stockItemOpenInRaw || 0) - (parseStats.stockItemsParsed || 0)),
+    blankGroups: items.filter((r) => !String(r.mapped?.parentGroup || "").trim()).length,
+    unresolvedUnits: items.filter((r) => r.mapped?.unitUnresolved).length,
+    unresolvedGst: items.filter((r) => r.mapped?.gstStatus === "Unresolved/Inherited").length,
+    openingBalanceNotPosted: true,
+  };
+
+  summary.stockPreview = stockPreview;
+  summary.items.excluded = stockPreview.excluded;
+  summary.items.conflict = stockPreview.conflicts;
+
   const parsedMasterCounts = {
     customers: customers.length,
     suppliers: suppliers.length,
@@ -1202,6 +1586,10 @@ async function buildPreviewPayload(db, xmlString, options) {
     ledgers: parseStats.ledgersParsed ?? 0,
     stockItems: parseStats.stockItemsParsed ?? 0,
     warnings: warnings.length,
+    totalPartyRowsDetected: partyRows.totalRowsDetected,
+    excludedParentGroup: partyRows.excludedParentGroup,
+    partyDuplicates: partyRows.duplicates,
+    partyInvalidRows: partyRows.invalidRows,
   };
 
   /** Informational notes for masters parsed but not imported in Release-1 (not errors). */
@@ -1221,6 +1609,12 @@ async function buildPreviewPayload(db, xmlString, options) {
       "This XML contains no Stock Items or Units. Item identities were not updated. Export Stock Items and Units separately from Tally (master export including STOCKITEM / UNIT), then run Preview again.",
     );
   }
+  infoNotes.push(
+    "Opening balance not posted — party CALEDGEROPBAL / stock openings are retained on preview only. No fake GRNs or ledger postings are created.",
+  );
+  if (parseStats.encoding) {
+    infoNotes.push(`Detected file encoding: ${parseStats.encoding}.`);
+  }
 
   const blockingErrors = [...customers, ...suppliers, ...items, ...units]
     .filter((r) => r.proposedAction === "ERROR" || (Array.isArray(r.errors) && r.errors.length > 0))
@@ -1238,21 +1632,33 @@ async function buildPreviewPayload(db, xmlString, options) {
 
   const previewTotal = customers.length + suppliers.length + items.length + units.length;
   const rawTagSum =
-    parseStats.tallyMessageOpenInRaw + parseStats.ledgerOpenInRaw + parseStats.stockItemOpenInRaw + parseStats.unitOpenInRaw;
+    parseStats.tallyMessageOpenInRaw +
+    parseStats.ledgerOpenInRaw +
+    parseStats.stockItemOpenInRaw +
+    parseStats.unitOpenInRaw +
+    (parseStats.caAcctTypeNameOpenInRaw ?? 0);
   if (previewTotal === 0) {
     if (rawTagSum === 0) {
       warnings.push(
-        "No supported Tally masters found in XML. Use a Tally master export that includes LEDGER / STOCKITEM / UNIT blocks (for example from Tally’s master XML / integration export), not a voucher-only or empty response file.",
+        "No supported Tally masters found in XML. Use a Tally master export that includes LEDGER / STOCKITEM / UNIT blocks, or a custom ledger report with CAACCTYPENAME / CALEDGERPARENT (Sundry Debtors / Sundry Creditors).",
       );
     }
+  }
+  if (partyRows.excludedParentGroup > 0) {
+    warnings.push(
+      `Excluded ${partyRows.excludedParentGroup} ledger row(s) whose parent group is not Sundry Debtors / Sundry Creditors (or a debtor/creditor sub-group).`,
+    );
   }
   if (parsed.ledgers.length > 0 && customers.length === 0 && suppliers.length === 0) {
     const parents = parsed.ledgers
       .slice(0, 8)
-      .map((l) => strVal(/** @type {Record<string, unknown>} */ (l).PARENT))
+      .map((l) => {
+        const o = /** @type {Record<string, unknown>} */ (l);
+        return strVal(o.PARENT) || strVal(o.CALEDGERPARENT);
+      })
       .filter(Boolean);
     warnings.push(
-      `Found ${parsed.ledgers.length} ledger node(s) in XML, but none matched customer/supplier groups we import (e.g. Sundry Debtors / Sundry Creditors or common debtor/creditor sub-groups). Sample PARENT values: ${parents.join("; ") || "(empty)"}.`,
+      `Found ${parsed.ledgers.length} ledger row(s) in XML, but none matched customer/supplier groups we import (e.g. Sundry Debtors / Sundry Creditors or common debtor/creditor sub-groups). Sample PARENT values: ${parents.join("; ") || "(empty)"}.`,
     );
   }
   const stockUnmapped = parsed.stockItems.filter((s) => !mapStockItemToItem(s)).length;
@@ -1276,6 +1682,9 @@ async function buildPreviewPayload(db, xmlString, options) {
     suppliers,
     items,
     units,
+    groupMapping,
+    unitMapping,
+    stockPreview,
     parseStats,
     runtime: {
       pipelineId: TALLY_IMPORT_PIPELINE_ID,
@@ -1293,22 +1702,63 @@ async function buildPreviewPayload(db, xmlString, options) {
 /**
  * @param {import("@prisma/client").PrismaClient} db
  * @param {string} token
- * @param {Record<string, "RM" | "FG"> | undefined} itemTypeOverrides validated (values RM|FG only); unknown keys ignored
+ * @param {{
+ *   itemTypeOverrides?: Record<string, string>;
+ *   groupTypeOverrides?: Record<string, string>;
+ *   unitMapOverrides?: Record<string, string | null>;
+ *   confirmConflicts?: boolean;
+ *   actorUser?: { id?: number; name?: string; email?: string; role?: string } | null;
+ *   sourceFilename?: string | null;
+ * } | Record<string, string> | undefined} applyOpts
+ *   Back-compat: plain Record treated as itemTypeOverrides only.
  */
-async function applyFromPreviewToken(db, token, itemTypeOverrides) {
-  const session = getPreviewSession(token);
-  if (!session) {
-    const err = new Error("Preview session expired or invalid. Run Preview again.");
+async function applyFromPreviewToken(db, token, applyOpts) {
+  const actorUser = applyOpts?.actorUser || null;
+  const actorUserId = actorUser && actorUser.id != null ? Number(actorUser.id) : null;
+  const session = claimPreviewSessionForApply(token, { actorUserId });
+
+  const plainOverrides =
+    applyOpts &&
+    typeof applyOpts === "object" &&
+    applyOpts.itemTypeOverrides == null &&
+    applyOpts.groupTypeOverrides == null &&
+    applyOpts.unitMapOverrides == null &&
+    applyOpts.actorUser == null &&
+    applyOpts.onProgress == null &&
+    applyOpts.confirmConflicts == null &&
+    applyOpts.clientOperationId == null
+      ? /** @type {Record<string, string>} */ (applyOpts)
+      : null;
+  // Per-item overrides are optional and must stay small. Confirm Import must not resend all preview rows.
+  const rawItemOverrides = plainOverrides || applyOpts?.itemTypeOverrides || undefined;
+  if (rawItemOverrides && typeof rawItemOverrides === "object" && Object.keys(rawItemOverrides).length > 500) {
+    markPreviewSessionReady(token);
+    const err = new Error(
+      "Too many per-item type overrides in Confirm Import. Use Stage 2 group mappings instead of sending every stock item.",
+    );
     err.statusCode = 400;
-    err.code = "PREVIEW_SESSION_INVALID";
+    err.code = "ITEM_OVERRIDES_TOO_LARGE";
     throw err;
   }
+  const itemTypeOverrides = rawItemOverrides;
+  const groupTypeOverrides = applyOpts?.groupTypeOverrides || session.options.groupTypeOverrides || {};
+  const unitMapOverrides = applyOpts?.unitMapOverrides || session.options.unitMapOverrides || {};
+  const confirmConflicts = Boolean(applyOpts?.confirmConflicts);
+  const sourceFilename = applyOpts?.sourceFilename || session.sourceFilename || session.options.sourceFilename || null;
+  const onProgress = typeof applyOpts?.onProgress === "function" ? applyOpts.onProgress : null;
 
   const xmlString = session.xmlUtf8;
-  const options = session.options;
+  const options = {
+    ...session.options,
+    groupTypeOverrides,
+    unitMapOverrides,
+    importBatchSize: applyOpts?.importBatchSize ?? session.options.importBatchSize,
+    ...(applyOpts?.duplicateAction ? { duplicateAction: applyOpts.duplicateAction } : {}),
+  };
 
+  let completedOk = false;
   try {
-  const payload = await buildPreviewPayload(db, xmlString, options);
+  const payload = await buildPreviewPayload(db, xmlString, options, session.decodeMeta);
   if (!payload.ok) {
     const err = new Error(payload.error || "Could not parse XML.");
     err.statusCode = 400;
@@ -1320,6 +1770,8 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
   let updated = 0;
   let skipped = 0;
   let failed = 0;
+  let excluded = 0;
+  let conflicted = 0;
 
   const pushResult = (entityType, tallyName, action, erpId, error, warning) => {
     results.push({ entityType, tallyName, action, erpId: erpId ?? null, error: error ?? null, warning: warning ?? null });
@@ -1626,7 +2078,37 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
   const DEFAULT_CRITICAL = 50;
   const DEFAULT_WARNING = 80;
 
+  /** @type {typeof payload.items} */
+  const itemWork = [];
   for (const row of payload.items) {
+    if (row.proposedAction === "EXCLUDED") {
+      excluded += 1;
+      pushResult("ITEM", row.tallyName, "EXCLUDED", row.existingErpId, null, row.warnings[0] || "Excluded by mapping.");
+      continue;
+    }
+    if (row.proposedAction === "CONFLICT") {
+      if (!confirmConflicts) {
+        conflicted += 1;
+        pushResult(
+          "ITEM",
+          row.tallyName,
+          "CONFLICTED",
+          row.existingErpId,
+          "Conflict with existing ERP item — confirmConflicts required; fields not overwritten.",
+          row.warnings[0] || null,
+        );
+        continue;
+      }
+      // Explicit confirm still only backfills identity — never silent overwrite of HSN/GST/type/unit.
+      const outcome = await applyIdentityBackfillSafe(db, "item", row.existingErpId, row, "ITEM", pushResult);
+      if (outcome === "UPDATED") updated += 1;
+      else if (outcome === "FAILED") failed += 1;
+      else {
+        conflicted += 1;
+        skipped += 1;
+      }
+      continue;
+    }
     if (row.proposedAction === "SKIP_DUPLICATE" || row.proposedAction === "ERROR") {
       if (row.proposedAction === "SKIP_DUPLICATE") {
         const outcome = await applyIdentityBackfillSafe(db, "item", row.existingErpId, row, "ITEM", pushResult);
@@ -1639,101 +2121,276 @@ async function applyFromPreviewToken(db, token, itemTypeOverrides) {
       }
       continue;
     }
-    try {
-      const unitKey = row.mapped.unitKey;
-      const u = unitKey ? unitByKeyAfter.get(unitKey) : null;
-      const unitDisplay = row.mapped.baseUnit || (u ? u.unitName : "");
-      if (!unitDisplay) {
-        failed += 1;
-        pushResult("ITEM", row.tallyName, "FAILED", null, "Unit could not be resolved.", null);
-        continue;
-      }
-      const hsn = row.mapped.hsnCode;
-      if (!hsn) {
-        failed += 1;
-        pushResult("ITEM", row.tallyName, "FAILED", null, "HSN required.", null);
-        continue;
-      }
+    itemWork.push(row);
+  }
 
-      if (row.proposedAction === "CREATE") {
-        const itemType = resolveItemTypeForApply(row, itemTypeOverrides, options);
-        const createdRow = await db.item.create({
-          data: {
-            itemName: row.mapped.itemName,
-            itemType,
-            unit: unitDisplay,
-            unitId: u ? u.id : null,
-            minStockLevel: "0",
-            hsnCode: hsn,
-            gstRate: String(row.mapped.gstRate),
-            redThresholdPercent: DEFAULT_CRITICAL,
-            yellowThresholdPercent: DEFAULT_WARNING,
-            ...tallyIdentityCreateData(row),
-          },
-          select: { id: true },
-        });
-        created += 1;
-        pushResult("ITEM", row.tallyName, "CREATED", createdRow.id, null, null);
-      } else if (row.proposedAction === "UPDATE_EMPTY_FIELDS" && row.existingErpId) {
-        const ex = await db.item.findUnique({ where: { id: row.existingErpId } });
-        if (!ex) {
-          failed += 1;
-          pushResult("ITEM", row.tallyName, "FAILED", null, "Item no longer exists.", null);
-          continue;
+  const batchSize = resolveImportBatchSize(options);
+  const totalItemBatches = itemWork.length ? Math.ceil(itemWork.length / batchSize) : 0;
+  let committedItemBatches = 0;
+  /** @type {null | { failedBatchIndex: number; totalBatches: number; committedBatchesBeforeFailure: number; createdBeforeFailure: number; remainingNotAttempted: number }} */
+  let itemBatchFailure = null;
+  /** @type {string[]} */
+  const importBatchWarnings = [];
+
+  for (let offset = 0; offset < itemWork.length; offset += batchSize) {
+    const batchIndex = Math.floor(offset / batchSize) + 1;
+    const batch = itemWork.slice(offset, offset + batchSize);
+    onProgress?.({
+      batchIndex,
+      batchTotal: totalItemBatches,
+      itemsProcessed: Math.min(offset, itemWork.length),
+      itemsTotal: itemWork.length,
+      percent: Math.round(5 + (offset / Math.max(1, itemWork.length)) * 90),
+      message: `Importing batch ${batchIndex} of ${totalItemBatches} — ${Math.min(offset, itemWork.length)} of ${itemWork.length} items processed`,
+    });
+    try {
+      const batchResults = await db.$transaction(async (tx) => {
+        /** @type {{ entityType: string; tallyName: string; action: string; erpId: number | null; error: string | null; warning: string | null }[]} */
+        const local = [];
+        for (const row of batch) {
+          const proposedUnitName = row.mapped.proposedErpUnitName || row.mapped.baseUnit;
+          const unitKey = proposedUnitName ? normalizeUnitKey(proposedUnitName) : row.mapped.unitKey;
+          const u = unitKey ? unitByKeyAfter.get(unitKey) : null;
+          const unitDisplay = (u && u.unitName) || proposedUnitName || row.mapped.baseUnit || "";
+          if (!unitDisplay || !u) {
+            // Hard-fail the whole batch: never commit a partial batch with mixed success/failure.
+            throw Object.assign(new Error(`Unit could not be resolved for item '${row.tallyName}'.`), {
+              code: "TALLY_ITEM_BATCH_ROW_FAILED",
+            });
+          }
+          const hsn = row.mapped.hsnCode || null;
+          const itemType = resolveItemTypeForApply(row, itemTypeOverrides, groupTypeOverrides, options);
+          if (!itemType) {
+            throw Object.assign(new Error(`No importable ERP item type for '${row.tallyName}' after mapping.`), {
+              code: "TALLY_ITEM_BATCH_ROW_FAILED",
+            });
+          }
+
+          if (row.proposedAction === "CREATE") {
+            const createdRow = await tx.item.create({
+              data: {
+                itemName: row.mapped.itemName,
+                itemType,
+                unit: unitDisplay,
+                unitId: u.id,
+                minStockLevel: "0",
+                hsnCode: hsn,
+                gstRate: row.mapped.gstRate == null ? null : String(row.mapped.gstRate),
+                redThresholdPercent: DEFAULT_CRITICAL,
+                yellowThresholdPercent: DEFAULT_WARNING,
+                ...tallyIdentityCreateData(row),
+              },
+              select: { id: true },
+            });
+            local.push({
+              entityType: "ITEM",
+              tallyName: row.tallyName,
+              action: "CREATED",
+              erpId: createdRow.id,
+              error: null,
+              warning: null,
+            });
+          } else if (row.proposedAction === "UPDATE_EMPTY_FIELDS" && row.existingErpId) {
+            const ex = await tx.item.findUnique({ where: { id: row.existingErpId } });
+            if (!ex) {
+              throw Object.assign(new Error(`Item '${row.tallyName}' no longer exists.`), {
+                code: "TALLY_ITEM_BATCH_ROW_FAILED",
+              });
+            }
+            const patch = { ...tallyIdentityBackfillPatch(ex, row) };
+            if (isEmptyField(ex.hsnCode) && hsn) patch.hsnCode = hsn;
+            if ((ex.gstRate == null || !Number.isFinite(Number(ex.gstRate))) && row.mapped.gstRate != null) {
+              patch.gstRate = String(row.mapped.gstRate);
+            }
+            if (isEmptyField(ex.unitId) && u) {
+              patch.unitId = u.id;
+              patch.unit = unitDisplay;
+            } else if (isEmptyField(ex.unit) && unitDisplay) {
+              patch.unit = unitDisplay;
+            }
+            if (Object.keys(patch).length) {
+              await tx.item.update({ where: { id: ex.id }, data: patch });
+              local.push({
+                entityType: "ITEM",
+                tallyName: row.tallyName,
+                action: "UPDATED",
+                erpId: ex.id,
+                error: null,
+                warning: null,
+              });
+            } else {
+              local.push({
+                entityType: "ITEM",
+                tallyName: row.tallyName,
+                action: "SKIPPED",
+                erpId: ex.id,
+                error: null,
+                warning: null,
+              });
+            }
+          }
         }
-        const patch = { ...tallyIdentityBackfillPatch(ex, row) };
-        if (isEmptyField(ex.hsnCode) && hsn) patch.hsnCode = hsn;
-        if ((ex.gstRate == null || !Number.isFinite(Number(ex.gstRate))) && row.mapped.gstRate != null) {
-          patch.gstRate = String(row.mapped.gstRate);
-        }
-        if (isEmptyField(ex.unitId) && u) {
-          patch.unitId = u.id;
-          patch.unit = unitDisplay;
-        } else if (isEmptyField(ex.unit) && unitDisplay) {
-          patch.unit = unitDisplay;
-        }
-        if (Object.keys(patch).length) {
-          await db.item.update({ where: { id: ex.id }, data: patch });
-          updated += 1;
-          pushResult("ITEM", row.tallyName, "UPDATED", ex.id, null, null);
-        } else {
-          skipped += 1;
-          pushResult("ITEM", row.tallyName, "SKIPPED", ex.id, null, null);
-        }
+        return local;
+      });
+      for (const r of batchResults) {
+        results.push(r);
+        if (r.action === "CREATED") created += 1;
+        else if (r.action === "UPDATED") updated += 1;
+        else if (r.action === "EXCLUDED") excluded += 1;
+        else if (r.action === "FAILED") failed += 1;
+        else skipped += 1;
       }
+      committedItemBatches += 1;
+      onProgress?.({
+        batchIndex,
+        batchTotal: totalItemBatches,
+        itemsProcessed: Math.min(offset + batch.length, itemWork.length),
+        itemsTotal: itemWork.length,
+        percent: Math.round(5 + ((offset + batch.length) / Math.max(1, itemWork.length)) * 90),
+        message: `Importing batch ${batchIndex} of ${totalItemBatches} — ${Math.min(offset + batch.length, itemWork.length)} of ${itemWork.length} items processed`,
+      });
     } catch (e) {
-      failed += 1;
-      pushResult("ITEM", row.tallyName, "FAILED", null, e instanceof Error ? e.message : String(e), null);
+      const errMsg = e instanceof Error ? e.message : String(e);
+      itemBatchFailure = {
+        failedBatchIndex: batchIndex,
+        totalBatches: totalItemBatches,
+        committedBatchesBeforeFailure: committedItemBatches,
+        createdBeforeFailure: created,
+        remainingNotAttempted: Math.max(0, itemWork.length - offset - batch.length),
+      };
+      const earlierNote =
+        committedItemBatches > 0
+          ? `Earlier batches 1–${committedItemBatches} of ${totalItemBatches} already committed (${created} item row(s) created/updated in those batches).`
+          : `No earlier item batches had committed before this failure.`;
+      const batchFailWarning =
+        `Item import batch ${batchIndex} of ${totalItemBatches} failed and was fully rolled back (no partial writes in this batch). ${earlierNote} ` +
+        `Import stopped; ${itemBatchFailure.remainingNotAttempted} later item row(s) were not attempted. ` +
+        `Re-run the same file safely — committed rows match by Tally GUID/name and will skip as duplicates.`;
+      importBatchWarnings.push(batchFailWarning);
+      for (const row of batch) {
+        failed += 1;
+        pushResult("ITEM", row.tallyName, "FAILED", null, errMsg, batchFailWarning);
+      }
+      // Do not continue with later batches after a hard transaction failure (avoids gaps).
+      const remaining = itemWork.slice(offset + batch.length);
+      for (const row of remaining) {
+        failed += 1;
+        pushResult(
+          "ITEM",
+          row.tallyName,
+          "FAILED",
+          null,
+          `Not attempted — import stopped after item batch ${batchIndex} of ${totalItemBatches} failed.`,
+          earlierNote,
+        );
+      }
+      break;
     }
   }
 
   const unresolved = results.filter((r) => r.action === "FAILED" || (r.action === "SKIPPED" && r.error));
-  return {
+  const responseWarnings = [...(payload.warnings || []), ...importBatchWarnings];
+  const partialCommitSummary = itemBatchFailure
+    ? ` Partial commit: item batches 1–${itemBatchFailure.committedBatchesBeforeFailure} of ${itemBatchFailure.totalBatches} committed; batch ${itemBatchFailure.failedBatchIndex} rolled back; later batches not attempted. Retry the same file safely (no duplicates).`
+    : "";
+  const activityMessage = itemBatchFailure
+    ? `Tally master import (partial): ${created} created, ${updated} updated, ${skipped} skipped, ${excluded} excluded, ${conflicted} conflicted, ${failed} failed. ${itemBatchFailure.committedBatchesBeforeFailure} item batch(es) committed before batch ${itemBatchFailure.failedBatchIndex}/${itemBatchFailure.totalBatches} rolled back.`
+    : `Tally master import: ${created} created, ${updated} updated, ${skipped} skipped, ${excluded} excluded, ${conflicted} conflicted, ${failed} failed`;
+  try {
+    await logActivity({
+      tx: db,
+      user: actorUser,
+      module: "TALLY_IMPORT",
+      entityType: "TALLY_MASTER_IMPORT",
+      entityId: null,
+      docNo: null,
+      action: "IMPORT",
+      subAction: itemBatchFailure ? "APPLY_PARTIAL" : "APPLY",
+      message: activityMessage.slice(0, 512),
+      metadata: {
+        sourceFilename: sourceFilename || "",
+        encoding: String(payload.parseStats?.encoding || session.decodeMeta?.encoding || ""),
+        sourceRowCount:
+          (payload.summary?.partyRows?.totalRowsDetected || 0) + (payload.stockPreview?.totalStockItems || 0),
+        created,
+        updated,
+        skipped,
+        excluded,
+        conflicted,
+        failed,
+        sanitizedInvalidRefCount: payload.parseStats?.sanitizedInvalidRefCount ?? 0,
+        openingBalanceNotPosted: true,
+        itemBatchSize: batchSize,
+        itemBatchesCommitted: committedItemBatches,
+        itemBatchesTotal: totalItemBatches,
+        failedBatchIndex: itemBatchFailure?.failedBatchIndex ?? null,
+        earlierBatchesCommitted: Boolean(itemBatchFailure && itemBatchFailure.committedBatchesBeforeFailure > 0),
+        safelyRetryable: true,
+      },
+    });
+  } catch {
+    /* activity log is best-effort */
+  }
+
+  const result = {
     ok: true,
+    partialCommit: Boolean(itemBatchFailure),
     created,
     updated,
     skipped,
+    excluded,
+    conflicted,
     failed,
     results,
-    warnings: payload.warnings,
+    warnings: responseWarnings,
     unresolvedCount: unresolved.length,
     unresolved: unresolved.slice(0, 50),
+    openingBalanceNotPosted: true,
+    itemBatching: {
+      batchSize,
+      batchesCommitted: committedItemBatches,
+      batchesTotal: totalItemBatches,
+      failure: itemBatchFailure,
+      earlierBatchesCommitted: Boolean(itemBatchFailure && itemBatchFailure.committedBatchesBeforeFailure > 0),
+      safelyRetryable: true,
+    },
     summaryMessage:
-      failed > 0 || unresolved.length
-        ? `Import finished with ${created} created, ${updated} updated (including identity backfills), ${skipped} skipped, ${failed} failed. ${unresolved.length} row(s) left unresolved — see results.`
-        : `Import finished: ${created} created, ${updated} updated, ${skipped} skipped.`,
+      (failed > 0 || unresolved.length || itemBatchFailure
+        ? `Import finished with ${created} created, ${updated} updated, ${skipped} skipped, ${excluded} excluded, ${conflicted} conflicted, ${failed} failed.${partialCommitSummary}`
+        : `Import finished: ${created} created, ${updated} updated, ${skipped} skipped, ${excluded} excluded.`) +
+      (itemBatchFailure ? "" : ""),
   };
+  completedOk = true;
+  return result;
+  } catch (e) {
+    markPreviewSessionReady(token);
+    throw e;
   } finally {
-    deletePreviewSession(token);
+    if (completedOk) {
+      markPreviewSessionConsumed(token);
+      // Drop heavy XML after successful consume to free memory; token remains briefly as consumed.
+      const s = previewSessions.get(String(token || ""));
+      if (s) {
+        s.xmlUtf8 = "";
+      }
+    }
   }
 }
 
 module.exports = {
   buildPreviewPayload,
   createPreviewSession,
+  getPreviewSession,
+  claimPreviewSessionForApply,
+  fingerprintXmlText,
   applyFromPreviewToken,
   MAX_XML_BYTES,
+  IMPORT_BATCH_SIZE,
+  TALLY_APPLY_JSON_LIMIT,
+  SESSION_TTL_MS,
+  resolveImportBatchSize,
   gcSessions,
+  _resetPreviewSessionsForTests,
   normalizeStateTextForMatch,
   stateIdFromStateText,
   formatFieldIssue,

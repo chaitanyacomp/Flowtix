@@ -8,6 +8,7 @@
 
 const { GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
+const { computeRegularSoWorkOrderDemandCoverage } = require("./regularSoProductionClosure");
 const auditLog = require("./auditLog");
 
 const WO_SO_EPS = 1e-6;
@@ -76,7 +77,8 @@ async function loadWorkOrderCompletionContext(tx, workOrderId) {
       requirementSheetId: true,
       cycleId: true,
       shortfallQty: true,
-      lines: { select: { id: true, qty: true, shortfallQty: true } },
+      salesOrderId: true,
+      lines: { select: { id: true, qty: true, plannedQty: true, fgItemId: true, shortfallQty: true } },
       salesOrder: { select: { id: true, docNo: true, orderType: true } },
       productionExecution: { select: { executionStatus: true } },
     },
@@ -210,26 +212,28 @@ async function evaluateWorkOrderCompletion(tx, workOrderId, options = {}) {
       });
     }
 
-    const lineIds = wo.lines.map((l) => l.id);
-    const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(tx, lineIds);
-    let totalShortfall = 0;
-    const lineShortfalls = [];
-    for (const line of wo.lines) {
-      const required = n(line.qty);
-      const produced = producedByLineId.get(line.id) ?? 0;
-      const lineShortfall = round3(Math.max(0, required - produced));
-      if (lineShortfall > WO_SO_EPS) {
-        lineShortfalls.push({ id: line.id, shortfallQty: lineShortfall });
-        totalShortfall = round3(totalShortfall + lineShortfall);
-      }
+    // REGULAR shortfall = unmet SO demand, not leftover WO-plan buffer.
+    const coverage = await computeRegularSoWorkOrderDemandCoverage(tx, workOrderId);
+    if (coverage.soDemandCovered) {
+      return buildEvaluation({
+        eligible: false,
+        completionType: COMPLETION_TYPES.CLOSED_WITH_SHORTFALL,
+        missingConditions: [MISSING_CONDITIONS.NO_SHORTFALL_BALANCE],
+        reason:
+          "SO demand is already covered by approved production. Confirm the Production Report to complete the work order — do not close as shortage for WO-plan remainder.",
+      });
     }
+    const lineShortfalls = coverage.lines
+      .filter((l) => l.soShortageQty > WO_SO_EPS)
+      .map((l) => ({ id: l.workOrderLineId, shortfallQty: l.soShortageQty }));
+    const totalShortfall = coverage.soShortageQty;
     if (totalShortfall <= WO_SO_EPS) {
       return buildEvaluation({
         eligible: false,
         completionType: COMPLETION_TYPES.CLOSED_WITH_SHORTFALL,
         missingConditions: [MISSING_CONDITIONS.NO_SHORTFALL_BALANCE],
         reason:
-          "No remaining balance to close. All planned quantity is already produced, or increase production before shortfall close.",
+          "No SO-demand shortfall to close. Increase production, or confirm the Production Report when SO demand is covered.",
       });
     }
     return buildEvaluation({
@@ -257,9 +261,9 @@ async function evaluateWorkOrderCompletion(tx, workOrderId, options = {}) {
   if (!evidence.hasConfirmedProductionReport) {
     missingConditions.push(MISSING_CONDITIONS.PRODUCTION_REPORT_NOT_CONFIRMED);
   }
-  if (!evidence.rmReturnsSettled) {
-    missingConditions.push(MISSING_CONDITIONS.RM_RETURN_PENDING);
-  }
+  // A confirmed report has fully classified the RM disposition. Store receipt of
+  // a declared return remains a separate inventory-owned pending action and does
+  // not keep the production WO open.
 
   const isShopFloor = isShopFloorExecutionWorkOrder(wo, wo.salesOrder);
   if (isShopFloor) {
@@ -283,16 +287,24 @@ async function evaluateWorkOrderCompletion(tx, workOrderId, options = {}) {
     });
   }
 
-  const lineIds = wo.lines.map((l) => l.id);
-  const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(tx, lineIds);
-  let allComplete = true;
-  for (const line of wo.lines) {
-    const required = n(line.qty);
-    const produced = producedByLineId.get(line.id) ?? 0;
-    if (produced + WO_SO_EPS < required) allComplete = false;
-  }
-  if (!allComplete) {
-    missingConditions.push(MISSING_CONDITIONS.PRODUCTION_INCOMPLETE);
+  // REGULAR: obligation met when produced covers remaining SO demand (WO-plan buffer is not mandatory).
+  if (isRegularWorkOrderRecord(wo, wo.salesOrder)) {
+    const coverage = await computeRegularSoWorkOrderDemandCoverage(tx, workOrderId);
+    if (!coverage.productionObligationMet) {
+      missingConditions.push(MISSING_CONDITIONS.PRODUCTION_INCOMPLETE);
+    }
+  } else {
+    const lineIds = wo.lines.map((l) => l.id);
+    const producedByLineId = await getApprovedProducedQtyByWorkOrderLineIds(tx, lineIds);
+    let allComplete = true;
+    for (const line of wo.lines) {
+      const required = n(line.qty);
+      const produced = producedByLineId.get(line.id) ?? 0;
+      if (produced + WO_SO_EPS < required) allComplete = false;
+    }
+    if (!allComplete) {
+      missingConditions.push(MISSING_CONDITIONS.PRODUCTION_INCOMPLETE);
+    }
   }
   if (missingConditions.length > 0) {
     return buildEvaluation({
@@ -322,7 +334,7 @@ function completionBlockReason(missingConditions) {
     return "Production execution must be completed before the work order document can close.";
   }
   if (missingConditions.includes(MISSING_CONDITIONS.PRODUCTION_INCOMPLETE)) {
-    return "Approved production quantity has not reached the work order plan.";
+    return "Approved production has not covered the remaining SO demand (and WO plan is not fully produced).";
   }
   return "Work order completion conditions are not satisfied.";
 }
@@ -383,6 +395,23 @@ async function completeWorkOrder(tx, workOrderId, input) {
       include: { lines: { include: { fgItem: true } }, salesOrder: true },
     });
 
+    await tx.workOrderProductionExecution.upsert({
+      where: { workOrderId },
+      create: {
+        workOrderId,
+        executionStatus: "COMPLETED",
+        completedAt: new Date(),
+        completedByUserId: input.actorUserId ?? null,
+      },
+      update: {
+        executionStatus: "COMPLETED",
+        completedAt: new Date(),
+        completedByUserId: input.actorUserId ?? null,
+        blockReason: null,
+        blockRemarks: null,
+      },
+    });
+
     if (typeof input.actorUserId === "number") {
       await auditLog.write(tx, {
         action: auditLog.AuditAction.UPDATE,
@@ -440,6 +469,26 @@ async function completeWorkOrder(tx, workOrderId, input) {
     },
     include: { lines: { include: { fgItem: true } }, salesOrder: true },
   });
+
+  // Clear REGULAR report-pending execution park (SHORTFALL_PENDING) on successful close.
+  if (tx.workOrderProductionExecution?.upsert) {
+    await tx.workOrderProductionExecution.upsert({
+      where: { workOrderId },
+      create: {
+        workOrderId,
+        executionStatus: "COMPLETED",
+        completedAt: new Date(),
+        completedByUserId: input.actorUserId ?? null,
+      },
+      update: {
+        executionStatus: "COMPLETED",
+        completedAt: new Date(),
+        completedByUserId: input.actorUserId ?? null,
+        blockReason: null,
+        blockRemarks: null,
+      },
+    });
+  }
 
   if (typeof input.actorUserId === "number") {
     await auditLog.write(tx, {

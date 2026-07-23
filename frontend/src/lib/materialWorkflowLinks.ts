@@ -133,5 +133,5 @@ export function formatPostWoCreateSuccessMessage(workOrderLabel: string, pmrDocN
   const pmrPart = pmrDocNo?.trim()
     ? ` PMR ${pmrDocNo.trim()} is ready.`
     : " Production material request is ready.";
-  return `${workOrderLabel} created.${pmrPart} Continue to issue material.`;
+  return `${workOrderLabel} created.${pmrPart} Continue to issue material — open the Work Order register anytime to view this WO.`;
 }

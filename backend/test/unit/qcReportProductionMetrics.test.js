@@ -2,68 +2,93 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const {
+  buildProductionQcLifecycleMetrics,
+  buildReworkClearedTraceNote,
+  productionQcLifecycleStatusLabel,
+} = require("../../src/services/qcLifecycleProjection");
 
-// Inline mirrors of report helpers (keep in sync with qcReport.js semantics).
-function roundQty(n) {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return 0;
-  return Math.round(v * 1000) / 1000;
-}
+describe("qcLifecycleProjection — reported lifecycle", () => {
+  it("QC-26-0001 style: 10087 inspected, 10077 first-pass, 10 rework accepted → final usable 10087, unusable 0", () => {
+    const q = { acceptedQty: "10077", rejectedQty: "10", lossQty: "0", rejectedRoute: null };
+    const dispositions = [{ id: 1, status: "CLOSED", qty: "10", remainingQty: "0" }];
+    const hints = { reworkDispIds: new Set([1]), holdDispIds: new Set() };
+    const recheck = new Map([[1, 10]]);
+    const scrapParts = { directScrapQty: 0, reworkFinalScrapQty: 0 };
 
-const REWORK_DISPOSITION_STATUSES = new Set([
-  "REWORK_PENDING_SUPERVISOR",
-  "REWORK_APPROVED_PENDING_EXECUTION",
-  "REWORK_READY_FOR_QC",
-]);
+    const m = buildProductionQcLifecycleMetrics(q, dispositions, hints, recheck, scrapParts);
 
-function isReworkDispositionStatus(status) {
-  return REWORK_DISPOSITION_STATUSES.has(String(status ?? ""));
-}
+    assert.equal(m.inspectedQty, 10087);
+    assert.equal(m.firstPassAcceptedQty, 10077);
+    assert.equal(m.initialRejectedQty, 10);
+    assert.equal(m.reworkRoutedQty, 10);
+    assert.equal(m.reworkAcceptedQty, 10);
+    assert.equal(m.pendingReworkQty, 0);
+    assert.equal(m.holdQty, 0);
+    assert.equal(m.totalScrapQty, 0);
+    assert.equal(m.finalUsableQty, 10087);
+    assert.equal(m.finalUnusableQty, 0);
+    assert.notEqual(m.finalUnusableQty, m.initialRejectedQty);
+    assert.equal(
+      buildReworkClearedTraceNote(m),
+      "10 initially rejected Nos were accepted after rework; no quantity remains finally rejected.",
+    );
+    assert.equal(productionQcLifecycleStatusLabel(q, m), "Disposition Completed");
+  });
 
-function dispositionReportBucket(d, hints) {
-  const status = String(d.status ?? "");
-  if (status === "SCRAP") return "scrap";
-  if (status === "HOLD") return "hold";
-  if (isReworkDispositionStatus(status)) return "rework";
-  if (status === "CLOSED") {
-    if (hints.reworkDispIds.has(d.id)) return "rework";
-    if (hints.holdDispIds.has(d.id)) return "hold";
-  }
-  return "rework";
-}
+  it("pending rework: final usable stays first-pass; pending visible; no premature usable", () => {
+    const q = { acceptedQty: "10077", rejectedQty: "10", lossQty: "0", rejectedRoute: null };
+    const dispositions = [
+      { id: 1, status: "REWORK_READY_FOR_QC", qty: "10", remainingQty: "10" },
+    ];
+    const hints = { reworkDispIds: new Set([1]), holdDispIds: new Set() };
+    const m = buildProductionQcLifecycleMetrics(q, dispositions, hints, new Map(), {
+      directScrapQty: 0,
+      reworkFinalScrapQty: 0,
+    });
 
-function buildMetrics(q, dispositions, hints, recheckAcceptedByDispId, scrapParts) {
-  const initialAcceptedQty = roundQty(Number(q.acceptedQty ?? 0));
-  const rejectedQty = roundQty(Number(q.rejectedQty ?? 0));
-  const inspectedQty = roundQty(initialAcceptedQty + rejectedQty);
+    assert.equal(m.initialRejectedQty, 10);
+    assert.equal(m.reworkRoutedQty, 10);
+    assert.equal(m.pendingReworkQty, 10);
+    assert.equal(m.reworkAcceptedQty, 0);
+    assert.equal(m.finalUsableQty, 10077);
+    assert.equal(m.finalUnusableQty, 0);
+    assert.equal(productionQcLifecycleStatusLabel(q, m), "Rework Pending");
+  });
 
-  let reworkQty = 0;
-  let holdQty = 0;
-  let directScrapQty = 0;
+  it("partial rework acceptance: final usable = 10083; remaining 4 accounted", () => {
+    const q = { acceptedQty: "10077", rejectedQty: "10", lossQty: "0", rejectedRoute: null };
+    const dispositions = [
+      { id: 1, status: "REWORK_READY_FOR_QC", qty: "10", remainingQty: "4" },
+    ];
+    const hints = { reworkDispIds: new Set([1]), holdDispIds: new Set() };
+    const recheck = new Map([[1, 6]]);
+    const m = buildProductionQcLifecycleMetrics(q, dispositions, hints, recheck, {
+      directScrapQty: 0,
+      reworkFinalScrapQty: 0,
+    });
 
-  for (const d of dispositions) {
-    const qty = roundQty(Number(d.qty ?? 0));
-    const bucket = dispositionReportBucket(d, hints);
-    if (bucket === "rework") reworkQty = roundQty(reworkQty + qty);
-    else if (bucket === "hold") holdQty = roundQty(holdQty + qty);
-    else if (bucket === "scrap") directScrapQty = roundQty(directScrapQty + qty);
-  }
+    assert.equal(m.reworkAcceptedQty, 6);
+    assert.equal(m.pendingReworkQty, 4);
+    assert.equal(m.finalUsableQty, 10083);
+    assert.equal(m.finalUnusableQty, 0);
+  });
 
-  let reworkAcceptedQty = 0;
-  for (const d of dispositions) {
-    if (dispositionReportBucket(d, hints) !== "rework") continue;
-    reworkAcceptedQty = roundQty(reworkAcceptedQty + (recheckAcceptedByDispId.get(d.id) ?? 0));
-  }
+  it("rework final scrap does not enter final usable", () => {
+    const q = { acceptedQty: "10077", rejectedQty: "10", lossQty: "0", rejectedRoute: null };
+    const dispositions = [{ id: 1, status: "CLOSED", qty: "10", remainingQty: "0" }];
+    const hints = { reworkDispIds: new Set([1]), holdDispIds: new Set() };
+    const recheck = new Map([[1, 6]]);
+    const scrapParts = { directScrapQty: 0, reworkFinalScrapQty: 4 };
+    const m = buildProductionQcLifecycleMetrics(q, dispositions, hints, recheck, scrapParts);
 
-  const reworkFinalScrapQty = roundQty(scrapParts.reworkFinalScrapQty);
-  const totalScrapQty = roundQty(directScrapQty + reworkFinalScrapQty);
-  const finalUsableQty = roundQty(initialAcceptedQty + reworkAcceptedQty);
+    assert.equal(m.finalUsableQty, 10083);
+    assert.equal(m.reworkFinalScrapQty, 4);
+    assert.equal(m.finalUnusableQty, 4);
+    assert.equal(m.totalScrapQty, 4);
+  });
 
-  return { inspectedQty, initialAcceptedQty, reworkQty, directScrapQty, reworkFinalScrapQty, totalScrapQty, reworkAcceptedQty, finalUsableQty };
-}
-
-describe("qc report production metrics (split reject + rework recheck)", () => {
-  it("matches user scenario: 10k inspected, 9880 usable, rework 100, scrap 120", () => {
+  it("matches prior scenario: 10k inspected, 9880 usable, rework 100, scrap 120", () => {
     const q = { acceptedQty: "9800", rejectedQty: "200", lossQty: "100", rejectedRoute: null };
     const dispositions = [
       { id: 1, status: "CLOSED", qty: "100", remainingQty: "0" },
@@ -73,7 +98,7 @@ describe("qc report production metrics (split reject + rework recheck)", () => {
     const recheck = new Map([[1, 80]]);
     const scrapParts = { directScrapQty: 0, reworkFinalScrapQty: 20 };
 
-    const m = buildMetrics(q, dispositions, hints, recheck, scrapParts);
+    const m = buildProductionQcLifecycleMetrics(q, dispositions, hints, recheck, scrapParts);
 
     assert.equal(m.inspectedQty, 10000);
     assert.equal(m.initialAcceptedQty, 9800);
@@ -83,14 +108,46 @@ describe("qc report production metrics (split reject + rework recheck)", () => {
     assert.equal(m.directScrapQty, 100);
     assert.equal(m.reworkFinalScrapQty, 20);
     assert.equal(m.totalScrapQty, 120);
+    assert.equal(m.finalUnusableQty, 120);
   });
 
   it("does not double-count lossQty into inspected", () => {
     const q = { acceptedQty: "9800", rejectedQty: "200", lossQty: "100", rejectedRoute: null };
-    const m = buildMetrics(q, [], { reworkDispIds: new Set(), holdDispIds: new Set() }, new Map(), {
-      directScrapQty: 0,
-      reworkFinalScrapQty: 0,
-    });
+    const m = buildProductionQcLifecycleMetrics(
+      q,
+      [],
+      { reworkDispIds: new Set(), holdDispIds: new Set() },
+      new Map(),
+      { directScrapQty: 0, reworkFinalScrapQty: 0 },
+    );
     assert.equal(m.inspectedQty, 10000);
+  });
+
+  it("null/missing optional lifecycle inputs do not crash", () => {
+    const m = buildProductionQcLifecycleMetrics(null, null, null, null, null);
+    assert.equal(m.inspectedQty, 0);
+    assert.equal(m.finalUsableQty, 0);
+    assert.equal(m.finalUnusableQty, 0);
+    assert.equal(m.reworkAcceptedQty, 0);
+  });
+
+  it("QC row without rework loads with first-pass only totals", () => {
+    const q = { acceptedQty: "50", rejectedQty: "0", lossQty: "0", rejectedRoute: null };
+    const m = buildProductionQcLifecycleMetrics(q, [], undefined, undefined, undefined);
+    assert.equal(m.firstPassAcceptedQty, 50);
+    assert.equal(m.finalUsableQty, 50);
+    assert.equal(m.reworkAcceptedQty, 0);
+    assert.equal(m.finalUnusableQty, 0);
+  });
+});
+
+describe("qcLifecycleProjection — Prisma select contract", () => {
+  const { readFileSync } = require("node:fs");
+  const { resolve } = require("node:path");
+  const source = readFileSync(resolve(__dirname, "../../src/services/qcLifecycleProjection.js"), "utf8");
+
+  it("does not select StockTransaction.createdAt (field does not exist)", () => {
+    assert.equal(source.includes("createdAt: true"), false);
+    assert.match(source, /StockTransaction has `date` only/);
   });
 });

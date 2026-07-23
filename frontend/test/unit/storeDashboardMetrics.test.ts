@@ -122,4 +122,24 @@ describe("computeStoreDashboardKpiMetrics", () => {
     expect(kpis.awaitProcurementOrGrn).toBe(kpis.awaitProcurement + kpis.grnPending);
     expect(kpis.awaitProcurement).toBeGreaterThanOrEqual(1);
   });
+
+  it("Ready for WO includes eligible Regular SO RM_RECEIVED cases without double-counting NO_QTY", () => {
+    const kpis = computeStoreDashboardKpiMetrics({
+      inboxRows: [inboxRow({ actionNeededKey: "PLACE_WO" })],
+      materialIssuePendingCount: 0,
+      rmccSummary: { queueCount: 2, readyIssueCount: 0, rmReceivedCreateWoCount: 1 },
+      procurementWorkspace: sampleWorkspace(),
+    });
+    expect(kpis.readyForWo).toBe(2);
+  });
+
+  it("Ready for WO does not inflate when the same Regular SO case is already counted once in rmReceivedCreateWoCount", () => {
+    const kpis = computeStoreDashboardKpiMetrics({
+      inboxRows: [],
+      materialIssuePendingCount: 0,
+      rmccSummary: { queueCount: 1, rmReceivedCreateWoCount: 1 },
+      procurementWorkspace: null,
+    });
+    expect(kpis.readyForWo).toBe(1);
+  });
 });

@@ -5,25 +5,30 @@ const {
   getListBlocks,
   joinAddressList,
   findFirstTextByTags,
+  firstDirectText,
   masterDisplayName,
   masterGuid,
 } = require("./tallyXmlListHelpers");
 
 /**
  * Map Tally ledger PARENT to customer (debtor) vs supplier (creditor).
- * Many companies use nested groups (e.g. "North Zone Debtors") without the word "Sundry".
- * Heuristic: parent name contains **debtor** and not **creditor** → customer; **creditor** and not **debtor** → supplier.
+ * Pilot rule: only exact group names (trim + case-insensitive):
+ * - "Sundry Debtors" → Customer
+ * - "Sundry Creditors" → Supplier
+ * All other parents (including "Deflashing Charges") are excluded.
+ * Preview retains the original parent string on the mapped row.
  *
  * @param {string} parentRaw
  * @returns {"DEBTOR" | "CREDITOR" | null}
  */
 function classifySundryLedgerParent(parentRaw) {
-  const p = String(parentRaw || "").toLowerCase().trim();
+  const p = String(parentRaw || "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ");
   if (!p) return null;
-  const hasDebtor = p.includes("debtor");
-  const hasCreditor = p.includes("creditor");
-  if (hasCreditor && !hasDebtor) return "CREDITOR";
-  if (hasDebtor && !hasCreditor) return "DEBTOR";
+  if (p === "sundry debtors") return "DEBTOR";
+  if (p === "sundry creditors") return "CREDITOR";
   return null;
 }
 
@@ -39,7 +44,36 @@ function ledgerDisplayName(ledger) {
  * Canonical Tally master-import pipeline id — returned on every preview so operators
  * can confirm the live server loaded this mapper (not a stale Node process).
  */
-const TALLY_IMPORT_PIPELINE_ID = "tallyXmlListHelpers+mapLedgerToParty/v2-gstin-mailing-contact";
+const TALLY_IMPORT_PIPELINE_ID = "tallyXmlListHelpers+mapLedgerToParty/v4-exact-sundry+stock-mapping";
+
+/**
+ * Opening balance from standard LEDGER OPENINGBALANCE or custom CALEDGEROPBAL.
+ * Empty / missing → 0 (do not reject the party).
+ * @param {Record<string, unknown>} ledger
+ * @returns {number}
+ */
+function extractOpeningBalance(ledger) {
+  const raw =
+    firstDirectText(ledger, ["OPENINGBALANCE", "CALEDGEROPBAL", "OPENINGBAL"]) ||
+    strVal(ledger.OPENINGBALANCE) ||
+    strVal(ledger.CALEDGEROPBAL);
+  const t = String(raw || "")
+    .replace(/,/g, "")
+    .trim();
+  if (!t) return 0;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * @param {Record<string, unknown>} ledger
+ * @returns {string | null}
+ */
+function extractSourceSerial(ledger) {
+  const raw = firstDirectText(ledger, ["CALEDGERSLNO"]) || strVal(ledger._sourceSerial);
+  const t = String(raw || "").trim();
+  return t || null;
+}
 
 /**
  * Collect GSTIN candidates (for diagnostics / tests). Prefer valid format via extractGstin.
@@ -282,12 +316,14 @@ function composeRegisteredOfficeAddress(m) {
  *   contact: string | null;
  *   phone: string | null;
  *   email: string | null;
+ *   openingBalance: number;
+ *   sourceSerial: string | null;
  * }}
  */
 function mapLedgerToParty(ledgerRaw, kind) {
   if (!ledgerRaw || typeof ledgerRaw !== "object") return null;
   const ledger = /** @type {Record<string, unknown>} */ (ledgerRaw);
-  const parentGroup = strVal(ledger.PARENT);
+  const parentGroup = strVal(ledger.PARENT) || strVal(ledger.CALEDGERPARENT);
   const role = classifySundryLedgerParent(parentGroup);
   if (kind === "CUSTOMER" && role !== "DEBTOR") return null;
   if (kind === "SUPPLIER" && role !== "CREDITOR") return null;
@@ -314,6 +350,8 @@ function mapLedgerToParty(ledgerRaw, kind) {
     contact: contact || null,
     phone: phone || null,
     email: email || null,
+    openingBalance: extractOpeningBalance(ledger),
+    sourceSerial: extractSourceSerial(ledger),
   };
 }
 
@@ -322,6 +360,8 @@ module.exports = {
   mapLedgerToParty,
   ledgerDisplayName,
   extractGstin,
+  extractOpeningBalance,
+  extractSourceSerial,
   collectGstinCandidates,
   extractMailingDetails,
   extractContactPhoneEmail,

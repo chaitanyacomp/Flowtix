@@ -72,7 +72,7 @@ function PostIssueRmLinesTable({
   formatQty: (v: number | null | undefined, unit?: string | null) => string;
 }) {
   return (
-    <table className="w-full min-w-[36rem]" data-testid="rm-cc-post-issue-lines-table">
+    <table className="w-full min-w-0 table-fixed" data-testid="rm-cc-post-issue-lines-table">
       <thead className="sticky top-0 z-[1] bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500">
         <tr>
           {POST_ISSUE_RM_TABLE_HEADERS.map((header, idx) => (
@@ -137,7 +137,7 @@ function PreIssueRmLinesTable({
   formatQty: (v: number | null | undefined, unit?: string | null) => string;
 }) {
   return (
-    <table className="w-full min-w-[32rem]" data-testid="rm-cc-pre-issue-lines-table">
+    <table className="w-full min-w-0 table-fixed" data-testid="rm-cc-pre-issue-lines-table">
       <thead className="sticky top-0 z-[1] bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500">
         <tr>
           {PRE_ISSUE_RM_TABLE_HEADERS.map((header, idx) => (

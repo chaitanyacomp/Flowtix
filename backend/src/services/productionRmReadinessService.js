@@ -13,6 +13,11 @@ const {
   loadNetConsumedAtProduction,
   loadReturnedByWorkOrder,
 } = require("./materialReturnService");
+const {
+  isRegularSoOrderType,
+  computeRegularSoProductionMaximum,
+  consumptionPerFg,
+} = require("./regularSoRmIssuePlanning");
 
 const SUBMITTED_PMR_STATUSES = ["REQUESTED", "PARTIALLY_ISSUED", "FULLY_ISSUED", "SHORT_ISSUE_ACCEPTED"];
 const PRODUCTION_QTY_EPS = 1e-6;
@@ -55,6 +60,8 @@ function aggregatePmrRequiredByItem(submittedPmrs) {
 /**
  * Max FG qty supportable from issued RM using PMR frozen required qty (not live BOM).
  * Partial issue scales proportionally: floor(available / linePmrRequired × woQty).
+ * When allowSurplus is true (REGULAR + NO_QTY shop floor), intentional extra issue may
+ * authorize FG above the WO plan; the scarcest RM still governs.
  */
 function computeMaxProducibleFromPmrBasis({
   woQty,
@@ -256,7 +263,6 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
   }
 
   const wo = wol.workOrder;
-  const isNoQty = wo.salesOrder?.orderType === "NO_QTY";
   const woQty = resolveWorkOrderLinePlannedQty(wol);
   const fgItemId = wol.fgItemId;
   const fgName = wol.fgItem?.itemName ?? `Item #${fgItemId}`;
@@ -326,7 +332,9 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
 
   /** @type {Array<Record<string, unknown>>} */
   const rmLines = [];
-  let maxProducibleQty = isNoQty ? Infinity : woQty;
+  // Seed Infinity for REGULAR and NO_QTY: issued RM (limiting BOM/PMR line) is the hard
+  // capacity ceiling. WO plan is a target for "Use Remaining", not an entry seed cap.
+  let maxProducibleQty = Infinity;
   let hasRmRows = false;
   /** @type {Map<number, number>} */
   const availableByItem = new Map();
@@ -385,7 +393,8 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
       totalWoQty,
       pmrRequiredByItem,
       availableByItem,
-      allowSurplus: isNoQty,
+      // Extra issued RM may authorize FG above WO plan for REGULAR and NO_QTY.
+      allowSurplus: true,
     });
     if (pmrMax != null) maxProducibleQty = pmrMax;
   }
@@ -395,7 +404,7 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
   }
 
   if (!Number.isFinite(maxProducibleQty)) {
-    maxProducibleQty = isNoQty ? 0 : woQty;
+    maxProducibleQty = 0;
   }
 
   maxProducibleQty = Math.max(0, Math.floor(maxProducibleQty));
@@ -416,12 +425,49 @@ async function buildProductionRmReadiness(db, workOrderLineId) {
   });
   const approvedProduced = n(approvedAgg._sum.producedQty);
   const woRemaining = Math.max(0, woQty - approvedProduced);
+
+  // REGULAR_SO: acknowledged rounding tolerance may lift capacity up to WO target only (never beyond).
+  const roundingToleranceAcknowledged =
+    isRegularSoOrderType(wo.salesOrder?.orderType) &&
+    submittedPmrs.some(
+      (p) =>
+        p.status === "SHORT_ISSUE_ACCEPTED" &&
+        String(p.shortIssueCloseReason || "").toUpperCase() === "ROUNDING_TOLERANCE",
+    );
+  if (roundingToleranceAcknowledged) {
+    // Aggregate net issued across scarcest theoretical RM for tolerance lift.
+    let scarciestNet = Infinity;
+    let scarciestTheo = 0;
+    for (const line of rmLines) {
+      const theo = n(line.requiredForWo);
+      if (!(theo > STOCK_EPS)) continue;
+      const netIss = n(line.netIssuedToProduction);
+      if (netIss < scarciestNet) {
+        scarciestNet = netIss;
+        scarciestTheo = theo;
+      }
+    }
+    if (Number.isFinite(scarciestNet) && scarciestTheo > STOCK_EPS) {
+      const perFg = consumptionPerFg(scarciestTheo, woQty);
+      const authorizedTotal = computeRegularSoProductionMaximum({
+        netRmIssuedQty: scarciestNet,
+        bomConsumptionPerFg: perFg,
+        woTargetQty: woQty,
+        roundingToleranceAcknowledged: true,
+      });
+      const remainingAuthorized = Math.max(0, authorizedTotal - approvedProduced);
+      // Lift up to WO target when acknowledged; surplus above target still requires actual RM.
+      maxProducibleQty = Math.max(maxProducibleQty, remainingAuthorized);
+    }
+  }
+
   // RM availability already excludes material consumed by approved production.
   // Draft/unapproved entries reserve part of that remaining envelope until approved/cancelled.
-  // NO_QTY WO qty is a target, not a cap; REGULAR retains the WO-remaining boundary.
+  // WO planned qty is a target (Target Remaining / Use Remaining) — not an entry hard cap.
+  // Intentional extra issue may authorize production above the WO plan when RM supports it.
   const rmSupportedCumulativeCapacityQty = round3(approvedProduced + maxProducibleQty);
   const authorizationCapacity = resolveRmSupportedEntryCapacity({
-    productionAllowedNowQty: isNoQty ? maxProducibleQty : Math.min(woRemaining, maxProducibleQty),
+    productionAllowedNowQty: maxProducibleQty,
     otherUnapprovedQty: unapprovedProduced,
   });
   const maxAdditionalQty = authorizationCapacity.remainingQty;
@@ -646,7 +692,7 @@ async function assertProductionRmReadiness(tx, {
   if (qty > authorizationCapacity.remainingQty + Math.max(STOCK_EPS, PRODUCTION_QTY_EPS)) {
     const fmt = (x) => (Number.isInteger(x) ? String(x) : Number(x).toFixed(3));
     const err = new Error(
-      `Production blocked: issued RM can support only ${fmt(authorizationCapacity.remainingQty)} qty for this work order.`,
+      `Maximum allowed is ${fmt(authorizationCapacity.remainingQty)} based on RM issued to this WO.`,
     );
     err.code = "PRODUCTION_RM_INSUFFICIENT";
     err.statusCode = 409;

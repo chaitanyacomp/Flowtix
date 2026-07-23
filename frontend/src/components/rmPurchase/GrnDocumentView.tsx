@@ -539,6 +539,21 @@ export function GrnDocumentView({
               </div>
             </div>
           ))}
+          {(trace?.lines ?? []).some((ln) => Number(ln.excessToStockQty ?? 0) > 1e-9) ? (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-4" data-testid="grn-excess-to-stock">
+              <p className="text-sm font-semibold text-emerald-950">Extra to RM Stock (not SO demand)</p>
+              <ul className="mt-1 list-inside list-disc space-y-0.5 text-sm text-emerald-900">
+                {(trace?.lines ?? [])
+                  .filter((ln) => Number(ln.excessToStockQty ?? 0) > 1e-9)
+                  .map((ln) => (
+                    <li key={ln.id}>
+                      {(ln.item?.itemName || `Item #${ln.id}`) +
+                        `: ${Number(ln.excessToStockQty).toFixed(3)}${ln.item?.unit ? ` ${ln.item.unit}` : ""}`}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       </div>
     </article>

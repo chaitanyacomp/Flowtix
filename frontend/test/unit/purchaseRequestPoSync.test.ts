@@ -138,7 +138,33 @@ describe("buildRmPoCreatePayloadLines / previewConsolidatedRmPoLines", () => {
     expect(preview.allocationsSelected).toBe(2);
     expect(preview.consolidated).toHaveLength(1);
     expect(preview.consolidated[0]?.orderQty).toBe(614);
-    expect(preview.totalAmount).toBe(6140);
+    expect(preview.consolidated[0]?.requiredQty).toBe(614);
+    expect(preview.consolidated[0]?.excessToStockQty).toBe(0);
+    expect(preview.confirmationLines[0]).toContain("Extra to RM Stock: 0");
+  });
+
+  it("previews Regular SO excess confirmation for 140 demand / 160 PO", () => {
+    const soLines = [
+      {
+        ...baseLine,
+        id: 3,
+        rmItemId: 7,
+        itemName: "PP",
+        unit: "Kg",
+        requestDocNo: "PR-26-0001",
+        requestStatus: "PENDING_PURCHASE",
+        requestStatusLabel: "Pending",
+        demandPool: "REGULAR_SO",
+        pendingQty: 140,
+        netRequiredQty: 140,
+        referenceLabel: "SO-26-0001",
+      },
+    ];
+    const preview = previewConsolidatedRmPoLines(soLines, { 3: "160" }, { 3: "100" });
+    expect(preview.consolidated[0]?.requiredQty).toBe(140);
+    expect(preview.consolidated[0]?.orderQty).toBe(160);
+    expect(preview.consolidated[0]?.excessToStockQty).toBe(20);
+    expect(preview.confirmationLines[0]).toBe("Required: 140 Kg | PO Qty: 160 Kg | Extra to RM Stock: 20 Kg");
   });
 });
 

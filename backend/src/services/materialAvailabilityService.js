@@ -124,6 +124,66 @@ function calculateAvailabilityLine({
   };
 }
 
+function calculateRegularSoDemandCoverageLine({
+  availability,
+  salesOrderId = null,
+  workOrderId = null,
+  netIssuedQty = 0,
+  cumulativeReturnedQty = 0,
+  openIncomingQty = 0,
+  receivedProcurementQty = 0,
+}) {
+  const line = availability || {};
+  const reservations = Array.isArray(line.reservationBreakdown) ? line.reservationBreakdown : [];
+  const soId = Number(salesOrderId) || null;
+  const woId = Number(workOrderId) || null;
+  let reservedForThisWoQty = 0;
+  let otherValidReservationForThisSoQty = 0;
+  let reservedForOtherDemandQty = 0;
+  for (const row of reservations) {
+    const qty = Math.max(0, n(row.reservedQty));
+    if (qty <= STOCK_EPS) continue;
+    const rowWoId = Number(row.workOrderId) || null;
+    const rowSoId = Number(row.salesOrderId) || null;
+    if (woId != null && rowWoId === woId) reservedForThisWoQty += qty;
+    else if (soId != null && rowSoId === soId) otherValidReservationForThisSoQty += qty;
+    else reservedForOtherDemandQty += qty;
+  }
+  const classified =
+    reservedForThisWoQty + otherValidReservationForThisSoQty + reservedForOtherDemandQty;
+  reservedForOtherDemandQty += Math.max(0, n(line.effectiveReservedQty) - classified);
+
+  const theoreticalRmRequiredQty = round3(Math.max(0, n(line.requiredQty)));
+  const physicalOnHandQty = round3(Math.max(0, n(line.physicalUsableStockQty)));
+  const freeAvailableQty = round3(Math.max(0, n(line.freeStockQty)));
+  const returned = round3(Math.max(0, n(cumulativeReturnedQty)));
+  const issued = round3(Math.max(0, n(netIssuedQty)));
+  const incoming = round3(Math.max(0, n(openIncomingQty)));
+  const reservedThisWo = round3(reservedForThisWoQty);
+  const reservedThisSo = round3(otherValidReservationForThisSoQty);
+  const currentDemandCoverageQty = round3(
+    reservedThisWo + reservedThisSo + issued + freeAvailableQty + incoming,
+  );
+  return {
+    physicalOnHandQty,
+    freeAvailableQty,
+    reservedForThisSoQty: round3(reservedThisWo + reservedThisSo),
+    reservedForThisWoQty: reservedThisWo,
+    otherValidReservationForThisSoQty: reservedThisSo,
+    reservedForOtherDemandQty: round3(reservedForOtherDemandQty),
+    cumulativeIssuedToThisWoQty: issued,
+    cumulativeReturnedQty: returned,
+    netIssuedQty: issued,
+    openIncomingQty: incoming,
+    receivedProcurementQty: round3(Math.max(0, n(receivedProcurementQty))),
+    theoreticalRmRequiredQty,
+    coveredQty: currentDemandCoverageQty,
+    currentDemandCoverageQty,
+    uncoveredProcurementQty: round3(Math.max(0, theoreticalRmRequiredQty - currentDemandCoverageQty)),
+    remainingIssueBalanceQty: round3(Math.max(0, theoreticalRmRequiredQty - issued)),
+  };
+}
+
 async function resolveAvailabilityLocationScope(db, locationScope = {}) {
   if (locationScope?.where) return locationScope.where;
   return resolveLocationReadScope(db, {
@@ -276,6 +336,7 @@ async function loadAllocationReservationBreakdownByItem(db, itemIds, { excludePm
       rmItemId: true,
       productionMaterialRequestId: true,
       workOrderId: true,
+      salesOrderId: true,
       qtyAllocated: true,
       qtyIssued: true,
       status: true,
@@ -304,6 +365,7 @@ async function loadAllocationReservationBreakdownByItem(db, itemIds, { excludePm
       pmrDocNo: pmr?.docNo ?? (row.productionMaterialRequestId ? `PMR-${row.productionMaterialRequestId}` : null),
       pmrStatus: pmr?.status ?? null,
       workOrderId: row.workOrderId ?? null,
+      salesOrderId: row.salesOrderId ?? null,
       workOrderNo: row.workOrder?.docNo ?? pmr?.workOrder?.docNo ?? null,
       allocatedQty: round3(Math.max(0, n(row.qtyAllocated))),
       issuedQty: round3(Math.max(0, n(row.qtyIssued))),
@@ -509,6 +571,7 @@ module.exports = {
   NON_USABLE_BUCKETS,
   PRODUCTION_LOCATION_TYPES,
   calculateAvailabilityLine,
+  calculateRegularSoDemandCoverageLine,
   getMaterialAvailabilityByItems,
   loadLegacyReservedByItem,
   loadReservationBreakdownByItem,

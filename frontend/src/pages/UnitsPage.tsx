@@ -4,6 +4,23 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
+import {
+  MasterEmptyState,
+  MasterListHeader,
+  MasterListPageShell,
+  MasterListPagination,
+  MasterListToolbar,
+  MasterNoResultsState,
+  MasterSearchInput,
+  MasterTableShell,
+  MasterTableSkeleton,
+  MasterTruncatedCell,
+  masterTdClass,
+  masterThClass,
+  resultCountLabel,
+} from "../components/masters/MasterListWorkbench";
+import { useMasterListWorkbench } from "../hooks/useMasterListWorkbench";
+import { matchesNameSearch, normalizeSearchText, paginateRows } from "../lib/masterListQuery";
 
 type UnitRow = { id: number; unitName: string; unitCode?: string | null };
 
@@ -17,6 +34,9 @@ export function UnitsPage() {
   const [unitCode, setUnitCode] = React.useState("");
   const [saving, setSaving] = React.useState(false);
 
+  const wb = useMasterListWorkbench();
+  const { query, setSearch, clearSearch, clearFilters, setPage, setPageSize } = wb;
+
   function load() {
     setLoading(true);
     setError(null);
@@ -29,6 +49,18 @@ export function UnitsPage() {
   React.useEffect(() => {
     load();
   }, []);
+
+  const filtered = React.useMemo(() => {
+    const q = query.debouncedSearch;
+    return rows.filter(
+      (u) =>
+        matchesNameSearch(u.unitName, q) ||
+        (u.unitCode ? matchesNameSearch(u.unitCode, q) : false),
+    );
+  }, [rows, query.debouncedSearch]);
+
+  const { pageRows, totalPages, from, to } = paginateRows(filtered, query.page, query.pageSize);
+  const searching = Boolean(normalizeSearchText(query.debouncedSearch));
 
   async function onAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -58,11 +90,8 @@ export function UnitsPage() {
   }
 
   return (
-    <div className="flex min-h-0 flex-col gap-4">
-      <div>
-        <h2 className="text-lg font-semibold text-slate-900">Units</h2>
-        <p className="mt-0.5 text-sm text-slate-600">Master list for item unit dropdown</p>
-      </div>
+    <MasterListPageShell>
+      <MasterListHeader title="Units" description="Master list for item unit dropdown" />
 
       {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div> : null}
 
@@ -89,39 +118,65 @@ export function UnitsPage() {
         </CardContent>
       </Card>
 
-      <Card className="border-slate-200 shadow-sm">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Active units</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto rounded-md border border-slate-200">
-            <table className="w-full min-w-[520px] border-collapse text-sm">
-              <thead className="border-b border-slate-200 bg-slate-50">
-                <tr className="text-left text-xs font-medium uppercase text-slate-500">
-                  <th className="px-4 py-2">Name</th>
-                  <th className="px-4 py-2">Code</th>
+      <MasterListToolbar
+        search={
+          <MasterSearchInput
+            value={query.search}
+            onChange={setSearch}
+            onClear={clearSearch}
+            placeholder="Search units…"
+            aria-label="Search units"
+          />
+        }
+        resultLabel={resultCountLabel({ filtered: filtered.length, total: rows.length, searching })}
+        showClearFilters={searching}
+        onClearFilters={clearFilters}
+      />
+
+      {loading ? (
+        <MasterTableShell>
+          <thead>
+            <tr>
+              <th className={masterThClass}>&nbsp;</th>
+              <th className={masterThClass}>&nbsp;</th>
+            </tr>
+          </thead>
+          <MasterTableSkeleton cols={2} />
+        </MasterTableShell>
+      ) : rows.length === 0 ? (
+        <MasterEmptyState title="No units yet" description="Add a unit to use in item masters." />
+      ) : filtered.length === 0 ? (
+        <MasterNoResultsState query={query.debouncedSearch || "filters"} onClear={clearFilters} />
+      ) : (
+        <>
+          <MasterTableShell>
+            <thead>
+              <tr>
+                <th className={masterThClass}>Name</th>
+                <th className={masterThClass}>Code</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pageRows.map((u) => (
+                <tr key={u.id} style={{ height: 50 }}>
+                  <MasterTruncatedCell text={u.unitName} />
+                  <td className={masterTdClass}>{u.unitCode ?? "—"}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {rows.length === 0 ? (
-                  <tr>
-                    <td colSpan={2} className="px-4 py-6 text-center text-slate-600">
-                      {loading ? "Loading…" : "No units found."}
-                    </td>
-                  </tr>
-                ) : (
-                  rows.map((u) => (
-                    <tr key={u.id} className="border-b border-slate-100">
-                      <td className="px-4 py-2 font-medium text-slate-900">{u.unitName}</td>
-                      <td className="px-4 py-2 text-slate-700">{u.unitCode ?? "—"}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+              ))}
+            </tbody>
+          </MasterTableShell>
+          <MasterListPagination
+            page={query.page}
+            pageSize={query.pageSize}
+            totalPages={totalPages}
+            from={from}
+            to={to}
+            total={filtered.length}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        </>
+      )}
+    </MasterListPageShell>
   );
 }

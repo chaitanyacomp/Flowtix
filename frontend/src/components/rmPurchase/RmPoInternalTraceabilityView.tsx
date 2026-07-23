@@ -420,7 +420,24 @@ export function RmPoInternalTraceabilityView({
                     <td className="px-2 py-2 text-right tabular-nums text-emerald-800">{received.toFixed(3)}</td>
                     <td className="px-2 py-2 text-right tabular-nums text-amber-800">{pending.toFixed(3)}</td>
                     <td className="px-2 py-2">{lineReceiptStatusLabel(ordered, received, pending)}</td>
-                    <td className="px-2 py-2">{demandSourcesLabel(traceLine)}</td>
+                    <td className="px-2 py-2">
+                      <div>{demandSourcesLabel(traceLine)}</div>
+                      {(traceLine?.soAllocationBreakdown?.length ?? 0) > 0 ? (
+                        <ul className="mt-1 space-y-0.5 text-[11px] text-slate-600">
+                          {traceLine!.soAllocationBreakdown!.map((row, idx) => (
+                            <li key={`${row.salesOrderId ?? row.salesOrderDocNo}-${idx}`}>
+                              {(row.salesOrderDocNo || `SO #${row.salesOrderId}`) +
+                                `: ${Number(row.allocatedQty).toFixed(3)}`}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {Number(traceLine?.excessToStockQty ?? 0) > 1e-9 ? (
+                        <p className="mt-1 text-[11px] font-medium text-emerald-800">
+                          Extra to RM Stock: {Number(traceLine!.excessToStockQty).toFixed(3)}
+                        </p>
+                      ) : null}
+                    </td>
                     <td className="px-2 py-2">{mrNumbersForSources(traceLine)}</td>
                     <td className="px-2 py-2">{prNumbersForSources(traceLine)}</td>
                     <td className="px-2 py-2">{poNo}</td>

@@ -85,7 +85,9 @@ test("STOCKITEM GSTDETAILS.LIST uses shared getListBlocks (array + single)", () 
   const rates = getListBlocks(sw[0], "RATEDETAILS");
   assert.equal(rates.length, 2);
   const mi = mapStockItemToItem(stock);
-  assert.equal(mi?.gstRate, 18);
+  // Pilot rule: do not invent GST from CGST+SGST — only latest IGST (else Unresolved/Inherited).
+  assert.equal(mi?.gstRate, null);
+  assert.equal(mi?.gstStatus, "Unresolved/Inherited");
   assert.equal(mi?.hsnCode, "40101200");
 });
 

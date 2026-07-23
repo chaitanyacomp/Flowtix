@@ -5,7 +5,7 @@ import { Input } from "../components/ui/input";
 import { DecimalInput } from "../components/ui/DecimalInput";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { PageActions } from "../components/PageHeader";
+import { MasterListHeader, MasterListPageShell } from "../components/masters/MasterListWorkbench";
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
 import { Pencil, CheckCircle2, Plus, Trash2, Undo2, X } from "lucide-react";
@@ -319,13 +319,17 @@ export function OpeningStockPage() {
   const modalBlocking = Boolean(draftConfirmOpen || approveTarget || reverseTarget || deleteTarget);
 
   return (
-    <div>
-      <PageActions>
-        <Button type="button" size="sm" variant="outline" onClick={openAdd}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Entry
-        </Button>
-      </PageActions>
+    <MasterListPageShell>
+      <MasterListHeader
+        title="Opening Stock"
+        description="Capture and approve opening stock balances for go-live."
+        actions={
+          <Button type="button" size="sm" variant="outline" onClick={openAdd}>
+            <Plus className="mr-2 h-4 w-4" />
+            Add Entry
+          </Button>
+        }
+      />
 
       {error && !modalBlocking ? (
         <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>
@@ -773,6 +777,6 @@ export function OpeningStockPage() {
           </Card>
         </ErpModal>
       ) : null}
-    </div>
+    </MasterListPageShell>
   );
 }

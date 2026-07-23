@@ -287,7 +287,7 @@ describe("material planning operational state", () => {
 
     assert.equal(state.key, "PROCUREMENT_COMPLETED");
     assert.equal(state.purchaseRequiredCount, 2);
-    assert.match(state.currentStage, /live store shortage/i);
+    assert.match(state.currentStage, /genuine uncovered RM/i);
   });
 
   it("cancelled duplicate with completed procurement uses planning tracking only", () => {

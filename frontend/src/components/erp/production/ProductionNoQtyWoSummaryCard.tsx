@@ -8,6 +8,12 @@ export type ProductionNoQtyWoSummary = {
   plannedQty: number | null;
   producedQty: number | null;
   remainingQty: number | null;
+  /** REGULAR Report Mode — flow badge e.g. REGULAR SALES ORDER */
+  flowBadge?: string | null;
+  reportPending?: boolean;
+  /** Authoritative SO demand qty when Report Mode shows SO Qty. */
+  soQty?: number | null;
+  unit?: string | null;
 };
 
 function fmtQty(n: number | null | undefined): string {

@@ -31,7 +31,7 @@
 import * as React from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { apiFetch } from "../services/api";
+import { apiFetch, ApiRequestError } from "../services/api";
 import { Button, buttonVariants } from "../components/ui/button";
 import { useIsAdmin } from "../hooks/useIsAdmin";
 import { useToast } from "../contexts/ToastContext";
@@ -49,6 +49,14 @@ import { WoPrepareRmReadinessTable } from "../components/erp/WoPrepareRmReadines
 import { NextStepStrip } from "../components/erp/NextStepStrip";
 import { PageContainer } from "../components/PageHeader";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
+import { ensureSubmittedPmrForWorkOrderHandoff } from "../lib/postWoMaterialIssueHandoff";
+import {
+  buildRegularSoPostCreateMaterialIssueHref,
+  regularSoCreateWoSuccessToast,
+  shouldReuseExistingRegularWo,
+} from "../lib/regularSoPrepareWoCreateHandoff";
+import { WO_WRITE_ROLES, hasErpRole } from "../config/erpRoles";
+import { useAuth } from "../hooks/useAuth";
 import type { ProductionRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
 import { isProductionBlockedByRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
 import {
@@ -57,8 +65,10 @@ import {
 } from "../lib/regularSoOperationalGuidance";
 import {
   clampRegularSoBufferPercent,
+  classifyRegularSoBufferPercent,
   computeProductionPlanningMetrics,
   parseRegularSoBufferPercentInput,
+  regularSoBufferPercentExceedsFractionDigits,
   REGULAR_SO_BUFFER_PERCENT_MAX,
 } from "../lib/regularSoProductionPlanning";
 import {
@@ -214,8 +224,10 @@ function applyCustomerTrackingShortfallToPlanDefaults(
 export function RmCheckPage() {
   const nav = useNavigate();
   const toast = useToast();
+  const auth = useAuth();
   const [searchParams] = useSearchParams();
   const isAdmin = useIsAdmin();
+  const canCreateWoRole = hasErpRole(auth.user?.role, WO_WRITE_ROLES);
   const urlSoId = Number(searchParams.get("salesOrderId")) || Number(searchParams.get("soId")) || 0;
   const customerTrackingShortfallQty = Number(searchParams.get("shortfallQty") ?? 0);
   const fromCustomerTracking = (searchParams.get("from") ?? "") === "customer-tracking";
@@ -226,10 +238,13 @@ export function RmCheckPage() {
   const [errorPresentation, setErrorPresentation] = React.useState<OperationalErrorPresentation | null>(null);
   const [initializingPlanning, setInitializingPlanning] = React.useState(false);
   const [fgBufferPercentInput, setFgBufferPercentInput] = React.useState("0");
+  const [fgBufferReason, setFgBufferReason] = React.useState("");
   const [suggestedFgPlanningBufferPercent, setSuggestedFgPlanningBufferPercent] = React.useState<number | null>(null);
   const [savingBuffer, setSavingBuffer] = React.useState(false);
   const bufferPersistSeqRef = React.useRef(0);
   const [loading, setLoading] = React.useState(false);
+  const [creatingWo, setCreatingWo] = React.useState(false);
+  const createWoInFlightRef = React.useRef(false);
   const [strictInventory, setStrictInventory] = React.useState(false);
   const [planQtyByLineId, setPlanQtyByLineId] = React.useState<Record<number, string>>({});
   const didAutoRunRef = React.useRef(false);
@@ -325,6 +340,7 @@ export function RmCheckPage() {
   React.useEffect(() => {
     setAllowSoChange(false);
     setFgBufferPercentInput("0");
+    setFgBufferReason("");
   }, [urlSoId]);
 
   React.useEffect(() => {
@@ -338,14 +354,41 @@ export function RmCheckPage() {
     return clampRegularSoBufferPercent(parsed == null ? 0 : parsed);
   }
 
+  function bufferPersistAllowed(normalized: number): { ok: true } | { ok: false; message: string } {
+    const band = classifyRegularSoBufferPercent(normalized);
+    if (band === "BLOCKED") {
+      return { ok: false, message: `Production buffer above ${REGULAR_SO_BUFFER_PERCENT_MAX}% is blocked.` };
+    }
+    if (band === "REQUIRES_ADMIN_APPROVAL") {
+      if (!isAdmin) {
+        return {
+          ok: false,
+          message: "Buffer above 5% requires Admin approval. Ask an Admin to apply it with a reason.",
+        };
+      }
+      if (!fgBufferReason.trim()) {
+        return { ok: false, message: "Enter a reason when Production buffer is above 5%." };
+      }
+    }
+    return { ok: true };
+  }
+
   async function tryInitializePlanningSnapshot(): Promise<
     { ok: true } | { ok: false; error: unknown }
   > {
     if (!soId) return { ok: false, error: new Error("No sales order selected") };
+    const normalized = bufferPercentForSnapshot();
+    const gate = bufferPersistAllowed(normalized);
+    if (!gate.ok) return { ok: false, error: new Error(gate.message) };
     try {
       await apiFetch(`/api/sales-orders/${soId}/production-planning-snapshot`, {
         method: "PUT",
-        body: JSON.stringify({ bufferPercent: bufferPercentForSnapshot() }),
+        body: JSON.stringify({
+          bufferPercent: normalized,
+          ...(classifyRegularSoBufferPercent(normalized) === "REQUIRES_ADMIN_APPROVAL"
+            ? { bufferReason: fgBufferReason.trim() }
+            : {}),
+        }),
       });
       return { ok: true };
     } catch (e) {
@@ -356,15 +399,26 @@ export function RmCheckPage() {
   async function persistProductionBuffer(bufferPercent: number): Promise<boolean> {
     if (!soId) return false;
     const normalized = clampRegularSoBufferPercent(bufferPercent);
+    const gate = bufferPersistAllowed(normalized);
+    if (!gate.ok) {
+      toast.showError(gate.message);
+      return false;
+    }
     const seq = ++bufferPersistSeqRef.current;
     setSavingBuffer(true);
     try {
       await apiFetch(`/api/sales-orders/${soId}/production-planning-snapshot`, {
         method: "PUT",
-        body: JSON.stringify({ bufferPercent: normalized }),
+        body: JSON.stringify({
+          bufferPercent: normalized,
+          ...(classifyRegularSoBufferPercent(normalized) === "REQUIRES_ADMIN_APPROVAL"
+            ? { bufferReason: fgBufferReason.trim() }
+            : {}),
+        }),
       });
       if (seq !== bufferPersistSeqRef.current) return false;
-      return await runCheck(planQtyByLineId, { skipPlanInit: true });
+      // Re-init plan qty from buffered plannedProductionQty so RM Required uses WO target (e.g. 15,075 → 211.05 Kg).
+      return await runCheck(undefined, { skipPlanInit: false });
     } catch (e) {
       if (seq !== bufferPersistSeqRef.current) return false;
       const presented = presentOperationalError(e);
@@ -485,14 +539,66 @@ export function RmCheckPage() {
   const canCreateWoMaterial = Boolean(data?.canCreateWorkOrder);
   const allRmAvailable = Boolean(data?.materialReadiness?.allRmAvailable ?? data?.allRmEnough);
 
-  function createWorkOrder() {
-    if (!data || !soId) return;
+  async function handoffCreatedWoToMaterialIssue(wo: { id: number; docNo?: string | null }) {
+    const { pmrId, pmrDocNo } = await ensureSubmittedPmrForWorkOrderHandoff(wo.id);
+    toast.showSuccess(regularSoCreateWoSuccessToast(wo, pmrDocNo));
+    const href = buildRegularSoPostCreateMaterialIssueHref({
+      workOrderId: wo.id,
+      pmrId,
+      salesOrderId: soId,
+      source: "prepare-wo",
+    });
+    nav(href);
+  }
+
+  async function createWorkOrder() {
+    if (!data || !soId || createWoInFlightRef.current) return;
+    if (!canCreateWoRole) {
+      setErrorPresentation({
+        userMessage: "Your role cannot create a Work Order. Store or Admin must complete Prepare WO.",
+        technicalDetail: null,
+        isPlanningSetupIncomplete: false,
+        canRetryInitializePlanning: false,
+      });
+      return;
+    }
+
+    if (shouldReuseExistingRegularWo(existingWoContext?.woId)) {
+      createWoInFlightRef.current = true;
+      setCreatingWo(true);
+      try {
+        await handoffCreatedWoToMaterialIssue({
+          id: existingWoContext!.woId,
+          docNo: null,
+        });
+      } catch (e) {
+        const presented = presentOperationalError(e);
+        setErrorPresentation(presented);
+        toast.showError(presented.userMessage);
+      } finally {
+        createWoInFlightRef.current = false;
+        setCreatingWo(false);
+      }
+      return;
+    }
+
     const lines = data.fgLines
       .filter((f) => Number(f.plannedProductionQty ?? f.rmPlanningQty ?? f.toProduce) > 0 && !f.note)
       .map((f) => {
-        const planned = planQtyByLineId[f.lineId];
-        const qty = Math.max(0, Number(planned ?? f.plannedProductionQty ?? f.rmPlanningQty ?? f.toProduce));
-        return { fgItemId: f.fgItemId, qty: Number.isFinite(qty) ? qty : 0 };
+        // Prefer server buffered WO target over a stale local plan qty that still mirrors customer SO qty.
+        const buffered = Number(f.plannedProductionQty ?? f.rmPlanningQty ?? f.toProduce);
+        const plannedLocal = Number(planQtyByLineId[f.lineId]);
+        const customer = Number(f.customerCommittedQty ?? f.orderQty ?? 0);
+        let qty = buffered;
+        if (Number.isFinite(plannedLocal) && plannedLocal > 0) {
+          const staleAtCustomer =
+            Number.isFinite(buffered) &&
+            buffered > plannedLocal + 1e-6 &&
+            Math.abs(plannedLocal - customer) <= 1e-6;
+          qty = staleAtCustomer ? buffered : plannedLocal;
+        }
+        qty = Math.max(0, Number.isFinite(qty) ? qty : 0);
+        return { fgItemId: f.fgItemId, qty };
       })
       .filter((x) => x.qty > 0);
     if (!lines.length) {
@@ -504,7 +610,30 @@ export function RmCheckPage() {
       });
       return;
     }
-    nav("/work-orders", { state: { source: "rmCheck", salesOrderId: soId, woLines: lines } });
+
+    createWoInFlightRef.current = true;
+    setCreatingWo(true);
+    setErrorPresentation(null);
+    try {
+      const wo = await apiFetch<{ id: number; docNo?: string | null }>("/api/production/work-orders", {
+        method: "POST",
+        body: JSON.stringify({ salesOrderId: soId, lines }),
+      });
+      if (!(Number(wo?.id) > 0)) {
+        throw new Error("Work Order was created but no id was returned.");
+      }
+      await handoffCreatedWoToMaterialIssue(wo);
+    } catch (e) {
+      const presented =
+        e instanceof ApiRequestError
+          ? presentOperationalError(e)
+          : presentOperationalError(e instanceof Error ? e : new Error("Failed to create Work Order."));
+      setErrorPresentation(presented);
+      toast.showError(presented.userMessage);
+    } finally {
+      createWoInFlightRef.current = false;
+      setCreatingWo(false);
+    }
   }
 
   function adjustStock() {
@@ -609,7 +738,8 @@ export function RmCheckPage() {
   }, [soId, showProcurementWaitStrip]);
 
   function refreshStockCheck() {
-    void runCheck(planQtyByLineId, { skipPlanInit: true });
+    // Prefer server buffered planned qty so RM Required stays aligned with WO target.
+    void runCheck(undefined, { skipPlanInit: false });
   }
 
   function renderWorkflowContinuityNav() {
@@ -617,7 +747,7 @@ export function RmCheckPage() {
     return (
       <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-2">
         <Link
-          to={`/work-orders?salesOrderId=${encodeURIComponent(String(soId))}`}
+          to="/work-orders?flow=REGULAR_SO"
           className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-8 text-[11px] text-slate-700 no-underline")}
         >
           {REGULAR_TERMS.BACK_TO_WORK_ORDERS}
@@ -673,11 +803,23 @@ export function RmCheckPage() {
   const fgBufferParsed = parseRegularSoBufferPercentInput(fgBufferPercentInput);
   const fgBufferPercentForCalc =
     fgBufferParsed == null ? 0 : clampRegularSoBufferPercent(fgBufferParsed);
+  const fgBufferBand = classifyRegularSoBufferPercent(fgBufferParsed ?? fgBufferPercentForCalc);
+  const fgBufferRequiresAdmin = fgBufferBand === "REQUIRES_ADMIN_APPROVAL";
   const fgBufferInputInvalid =
     (fgBufferParsed != null && fgBufferParsed > REGULAR_SO_BUFFER_PERCENT_MAX + 1e-9) ||
-    (fgBufferParsed != null && fgBufferParsed < -1e-9);
+    (fgBufferParsed != null && fgBufferParsed < -1e-9) ||
+    regularSoBufferPercentExceedsFractionDigits(fgBufferPercentInput) ||
+    fgBufferBand === "BLOCKED" ||
+    (fgBufferRequiresAdmin && (!isAdmin || !fgBufferReason.trim()));
 
-  const woCreateDisabled = !canStartWo || loading || initializingPlanning || savingBuffer || fgBufferInputInvalid;
+  const woCreateDisabled =
+    !canStartWo ||
+    loading ||
+    initializingPlanning ||
+    savingBuffer ||
+    fgBufferInputInvalid ||
+    creatingWo ||
+    !canCreateWoRole;
 
   const productionPlanningMetrics = React.useMemo(() => {
     if (!primaryFgLine || primaryFgLine.note) return null;
@@ -709,6 +851,7 @@ export function RmCheckPage() {
 
   React.useEffect(() => {
     if (!soId || !data || errorPresentation || fgBufferInputInvalid || savingBuffer || loading) return;
+    if (fgBufferRequiresAdmin && (!isAdmin || !fgBufferReason.trim())) return;
     const serverPct = clampRegularSoBufferPercent(Number(primaryFgLine?.productionBufferPercent ?? 0));
     if (Math.abs(fgBufferPercentForCalc - serverPct) < 1e-9) return;
     const t = window.setTimeout(() => {
@@ -718,6 +861,9 @@ export function RmCheckPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     fgBufferPercentForCalc,
+    fgBufferReason,
+    fgBufferRequiresAdmin,
+    isAdmin,
     soId,
     data,
     errorPresentation,
@@ -834,8 +980,12 @@ export function RmCheckPage() {
       loading,
       resumeWorkOrder,
       onRaiseMr: () => {},
-      onCreateWo: createWorkOrder,
-      onResumeWo: () => nav(`/work-orders?salesOrderId=${encodeURIComponent(String(soId))}`),
+      onCreateWo: () => {
+        void createWorkOrder();
+      },
+      onResumeWo: () => {
+        void createWorkOrder();
+      },
       onRefreshAvailability: refreshStockCheck,
     });
   }, [
@@ -847,6 +997,7 @@ export function RmCheckPage() {
     canStartWo,
     woCreateDisabled,
     loading,
+    creatingWo,
     nextStepHint,
     planQtyByLineId,
   ]);
@@ -1052,8 +1203,15 @@ export function RmCheckPage() {
               metrics={productionPlanningMetrics}
               suggestedBufferPercent={suggestedFgPlanningBufferPercent}
               bufferPercentInput={fgBufferPercentInput}
-              onBufferPercentInputChange={setFgBufferPercentInput}
+              onBufferPercentInputChange={(v) => {
+                if (regularSoBufferPercentExceedsFractionDigits(v)) return;
+                setFgBufferPercentInput(v);
+              }}
+              bufferReason={fgBufferReason}
+              onBufferReasonChange={setFgBufferReason}
               bufferInputInvalid={fgBufferInputInvalid}
+              bufferRequiresAdminApproval={fgBufferRequiresAdmin}
+              isAdmin={isAdmin}
               saving={savingBuffer}
               disabled={loading || initializingPlanning}
             />

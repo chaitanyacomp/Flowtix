@@ -196,11 +196,14 @@ describe("RmPoSupplierDocument P4D-C", () => {
     expect(documentViewSource).toContain("supplierCopyMode");
   });
 
-  it("print and workflow actions preserved", () => {
+  it("print and workflow actions preserved without Create GRN in document toolbar", () => {
     expect(documentViewSource).toContain("printRmPoSupplierSection");
-    expect(documentViewSource).toContain("rm-po-create-grn-btn");
+    expect(documentViewSource).not.toContain("rm-po-create-grn-btn");
     expect(documentViewSource).toContain("rm-po-edit-btn");
     expect(documentViewSource).toContain("rm-po-cancel-btn");
+    expect(documentViewSource).toContain("rm-po-print-btn");
+    expect(documentViewSource).toContain("rm-po-supplier-copy-btn");
+    expect(documentViewSource).toContain("rm-po-view-traceability-btn");
   });
 
   it("shows supplier address warning when address missing", () => {

@@ -8,11 +8,20 @@ const {
 } = require("../services/masterNameNormalize");
 const { normalizeHsnOnSave } = require("../services/hsnNormalize");
 const { buildItemDependencySummary } = require("../services/masterDependencyService");
+const {
+  parseBulkIds,
+  runBulkIsActiveMutation,
+  runBulkHardDelete,
+} = require("../services/masterBulkMutationService");
+const { isItemTypeCode, itemTypeZodEnum } = require("../services/itemTypes");
 
 const ITEM_DELETE_BLOCKED = "This item is used in orders, stock, or manufacturing and cannot be deleted.";
 const ITEM_DUPLICATE_NAME = "An item with this name already exists.";
 const ITEM_TYPE_UNIT_LOCKED =
   "This item's type or unit cannot be changed because it is already used in orders, stock, or manufacturing.";
+const ITEM_NOT_FOUND = "Item not found";
+const itemLifecycleRoles = requireRole(["ADMIN"]);
+const itemWriteRoles = requireRole(["ADMIN", "STORE"]);
 
 const itemRouter = express.Router();
 
@@ -113,11 +122,24 @@ async function itemNameTakenByOther(displayName, excludeId) {
 
 itemRouter.get("/", requireAuth, async (req, res, next) => {
   try {
-    const { type, includeInactive } = req.query;
+    const { type, includeInactive, q, isActive } = req.query;
+    if (type != null && String(type).trim() !== "" && !isItemTypeCode(String(type))) {
+      return res.status(400).json({
+        error: { message: `Unsupported item type filter. Allowed: ${itemTypeZodEnum().join(", ")}.` },
+      });
+    }
     const where = {
       ...(type ? { itemType: String(type) } : {}),
-      ...(String(includeInactive).toLowerCase() === "true" ? {} : { isActive: true }),
     };
+    if (isActive !== undefined && String(isActive).trim() !== "") {
+      where.isActive = String(isActive).toLowerCase() === "true";
+    } else if (String(includeInactive).toLowerCase() !== "true") {
+      where.isActive = true;
+    }
+    const qTrim = q != null ? String(q).trim() : "";
+    if (qTrim) {
+      where.itemName = { contains: qTrim };
+    }
     const rows = await prisma.item.findMany({
       where,
       orderBy: { id: "desc" },
@@ -135,11 +157,63 @@ itemRouter.get("/", requireAuth, async (req, res, next) => {
   }
 });
 
-itemRouter.post("/", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+itemRouter.post("/bulk-activate", requireAuth, itemLifecycleRoles, async (req, res, next) => {
+  try {
+    const ids = parseBulkIds(req.body);
+    const result = await runBulkIsActiveMutation(prisma, {
+      model: "item",
+      ids,
+      isActive: true,
+      alreadyReason: "Item is already active.",
+      notFoundReason: ITEM_NOT_FOUND,
+    });
+    return res.json(result);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+itemRouter.post("/bulk-deactivate", requireAuth, itemLifecycleRoles, async (req, res, next) => {
+  try {
+    const ids = parseBulkIds(req.body);
+    const result = await runBulkIsActiveMutation(prisma, {
+      model: "item",
+      ids,
+      isActive: false,
+      alreadyReason: "Item is already inactive.",
+      notFoundReason: ITEM_NOT_FOUND,
+    });
+    return res.json(result);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+itemRouter.post("/bulk-delete", requireAuth, itemLifecycleRoles, async (req, res, next) => {
+  try {
+    const ids = parseBulkIds(req.body);
+    const result = await runBulkHardDelete(prisma, {
+      model: "item",
+      ids,
+      hasBlockingReferences: async (db, itemId) => {
+        const summary = await buildItemDependencySummary(db, itemId);
+        if (!summary) return ITEM_NOT_FOUND;
+        return summary.safeToDelete ? false : ITEM_DELETE_BLOCKED;
+      },
+      defaultBlockedReason: ITEM_DELETE_BLOCKED,
+      notFoundReason: ITEM_NOT_FOUND,
+    });
+    return res.json(result);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+itemRouter.post("/", requireAuth, itemWriteRoles, async (req, res, next) => {
   try {
     const schema = z.object({
       itemName: z.string().min(1),
-      itemType: z.enum(["RM", "FG", "SFG", "CONSUMABLE"]),
+      itemType: z.enum(itemTypeZodEnum()),
       unit: z.string().min(1).optional(),
       unitId: z.number().int().positive().optional().nullable(),
       minStockLevel: z.number().nonnegative().default(0),
@@ -242,12 +316,12 @@ itemRouter.post("/", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, r
   }
 });
 
-itemRouter.put("/:id", requireAuth, requireRole(["ADMIN", "STORE"]), async (req, res, next) => {
+itemRouter.put("/:id", requireAuth, itemWriteRoles, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const schema = z.object({
       itemName: z.string().min(1).optional(),
-      itemType: z.enum(["RM", "FG"]).optional(),
+      itemType: z.enum(itemTypeZodEnum()).optional(),
       unit: z.string().min(1).optional(),
       unitId: z.number().int().positive().optional().nullable(),
       minStockLevel: z.number().nonnegative().optional(),
@@ -418,11 +492,11 @@ itemRouter.get("/:id/dependencies", requireAuth, async (req, res, next) => {
   }
 });
 
-itemRouter.post("/:id/deactivate", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
+itemRouter.post("/:id/deactivate", requireAuth, itemLifecycleRoles, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const existing = await prisma.item.findUnique({ where: { id } });
-    if (!existing) return res.status(404).json({ error: "Item not found" });
+    if (!existing) return res.status(404).json({ error: ITEM_NOT_FOUND });
     const updated = await prisma.item.update({ where: { id }, data: { isActive: false } });
     return res.json(updated);
   } catch (e) {
@@ -430,7 +504,7 @@ itemRouter.post("/:id/deactivate", requireAuth, requireRole(["ADMIN"]), async (r
   }
 });
 
-itemRouter.delete("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
+itemRouter.delete("/:id", requireAuth, itemLifecycleRoles, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const existing = await prisma.item.findUnique({ where: { id } });

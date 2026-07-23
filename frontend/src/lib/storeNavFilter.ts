@@ -16,7 +16,6 @@ const STORE_HIDDEN_NAV_KEYS = new Set([
   "cust-track",
   "cust-ret",
   "purbill",
-  "wo",
   "prod",
   "qc",
   "qc-report",

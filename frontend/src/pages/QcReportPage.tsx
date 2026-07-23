@@ -6,7 +6,7 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
-import { PageBackLink, PageContainer, StickyWorkspaceHead, useAnalysisReportBack } from "../components/PageHeader";
+import { ReportPageHeader, useAnalysisReportBack } from "../components/PageHeader";
 import { displaySalesOrderNo } from "../lib/docNoDisplay";
 import { salesOrdersFocusHref, workOrdersFocusHref } from "../lib/drillDownRoutes";
 import { cn } from "../lib/utils";
@@ -20,6 +20,14 @@ import {
   downloadReportCsv,
   downloadReportExcel,
 } from "../components/erp/ReportPrintExport";
+import {
+  ReportEmptyState,
+  ReportFilterField,
+  ReportFilterToolbar,
+  ReportKpiStrip,
+  ReportPageShell,
+  ReportTableShell,
+} from "../components/erp/ReportChrome";
 
 type CustomerOpt = { id: number; name: string };
 type ItemOpt = { id: number; itemName: string };
@@ -27,6 +35,11 @@ type ItemOpt = { id: number; itemName: string };
 type QcReportSummaries = {
   productionQcAcceptedToday: number;
   productionQcRejectedToday: number;
+  productionFinalUsableAcceptedToday?: number;
+  productionFirstPassAcceptedToday?: number;
+  productionInitialRejectedToday?: number;
+  productionReworkAcceptedToday?: number;
+  productionFinalUnusableToday?: number;
   customerReturnQcAcceptedToday: number;
   customerReturnQcRejectedToday: number;
   reworkPendingDispositions: number;
@@ -70,13 +83,20 @@ type QcReportRow = {
   inputQty: number;
   acceptedQty: number;
   rejectedQty: number;
+  firstPassAcceptedQty?: number | null;
+  initialAcceptedQty?: number | null;
+  initialRejectedQty?: number | null;
   reworkQty: number;
+  reworkAcceptedQty?: number | null;
+  reworkPendingQty?: number | null;
   holdQty: number;
   scrapQty: number;
+  finalUsableQty?: number | null;
+  finalUnusableQty?: number | null;
   statusLabel: string;
   isReversed: boolean;
   dispatchableQty: number | null;
-  /** Batch 3F — NO_QTY QC recovery (read-only; production rows only). */
+  /** Terminal unusable only (scrap). Not first-pass rejected. */
   finalRejectedQty?: number | null;
   recoveryCreatedQty?: number | null;
   recoveryAllocatedQty?: number | null;
@@ -91,10 +111,18 @@ type QcReportRow = {
     reversalReason?: string | null;
     inspectedQty?: number;
     initialAcceptedQty?: number;
+    firstPassAcceptedQty?: number;
+    initialRejectedQty?: number;
+    reworkRoutedQty?: number;
     reworkAcceptedQty?: number;
+    reworkPendingQty?: number;
+    holdQty?: number;
+    scrapQty?: number;
     finalUsableQty?: number;
+    finalUnusableQty?: number;
     directScrapQty?: number;
     reworkFinalScrapQty?: number;
+    lifecycleNote?: string | null;
     stockTransactionId?: number;
     stockTransactionType?: string | null;
     disposition?: string;
@@ -145,47 +173,33 @@ type QcHistoryTableSectionProps = {
 };
 
 function QcQtyCells({ r, layout }: { r: QcReportRow; layout: "production" | "customerReturn" }) {
-  const inspected = <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.inputQty, r.uom)}</td>;
-  const rejected = (
-    <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.finalRejectedQty ?? r.rejectedQty, r.uom)}</td>
-  );
-  const rework = <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.reworkQty, r.uom)}</td>;
-  const hold = <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.holdQty, r.uom)}</td>;
-  const scrap = <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.scrapQty, r.uom)}</td>;
-  const accepted = (
-    <td className="px-2 py-1 text-right tabular-nums text-emerald-800">{fmtQtyUom(r.acceptedQty, r.uom)}</td>
-  );
+  const firstPass = Number(r.firstPassAcceptedQty ?? r.detail?.firstPassAcceptedQty ?? r.detail?.initialAcceptedQty ?? 0);
+  const initialRejected = Number(r.initialRejectedQty ?? r.detail?.initialRejectedQty ?? r.rejectedQty ?? 0);
+  const reworkAccepted = Number(r.reworkAcceptedQty ?? r.detail?.reworkAcceptedQty ?? 0);
+  const finalUsable = Number(r.finalUsableQty ?? r.detail?.finalUsableQty ?? r.acceptedQty ?? 0);
+  const finalUnusable = Number(r.finalUnusableQty ?? r.detail?.finalUnusableQty ?? r.finalRejectedQty ?? 0);
 
   if (layout === "production") {
     return (
       <>
-        {inspected}
-        {rejected}
-        {rework}
-        {hold}
-        {scrap}
-        {accepted}
-        <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.recoveryCreatedQty, r.uom)}</td>
-        <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.recoveryAllocatedQty, r.uom)}</td>
-        <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.recoveryPendingQty, r.uom)}</td>
-        <td className="px-2 py-1 text-right tabular-nums">{fmtQtyUom(r.recoveryWaivedQty, r.uom)}</td>
-        <td className="px-2 py-1 text-[11px] text-slate-600">{r.recoverySourceStatus ?? "—"}</td>
-        <td className="px-2 py-1 tabular-nums">{r.recoveryOriginCycleId != null ? `C${r.recoveryOriginCycleId}` : "—"}</td>
-        <td className="px-2 py-1 tabular-nums">
-          {r.recoveryAgeDays != null ? `${r.recoveryAgeDays}d` : "—"}
-        </td>
+        <td className="px-3 py-2 text-right tabular-nums">{fmtQtyUom(r.inputQty, r.uom)}</td>
+        <td className="px-3 py-2 text-right tabular-nums">{fmtQtyUom(firstPass, r.uom)}</td>
+        <td className="px-3 py-2 text-right tabular-nums">{fmtQtyUom(initialRejected, r.uom)}</td>
+        <td className="px-3 py-2 text-right tabular-nums text-emerald-800">{fmtQtyUom(reworkAccepted, r.uom)}</td>
+        <td className="px-3 py-2 text-right tabular-nums font-semibold text-emerald-900">{fmtQtyUom(finalUsable, r.uom)}</td>
+        <td className="px-3 py-2 text-right tabular-nums">{fmtQtyUom(finalUnusable, r.uom)}</td>
       </>
     );
   }
 
   return (
     <>
-      {inspected}
-      {accepted}
-      {rejected}
-      {rework}
-      {hold}
-      {scrap}
+      <td className="px-3 py-2 text-right tabular-nums">{fmtQtyUom(r.inputQty, r.uom)}</td>
+      <td className="px-3 py-2 text-right tabular-nums text-emerald-800">{fmtQtyUom(r.acceptedQty, r.uom)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{fmtQtyUom(r.rejectedQty, r.uom)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{fmtQtyUom(r.reworkQty, r.uom)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{fmtQtyUom(r.holdQty, r.uom)}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{fmtQtyUom(r.scrapQty, r.uom)}</td>
     </>
   );
 }
@@ -200,122 +214,140 @@ function QcHistoryTableSection({
 }: QcHistoryTableSectionProps) {
   const productionQtyCols = qtyColumnLayout === "production";
   return (
-    <Card className="min-w-0 overflow-hidden border-slate-200 shadow-sm">
-      <CardHeader className="border-b border-slate-100 bg-slate-50/50 px-3 py-2">
+    <Card className="min-w-0 overflow-hidden border-slate-200 shadow-sm" data-testid="qc-report-section">
+      <CardHeader className="border-b border-slate-100 bg-slate-50/50 px-4 py-3">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">{title}</CardTitle>
-          <div className="text-[12px] text-slate-600">{rows.length} row{rows.length === 1 ? "" : "s"}</div>
+          <div className="text-sm text-slate-600">{rows.length} row{rows.length === 1 ? "" : "s"}</div>
         </div>
-        {subtitle ? <p className="mt-0.5 text-[12px] leading-snug text-slate-600">{subtitle}</p> : null}
+        {subtitle ? <p className="mt-1 text-sm leading-snug text-slate-600">{subtitle}</p> : null}
       </CardHeader>
       <CardContent className="px-0 py-0">
         {loading && rows.length === 0 ? (
-          <p className="px-3 py-6 text-center text-[12px] text-slate-600">Loading…</p>
+          <p className="px-4 py-8 text-center text-sm text-slate-600">Loading…</p>
         ) : rows.length === 0 ? (
-          <p className="px-3 py-6 text-center text-[12px] text-slate-600">No QC records found for selected filters.</p>
+          <div className="px-4 py-4">
+            <ReportEmptyState
+              title="No QC records found"
+              body="No QC records match the selected filters. Adjust filters and apply again."
+              className="py-8"
+            />
+          </div>
         ) : (
           <div className="relative">
             {loading ? (
-              <div className="flex justify-end px-3 pt-2">
-                <span className="text-[11px] font-medium text-slate-500">Refreshing…</span>
+              <div className="flex justify-end px-4 pt-2">
+                <span className="text-xs font-medium text-slate-500">Refreshing…</span>
               </div>
             ) : null}
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1480px] border-collapse text-[12px]">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                  <th className="px-2 py-1.5 font-medium">QC Ref</th>
-                  <th className="whitespace-nowrap px-2 py-1.5 font-medium">Date</th>
-                  <th className="px-2 py-1.5 font-medium">Source</th>
-                  <th className="px-2 py-1.5 font-medium">Source Ref</th>
-                  <th className="px-2 py-1.5 font-medium">SO</th>
-                  <th className="px-2 py-1.5 font-medium">Item</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Inspected</th>
-                  {productionQtyCols ? (
-                    <>
-                      <th className="px-2 py-1.5 text-right font-medium">Final rejected</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Rework</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Hold</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Scrap</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Accepted</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Recovery created</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Recovery allocated</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Recovery pending</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Recovery waived</th>
-                      <th className="px-2 py-1.5 font-medium">Recovery status</th>
-                      <th className="px-2 py-1.5 font-medium">Origin cycle</th>
-                      <th className="px-2 py-1.5 font-medium">Recovery age</th>
-                    </>
-                  ) : (
-                    <>
-                      <th className="px-2 py-1.5 text-right font-medium">Accepted</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Rejected</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Rework</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Hold</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Scrap</th>
-                    </>
-                  )}
-                  <th className="px-2 py-1.5 font-medium">Status</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Dispatchable</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr
-                    key={r.id}
-                    className={cn(
-                      "border-t border-slate-100 transition-colors hover:bg-slate-50/90",
-                      r.isReversed && "bg-slate-50/80 text-slate-500 hover:bg-slate-50",
+            <ReportTableShell>
+              <table
+                className={cn(
+                  "erp-table w-full border-collapse text-sm",
+                  productionQtyCols ? "min-w-0" : "min-w-[980px]",
+                )}
+                data-testid={productionQtyCols ? "production-qc-report-table" : "customer-return-qc-report-table"}
+              >
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                    <th className="whitespace-nowrap px-3 py-2.5 font-medium">QC No.</th>
+                    {productionQtyCols ? null : (
+                      <>
+                        <th className="whitespace-nowrap px-3 py-2.5 font-medium">Date</th>
+                        <th className="px-3 py-2.5 font-medium">Source</th>
+                        <th className="px-3 py-2.5 font-medium">Source Ref</th>
+                        <th className="px-3 py-2.5 font-medium">SO</th>
+                      </>
                     )}
-                  >
-                    <td className="px-2 py-1 font-mono text-[11px]">
-                      {r.qcDocNo ?? (r.qcEntryId ? `QC #${r.qcEntryId}` : r.stockAdjustmentQcEntryId ? `#${r.stockAdjustmentQcEntryId}` : r.id)}
-                    </td>
-                    <td className="whitespace-nowrap px-2 py-1 tabular-nums">{r.date ? new Date(r.date).toLocaleDateString() : "—"}</td>
-                    <td className="px-2 py-1">{r.sourceType === "PRODUCTION" ? "Production" : "Customer return"}</td>
-                    <td className="px-2 py-1 font-mono text-[11px] text-slate-700">{r.sourceRef}</td>
-                    <td className="px-2 py-1">
-                      {r.salesOrderId ? (
-                        <Link
-                          className="text-sky-700 underline-offset-2 hover:underline"
-                          to={salesOrdersFocusHref(r.salesOrderId)}
-                        >
-                          {displaySalesOrderNo(r.salesOrderId, r.salesOrderDocNo ?? null)}
-                        </Link>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td className="max-w-[12rem] truncate px-2 py-1" title={r.itemName}>
-                      {r.itemName}
-                    </td>
-                    <QcQtyCells r={r} layout={qtyColumnLayout} />
-                    <td className="px-2 py-1">
-                      <Badge
-                        variant={statusBadgeClass(r.statusLabel, r.isReversed)}
-                        className="px-2 py-0.5 text-[11px] font-medium"
-                      >
-                        {r.statusLabel}
-                      </Badge>
-                    </td>
-                    <td className="px-2 py-1 text-right tabular-nums">
-                      {r.dispatchableQty != null ? (
-                        <span className="font-medium text-emerald-900">{fmt(r.dispatchableQty)}</span>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td className="px-2 py-1 text-right">
-                      <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" onClick={() => onOpenDetail(r)}>
-                        Details
-                      </Button>
-                    </td>
+                    <th className="min-w-[8rem] px-3 py-2.5 font-medium">Item</th>
+                    {productionQtyCols ? (
+                      <>
+                        <th className="px-3 py-2.5 text-right font-medium">Inspected</th>
+                        <th className="px-3 py-2.5 text-right font-medium">First-Pass Acc.</th>
+                        <th className="px-3 py-2.5 text-right font-medium">Initial Rej.</th>
+                        <th className="px-3 py-2.5 text-right font-medium">Rework Acc.</th>
+                        <th className="px-3 py-2.5 text-right font-medium">Final Usable</th>
+                        <th className="px-3 py-2.5 text-right font-medium">Final Unusable</th>
+                      </>
+                    ) : (
+                      <>
+                        <th className="px-3 py-2.5 text-right font-medium">Inspected</th>
+                        <th className="px-3 py-2.5 text-right font-medium">Accepted</th>
+                        <th className="px-3 py-2.5 text-right font-medium">Rejected</th>
+                        <th className="px-3 py-2.5 text-right font-medium">Rework</th>
+                        <th className="px-3 py-2.5 text-right font-medium">Hold</th>
+                        <th className="px-3 py-2.5 text-right font-medium">Scrap</th>
+                      </>
+                    )}
+                    <th className="px-3 py-2.5 font-medium">Status</th>
+                    {productionQtyCols ? null : (
+                      <th className="px-3 py-2.5 text-right font-medium">Dispatchable</th>
+                    )}
+                    <th className="px-3 py-2.5 text-right font-medium">Trace</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr
+                      key={r.id}
+                      className={cn(
+                        "border-t border-slate-100 transition-colors hover:bg-slate-50/90",
+                        r.isReversed && "bg-slate-50/80 text-slate-500 hover:bg-slate-50",
+                      )}
+                    >
+                      <td className="whitespace-nowrap px-3 py-2 font-mono text-[13px]">
+                        {r.qcDocNo ?? (r.qcEntryId ? `QC #${r.qcEntryId}` : r.stockAdjustmentQcEntryId ? `#${r.stockAdjustmentQcEntryId}` : r.id)}
+                      </td>
+                      {productionQtyCols ? null : (
+                        <>
+                          <td className="whitespace-nowrap px-3 py-2 tabular-nums">{r.date ? new Date(r.date).toLocaleDateString() : "—"}</td>
+                          <td className="px-3 py-2">{r.sourceType === "PRODUCTION" ? "Production" : "Customer return"}</td>
+                          <td className="px-3 py-2 font-mono text-[13px] text-slate-700">{r.sourceRef}</td>
+                          <td className="px-3 py-2">
+                            {r.salesOrderId ? (
+                              <Link
+                                className="text-sky-700 underline-offset-2 hover:underline"
+                                to={salesOrdersFocusHref(r.salesOrderId)}
+                              >
+                                {displaySalesOrderNo(r.salesOrderId, r.salesOrderDocNo ?? null)}
+                              </Link>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                        </>
+                      )}
+                      <td className="max-w-[12rem] truncate px-3 py-2" title={r.itemName}>
+                        {r.itemName}
+                      </td>
+                      <QcQtyCells r={r} layout={qtyColumnLayout} />
+                      <td className="px-3 py-2">
+                        <Badge
+                          variant={statusBadgeClass(r.statusLabel, r.isReversed)}
+                          className="px-2 py-0.5 text-xs font-medium"
+                        >
+                          {r.statusLabel}
+                        </Badge>
+                      </td>
+                      {productionQtyCols ? null : (
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {r.dispatchableQty != null ? (
+                            <span className="font-medium text-emerald-900">{fmt(r.dispatchableQty)}</span>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                      )}
+                      <td className="px-3 py-2 text-right">
+                        <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={() => onOpenDetail(r)}>
+                          Trace
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </ReportTableShell>
           </div>
         )}
       </CardContent>
@@ -386,6 +418,8 @@ export function QcReportPage() {
 
   const summaries = data?.summaries ?? null;
   const rows = Array.isArray(data?.rows) ? data.rows : [];
+  const hasLoadedRows = data != null;
+  const reportLoadFailed = Boolean(error) && !hasLoadedRows;
 
   const productionRows = React.useMemo(() => rows.filter((r) => r.sourceType === "PRODUCTION"), [rows]);
   const customerReturnRows = React.useMemo(() => rows.filter((r) => r.sourceType === "CUSTOMER_RETURN"), [rows]);
@@ -400,15 +434,14 @@ export function QcReportPage() {
     "Item",
     "UOM",
     "Inspected",
-    "Final rejected",
-    "Accepted",
-    "Recovery created",
-    "Recovery allocated",
-    "Recovery pending",
-    "Recovery waived",
-    "Recovery status",
-    "Origin cycle",
-    "Recovery age",
+    "First-Pass Accepted",
+    "Initial Rejected",
+    "Rework Accepted",
+    "Rework Pending",
+    "Hold",
+    "Scrap",
+    "Final Usable",
+    "Final Unusable",
     "Status",
   ];
   const csvRows = productionRows.map((r) => [
@@ -419,15 +452,14 @@ export function QcReportPage() {
     r.itemName,
     r.uom ?? "",
     r.inputQty,
-    r.finalRejectedQty ?? r.rejectedQty,
-    r.acceptedQty,
-    r.recoveryCreatedQty ?? "",
-    r.recoveryAllocatedQty ?? "",
-    r.recoveryPendingQty ?? "",
-    r.recoveryWaivedQty ?? "",
-    r.recoverySourceStatus ?? "",
-    r.recoveryOriginCycleId ?? "",
-    r.recoveryAgeDays ?? "",
+    r.firstPassAcceptedQty ?? r.detail?.firstPassAcceptedQty ?? r.detail?.initialAcceptedQty ?? "",
+    r.initialRejectedQty ?? r.detail?.initialRejectedQty ?? r.rejectedQty,
+    r.reworkAcceptedQty ?? r.detail?.reworkAcceptedQty ?? 0,
+    r.reworkPendingQty ?? r.detail?.reworkPendingQty ?? "",
+    r.holdQty,
+    r.scrapQty,
+    r.finalUsableQty ?? r.detail?.finalUsableQty ?? r.acceptedQty,
+    r.finalUnusableQty ?? r.detail?.finalUnusableQty ?? r.finalRejectedQty ?? 0,
     r.statusLabel,
   ]);
 
@@ -438,16 +470,12 @@ export function QcReportPage() {
   const back = useAnalysisReportBack(qcModuleBack);
 
   return (
-    <PageContainer className="erp-flow-page -mt-2 max-w-[min(110rem,calc(100vw-2rem))] space-y-2.5 pb-6">
-      <StickyWorkspaceHead lead={<PageBackLink to={back.to} label={back.label} />}>
-        <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
-          <div className="min-w-0 space-y-0.5">
-            <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-900">QC Report</h1>
-            <p className="text-xs leading-snug text-slate-600">
-              Review inspection results, rejection, rework, scrap, and return QC. NO_QTY recovery columns are
-              informational.
-            </p>
-          </div>
+    <ReportPageShell className="qc-report-page" data-testid="qc-report-page">
+      <ReportPageHeader
+        title="QC Report"
+        purpose="First-pass, rework, and final usable outcomes. Summary “today” cards use event dates; row totals show full lifecycle."
+        back={back}
+        actions={
           <ReportPrintExportBar
             onExportCsv={() => downloadReportCsv(`qc-report_${new Date().toISOString().slice(0, 10)}.csv`, csvHeaders, csvRows)}
             onExportExcel={() =>
@@ -459,167 +487,190 @@ export function QcReportPage() {
               )
             }
           />
-        </div>
-      </StickyWorkspaceHead>
+        }
+      />
 
       {summaries ? (
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {(
-            [
-              { label: "Prod accepted (today)", value: fmt(summaries.productionQcAcceptedToday), tone: "text-slate-900" },
-              { label: "Prod rejected (today)", value: fmt(summaries.productionQcRejectedToday), tone: "text-slate-900" },
-              { label: "Rework / hold queue", value: fmt(summaries.reworkPendingDispositions), tone: "text-slate-900" },
-              { label: "Rows in range", value: fmt(summaries.rowsInRange), tone: "text-slate-900" },
-              { label: "Return accepted (today)", value: fmt(summaries.customerReturnQcAcceptedToday), tone: "text-emerald-900" },
-              { label: "Return rejected (today)", value: fmt(summaries.customerReturnQcRejectedToday), tone: "text-emerald-900" },
-            ] as const
-          ).map((k) => (
-            <Card key={k.label} className="border-slate-200 shadow-sm">
-              <CardContent className="flex h-full items-center justify-between gap-3 p-3">
-                <div className="min-w-0">
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{k.label}</div>
-                </div>
-                <div className={cn("text-[16px] font-bold tabular-nums", k.tone)}>{k.value}</div>
-              </CardContent>
-            </Card>
-          ))}
+        <div data-testid="qc-report-summary-cards">
+          <ReportKpiStrip
+            className="sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4"
+            items={[
+              {
+                key: "final-usable",
+                label: "Final usable accepted (today)",
+                value: fmt(summaries.productionFinalUsableAcceptedToday ?? summaries.productionQcAcceptedToday),
+                tone: "success",
+              },
+              {
+                key: "initial-rejected",
+                label: "Initial rejected (today)",
+                value: fmt(summaries.productionInitialRejectedToday ?? summaries.productionQcRejectedToday),
+              },
+              {
+                key: "rework-accepted",
+                label: "Rework accepted (today)",
+                value: fmt(summaries.productionReworkAcceptedToday ?? 0),
+                tone: "success",
+              },
+              {
+                key: "final-unusable",
+                label: "Final unusable (today)",
+                value: fmt(summaries.productionFinalUnusableToday ?? 0),
+              },
+              {
+                key: "rows",
+                label: "QC rows in range",
+                value: fmt(summaries.rowsInRange),
+              },
+              {
+                key: "queue",
+                label: "Rework / hold queue",
+                value: fmt(summaries.reworkPendingDispositions),
+                tone: summaries.reworkPendingDispositions > 0 ? "warning" : "default",
+              },
+              {
+                key: "return-acc",
+                label: "Return accepted (today)",
+                value: fmt(summaries.customerReturnQcAcceptedToday),
+                tone: "success",
+              },
+              {
+                key: "return-rej",
+                label: "Return rejected (today)",
+                value: fmt(summaries.customerReturnQcRejectedToday),
+              },
+            ]}
+          />
         </div>
       ) : null}
 
-      <Card className="border-slate-200 shadow-sm">
-        <CardHeader className="border-b border-slate-100 bg-slate-50/50 px-3 py-2">
-          <CardTitle className="text-sm font-semibold tracking-tight text-slate-900">Filters</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2.5 px-3 py-2">
-          {error ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div> : null}
-          <div className="grid gap-2.5">
-            <div className="grid gap-2.5 lg:grid-cols-4">
-              <label className="grid gap-1 text-[12px]">
-                <span className="font-medium text-slate-600">Date From</span>
-                <Input className="h-8 text-sm tabular-nums" type="date" value={dateFrom} onChange={(e) => patch({ dateFrom: e.target.value || null })} />
-              </label>
-              <label className="grid gap-1 text-[12px]">
-                <span className="font-medium text-slate-600">Date To</span>
-                <Input className="h-8 text-sm tabular-nums" type="date" value={dateTo} onChange={(e) => patch({ dateTo: e.target.value || null })} />
-              </label>
-              <label className="grid gap-1 text-[12px]">
-                <span className="font-medium text-slate-600">Source</span>
-                <select
-                  className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm"
-                  value={sourceType}
-                  onChange={(e) => patch({ sourceType: e.target.value === "ALL" ? null : e.target.value })}
-                >
-                  <option value="ALL">All</option>
-                  <option value="PRODUCTION">Production</option>
-                  <option value="CUSTOMER_RETURN">Customer return</option>
-                </select>
-              </label>
-              <label className="grid gap-1 text-[12px]">
-                <span className="font-medium text-slate-600">Status</span>
-                <select
-                  className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm"
-                  value={status}
-                  onChange={(e) => patch({ status: e.target.value === "ALL" ? null : e.target.value })}
-                >
-                  <option value="ALL">All</option>
-                  <option value="ACTIVE">Active</option>
-                  <option value="REVERSED">Reversed</option>
-                </select>
-              </label>
+      {error ? (
+        <div
+          className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+          data-testid="qc-report-load-error"
+          role="alert"
+        >
+          <div className="font-semibold">QC Report could not be loaded</div>
+          <div className="mt-1 whitespace-pre-wrap break-words">{error}</div>
+          {import.meta.env.DEV ? (
+            <div className="mt-1 text-xs text-red-700/90">
+              Development: this is a server/API failure, not an empty filter result.
             </div>
-            <div className="grid gap-2.5 lg:grid-cols-[minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(18rem,2fr)_auto_auto]">
-              <label className="grid gap-1 text-[12px]">
-                <span className="font-medium text-slate-600">Customer</span>
-                <select
-                  className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm"
-                  value={customerId === "" ? "" : String(customerId)}
-                  onChange={(e) => patch({ customerId: e.target.value ? Number(e.target.value) : null })}
-                >
-                  <option value="">All</option>
-                  {customers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="grid gap-1 text-[12px]">
-                <span className="font-medium text-slate-600">FG Item</span>
-                <select
-                  className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm"
-                  value={itemId === "" ? "" : String(itemId)}
-                  onChange={(e) => patch({ itemId: e.target.value ? Number(e.target.value) : null })}
-                >
-                  <option value="">All</option>
-                  {items.map((it) => (
-                    <option key={it.id} value={it.id}>
-                      {it.itemName}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="grid gap-1 text-[12px] lg:col-span-1">
-                <span className="font-medium text-slate-600">Search</span>
-                <Input
-                  className="h-8 text-sm"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="QC no, SO, return, production, item…"
-                />
-              </label>
-              <div className="flex items-end">
-                <Button type="button" className="h-8" onClick={() => void reload()} disabled={loading}>
-                  {loading ? "Loading…" : "Apply"}
-                </Button>
-              </div>
-              <div className="flex items-end">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-8"
-                  onClick={() => {
-                    patch({
-                      dateFrom: defaultFrom,
-                      dateTo: defaultTo,
-                      sourceType: null,
-                      status: null,
-                      customerId: null,
-                      itemId: null,
-                      search: null,
-                    });
-                    setSearch("");
-                    void reload();
-                  }}
-                  disabled={loading}
-                >
-                  Reset
-                </Button>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+          ) : null}
+        </div>
+      ) : null}
+
+      <ReportFilterToolbar
+        onApply={() => void reload()}
+        onReset={() => {
+          patch({
+            dateFrom: defaultFrom,
+            dateTo: defaultTo,
+            sourceType: null,
+            status: null,
+            customerId: null,
+            itemId: null,
+            search: null,
+          });
+          setSearch("");
+          void reload();
+        }}
+        applyBusy={loading}
+        applyLabel="Apply"
+        resetLabel="Reset"
+      >
+        <ReportFilterField label="Date From">
+          <Input type="date" value={dateFrom} onChange={(e) => patch({ dateFrom: e.target.value || null })} />
+        </ReportFilterField>
+        <ReportFilterField label="Date To">
+          <Input type="date" value={dateTo} onChange={(e) => patch({ dateTo: e.target.value || null })} />
+        </ReportFilterField>
+        <ReportFilterField label="Source">
+          <select
+            value={sourceType}
+            onChange={(e) => patch({ sourceType: e.target.value === "ALL" ? null : e.target.value })}
+          >
+            <option value="ALL">All</option>
+            <option value="PRODUCTION">Production</option>
+            <option value="CUSTOMER_RETURN">Customer return</option>
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="Status">
+          <select
+            value={status}
+            onChange={(e) => patch({ status: e.target.value === "ALL" ? null : e.target.value })}
+          >
+            <option value="ALL">All</option>
+            <option value="ACTIVE">Active</option>
+            <option value="REVERSED">Reversed</option>
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="Customer">
+          <select
+            value={customerId === "" ? "" : String(customerId)}
+            onChange={(e) => patch({ customerId: e.target.value ? Number(e.target.value) : null })}
+          >
+            <option value="">All</option>
+            {customers.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="FG Item">
+          <select
+            value={itemId === "" ? "" : String(itemId)}
+            onChange={(e) => patch({ itemId: e.target.value ? Number(e.target.value) : null })}
+          >
+            <option value="">All</option>
+            {items.map((it) => (
+              <option key={it.id} value={it.id}>
+                {it.itemName}
+              </option>
+            ))}
+          </select>
+        </ReportFilterField>
+        <ReportFilterField label="Search" span={2}>
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="QC no, SO, return, production, item…"
+          />
+        </ReportFilterField>
+      </ReportFilterToolbar>
 
       <div className="space-y-4">
-        {showProductionSection ? (
-          <QcHistoryTableSection
-            title="Production QC"
-            subtitle="Manufacturing batches only. Customer-return and replacement fulfillment never use this path."
-            rows={productionRows}
-            loading={loading}
-            onOpenDetail={setDetailRow}
-            qtyColumnLayout="production"
-          />
-        ) : null}
-        {showCustomerReturnSection ? (
-          <QcHistoryTableSection
-            title="Customer Return QC (Rework Checking)"
-            subtitle="Post–manual rework verification and replacement-SO dispatch pool. Separate from production QC and stock."
-            rows={customerReturnRows}
-            loading={loading}
-            onOpenDetail={setDetailRow}
-          />
-        ) : null}
+        {reportLoadFailed ? (
+          <Card className="border-red-200 shadow-sm" data-testid="qc-report-failed-state">
+            <CardContent className="px-4 py-8 text-center text-sm text-red-800">
+              Report data is unavailable because the API request failed. Fix the server error and click Apply — this is
+              not a zero-result filter.
+            </CardContent>
+          </Card>
+        ) : (
+          <>
+            {showProductionSection ? (
+              <QcHistoryTableSection
+                title="Production QC"
+                subtitle="Lifecycle totals per QC posting date. Hold/scrap/rework pending and NO_QTY recovery details are in Trace."
+                rows={productionRows}
+                loading={loading}
+                onOpenDetail={setDetailRow}
+                qtyColumnLayout="production"
+              />
+            ) : null}
+            {showCustomerReturnSection ? (
+              <QcHistoryTableSection
+                title="Customer Return QC (Rework Checking)"
+                subtitle="Post–manual rework verification and replacement-SO dispatch pool. Separate from production QC and stock."
+                rows={customerReturnRows}
+                loading={loading}
+                onOpenDetail={setDetailRow}
+              />
+            ) : null}
+          </>
+        )}
       </div>
 
       {detailRow ? (
@@ -705,38 +756,70 @@ export function QcReportPage() {
                         </dd>
                       </div>
                       <div className="flex justify-between gap-2">
-                        <dt className="text-slate-600">Initial accepted</dt>
+                        <dt className="text-slate-600">First-pass accepted</dt>
                         <dd className="tabular-nums font-medium text-emerald-800">
-                          {fmt(Number(detailRow.detail?.initialAcceptedQty ?? detailRow.acceptedQty))}
-                        </dd>
-                      </div>
-                      {(detailRow.detail?.reworkAcceptedQty ?? 0) > 0 ? (
-                        <div className="flex justify-between gap-2">
-                          <dt className="text-slate-600">Rework recheck accepted</dt>
-                          <dd className="tabular-nums font-medium text-emerald-800">
-                            {fmt(Number(detailRow.detail?.reworkAcceptedQty ?? 0))}
-                          </dd>
-                        </div>
-                      ) : null}
-                      <div className="flex justify-between gap-2">
-                        <dt className="text-slate-600">Final usable</dt>
-                        <dd className="tabular-nums font-semibold text-emerald-900">
-                          {fmt(Number(detailRow.detail?.finalUsableQty ?? detailRow.acceptedQty))}
+                          {fmt(
+                            Number(
+                              detailRow.detail?.firstPassAcceptedQty ??
+                                detailRow.detail?.initialAcceptedQty ??
+                                detailRow.firstPassAcceptedQty ??
+                                0,
+                            ),
+                          )}
                         </dd>
                       </div>
                       <div className="flex justify-between gap-2">
-                        <dt className="text-slate-600">This posting — rejected</dt>
-                        <dd className="tabular-nums font-medium">{fmt(detailRow.rejectedQty)}</dd>
+                        <dt className="text-slate-600">Initial rejection posted</dt>
+                        <dd className="tabular-nums font-medium">
+                          {fmt(
+                            Number(
+                              detailRow.detail?.initialRejectedQty ??
+                                detailRow.initialRejectedQty ??
+                                detailRow.rejectedQty,
+                            ),
+                          )}
+                        </dd>
                       </div>
                       <div className="flex justify-between gap-2">
-                        <dt className="text-slate-600">Rework / hold / scrap (split)</dt>
+                        <dt className="text-slate-600">Rework / Hold / Scrap (split)</dt>
                         <dd className="tabular-nums">
                           {fmt(detailRow.reworkQty)} / {fmt(detailRow.holdQty)} / {fmt(detailRow.scrapQty)}
                         </dd>
                       </div>
+                      <div className="flex justify-between gap-2">
+                        <dt className="text-slate-600">Rework accepted</dt>
+                        <dd className="tabular-nums font-medium text-emerald-800">
+                          {fmt(Number(detailRow.detail?.reworkAcceptedQty ?? detailRow.reworkAcceptedQty ?? 0))}
+                        </dd>
+                      </div>
+                      <div className="flex justify-between gap-2">
+                        <dt className="text-slate-600">Rework pending</dt>
+                        <dd className="tabular-nums font-medium">
+                          {fmt(Number(detailRow.detail?.reworkPendingQty ?? detailRow.reworkPendingQty ?? 0))}
+                        </dd>
+                      </div>
+                      <div className="flex justify-between gap-2">
+                        <dt className="text-slate-600">Final usable</dt>
+                        <dd className="tabular-nums font-semibold text-emerald-900">
+                          {fmt(Number(detailRow.detail?.finalUsableQty ?? detailRow.finalUsableQty ?? detailRow.acceptedQty))}
+                        </dd>
+                      </div>
+                      <div className="flex justify-between gap-2">
+                        <dt className="text-slate-600">Final unresolved / unusable</dt>
+                        <dd className="tabular-nums font-medium">
+                          {fmt(
+                            Number(
+                              detailRow.detail?.finalUnusableQty ??
+                                detailRow.finalUnusableQty ??
+                                detailRow.finalRejectedQty ??
+                                0,
+                            ),
+                          )}
+                        </dd>
+                      </div>
                       {(detailRow.detail?.reworkFinalScrapQty ?? 0) > 0 ? (
                         <div className="flex justify-between gap-2">
-                          <dt className="text-slate-600">Scrap (incl. rework final)</dt>
+                          <dt className="text-slate-600">Scrap (direct + rework final)</dt>
                           <dd className="tabular-nums">
                             {fmt(Number(detailRow.detail?.directScrapQty ?? 0))} +{" "}
                             {fmt(Number(detailRow.detail?.reworkFinalScrapQty ?? 0))} = {fmt(detailRow.scrapQty)}
@@ -749,9 +832,34 @@ export function QcReportPage() {
                           <dd className="tabular-nums">{fmt(Number(detailRow.detail.lossQty))}</dd>
                         </div>
                       ) : null}
+                      {detailRow.detail?.lifecycleNote ? (
+                        <p className="mt-2 rounded border border-emerald-100 bg-emerald-50/80 px-2 py-1.5 text-[12px] leading-snug text-emerald-950">
+                          {detailRow.detail.lifecycleNote}
+                        </p>
+                      ) : null}
+                      {(detailRow.recoveryCreatedQty != null && Number(detailRow.recoveryCreatedQty) > 0) ||
+                      (detailRow.recoveryPendingQty != null && Number(detailRow.recoveryPendingQty) > 0) ? (
+                        <div className="mt-2 space-y-1 border-t border-slate-200 pt-2 text-[12px]">
+                          <div className="font-semibold text-slate-800">NO_QTY recovery (informational)</div>
+                          <div className="flex justify-between gap-2">
+                            <dt className="text-slate-600">Created / allocated / pending / waived</dt>
+                            <dd className="tabular-nums">
+                              {fmt(Number(detailRow.recoveryCreatedQty ?? 0))} /{" "}
+                              {fmt(Number(detailRow.recoveryAllocatedQty ?? 0))} /{" "}
+                              {fmt(Number(detailRow.recoveryPendingQty ?? 0))} /{" "}
+                              {fmt(Number(detailRow.recoveryWaivedQty ?? 0))}
+                            </dd>
+                          </div>
+                          <div className="text-slate-600">
+                            {detailRow.recoverySourceStatus ?? "—"}
+                            {detailRow.recoveryOriginCycleId != null ? ` · C${detailRow.recoveryOriginCycleId}` : ""}
+                            {detailRow.recoveryAgeDays != null ? ` · ${detailRow.recoveryAgeDays}d` : ""}
+                          </div>
+                        </div>
+                      ) : null}
                     </dl>
                     <p className="mt-2 text-[11px] leading-snug text-slate-600">
-                      Dispatch pool for this FG uses cumulative QC on the sales order (not only this row). Use Dispatch for live caps.
+                      Final usable = first-pass accepted + rework accepted. Dispatch pool uses cumulative final usable on the sales order, capped by SO remaining and FG on-hand.
                     </p>
                   </div>
                 ) : (
@@ -846,6 +954,6 @@ export function QcReportPage() {
           </div>
         </ErpModal>
       ) : null}
-    </PageContainer>
+    </ReportPageShell>
   );
 }

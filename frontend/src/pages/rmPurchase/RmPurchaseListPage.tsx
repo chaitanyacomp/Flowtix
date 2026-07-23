@@ -157,18 +157,25 @@ export function RmPurchaseListPage() {
   const [lineTouched, setLineTouched] = React.useState<Record<number, { item?: boolean; qty?: boolean; rate?: boolean }>>({});
   const [lineAttemptedAdd, setLineAttemptedAdd] = React.useState<Record<number, boolean>>({});
 
-  /** Legacy ?poId= deep-link → PO detail route */
+  /** Legacy ?poId= deep-link → PO detail route (preserve openGrn + pending-actions return). */
   React.useEffect(() => {
     const legacy = Number(navSearchParams.get(DRILL_QUERY.rmPoId)) || 0;
     if (!legacy) return;
+    const from = (navSearchParams.get("from") ?? "").trim();
+    const openGrn =
+      navSearchParams.get("openGrn") === "1" ||
+      (navSearchParams.get("action") ?? "").toLowerCase() === "creategrn" ||
+      (navSearchParams.get("action") ?? "").toLowerCase() === "create-grn";
+    const detailQs = new URLSearchParams();
+    if (from) detailQs.set("from", from);
+    if (openGrn) detailQs.set("openGrn", "1");
+    const detailPath = detailQs.toString() ? `/rm-po-grn/${legacy}?${detailQs}` : `/rm-po-grn/${legacy}`;
+    const returnCtx = from === "pending-actions" ? "/pending-actions" : listReturnTo;
     navigate(
-      withListReturnContext(
-        withReportsReturnContextIfPresent(`/rm-po-grn/${legacy}`, location.search),
-        listReturnTo,
-      ),
+      withListReturnContext(withReportsReturnContextIfPresent(detailPath, location.search), returnCtx),
       { replace: true },
     );
-  }, [navigate, navSearchParams, location.search]);
+  }, [navigate, navSearchParams, location.search, listReturnTo]);
 
   async function refresh(): Promise<void> {
     const fetchErr = (reason: unknown) => (reason instanceof Error ? reason.message : "Request failed");

@@ -13,6 +13,32 @@ const PREPARE_RM_PO = "Prepare RM PO";
 const STORE_ISSUE_PENDING_ACTION = "Issue Material";
 const RM_ISSUED_WAITING_FOR_PRODUCTION = "RM issued — waiting for Production";
 const READY_TO_START_PRODUCTION = "Ready to Start Production";
+const CREATE_PURCHASE_REQUEST_ACTION = "Create Purchase Request";
+const CREATE_PURCHASE_REQUEST_REGULAR_SO_ACTION = "Create Purchase Request — Regular SO";
+const APPROVE_MATERIAL_REQUIREMENT_ACTION = "Approve Material Requirement";
+
+function isCreatePurchaseRequestAction(action) {
+  const label = String(action ?? "").trim();
+  return label === CREATE_PURCHASE_REQUEST_ACTION || label === CREATE_PURCHASE_REQUEST_REGULAR_SO_ACTION;
+}
+
+function isDraftOrPendingApprovalMrStatus(status) {
+  const s = String(status ?? "").trim().toUpperCase();
+  return s === "DRAFT" || s === "PENDING_APPROVAL";
+}
+
+function isRegularSoProcurementStage(stageOrMeta) {
+  const pool = String(stageOrMeta?.procurementDemandPool ?? "").trim().toUpperCase();
+  if (pool === "REGULAR_SO") return true;
+  const sourceType = String(stageOrMeta?.sourceType ?? "").trim().toUpperCase();
+  return sourceType === "SALES_ORDER" || sourceType === "WORK_ORDER_PLANNING";
+}
+
+function createPurchaseRequestActionLabel(stageOrMeta) {
+  return isRegularSoProcurementStage(stageOrMeta)
+    ? CREATE_PURCHASE_REQUEST_REGULAR_SO_ACTION
+    : CREATE_PURCHASE_REQUEST_ACTION;
+}
 
 function isPurchaseRole(role) {
   const r = String(role ?? "")
@@ -116,7 +142,19 @@ function summarizeProcurementStageFromMeta(meta) {
     sourceType: meta?.sourceType ?? null,
     workOrderId: meta?.workOrderId != null ? Number(meta.workOrderId) : null,
     salesOrderId: meta?.salesOrderId != null ? Number(meta.salesOrderId) : null,
+    salesOrderDocNo: meta?.salesOrderDocNo ?? meta?.salesOrderNo ?? null,
   };
+}
+
+function buildMaterialRequirementApprovalHref(stage) {
+  const params = new URLSearchParams({ returnTo: "pending-actions" });
+  if (stage.materialRequirementId > 0) {
+    params.set("materialRequirementId", String(stage.materialRequirementId));
+  }
+  if (stage.salesOrderId > 0) params.set("salesOrderId", String(stage.salesOrderId));
+  const soDocNo = String(stage.salesOrderDocNo ?? "").trim();
+  if (soDocNo) params.set("salesOrderDocNo", soDocNo);
+  return `/material-planning?${params.toString()}`;
 }
 
 function buildProcurementWorkspaceHref(stage) {
@@ -128,6 +166,8 @@ function buildProcurementWorkspaceHref(stage) {
   }
   if (stage.workOrderId > 0) params.set("workOrderId", String(stage.workOrderId));
   if (stage.salesOrderId > 0) params.set("salesOrderId", String(stage.salesOrderId));
+  const soDocNo = String(stage.salesOrderDocNo ?? "").trim();
+  if (soDocNo) params.set("salesOrderDocNo", soDocNo);
   return `/procurement-planning?${params.toString()}`;
 }
 
@@ -138,6 +178,20 @@ function buildRmControlCenterHref(stage, rmItemId) {
   if (stage.materialRequirementId > 0) params.set("materialRequirementId", String(stage.materialRequirementId));
   if (rmItemId != null && Number(rmItemId) > 0) params.set("rmItemId", String(rmItemId));
   return `/reports/rm-shortage?${params.toString()}`;
+}
+
+/** REGULAR_SO — Create WO opens Prepare WO (does not create the WO). */
+function buildRegularSoPrepareWoHref(salesOrderId, opts = {}) {
+  const params = new URLSearchParams({
+    salesOrderId: String(salesOrderId),
+    source: "regular_so",
+  });
+  if (opts.from) params.set("from", String(opts.from));
+  const itemId = opts.itemId != null ? Number(opts.itemId) : 0;
+  if (itemId > 0) params.set("itemId", String(itemId));
+  const fgItemId = opts.fgItemId != null ? Number(opts.fgItemId) : 0;
+  if (fgItemId > 0) params.set("fgItemId", String(fgItemId));
+  return `/work-orders/prepare?${params.toString()}`;
 }
 
 /**
@@ -152,6 +206,8 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
   const freeStockQty = n(queueHints.freeStockQty ?? meta?.freeStockQty);
   const netShortage = n(queueHints.netShortageAfterIncomingQty ?? meta?.netShortageAfterIncomingQty);
   const rmItemId = meta?.rmItemId != null ? Number(meta.rmItemId) : null;
+  const operationalKey = String(meta?.operationalKey ?? "").toUpperCase();
+  const nextActionKey = String(meta?.nextActionKey ?? "").toUpperCase();
 
   const stockReadyForIssue =
     queueType === "RM_READY_FOR_ISSUE" || (queueType === "PMR_WAITING_ISSUE" && freeStockQty > QUEUE_EPS);
@@ -171,12 +227,26 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
   const procurementDone =
     Boolean(meta?.procurementCompletedForCase) || String(meta?.mrStatus ?? "").trim() === "FULLY_PROCURED";
 
+  const createWoReady =
+    !(stage.workOrderId > 0) &&
+    stage.salesOrderId > 0 &&
+    (queueType === "RM_RECEIVED_CREATE_WO" ||
+      operationalKey === "RM_RECEIVED_CREATE_WO" ||
+      operationalKey === "RM_RECEIVED" ||
+      (nextActionKey === "CREATE_WO" && procurementDone));
+  if (createWoReady) {
+    return {
+      action: "Create Work Order in Prepare WO",
+      href: buildRegularSoPrepareWoHref(stage.salesOrderId, { from: "pending-actions" }),
+    };
+  }
+
   if (procurementDone && queueType === "READY_TO_RELEASE_WO") {
     const released = Boolean(meta?.materialReleasedToProduction);
     const executionStarted =
       String(meta?.productionExecutionStatus ?? "NOT_STARTED").trim().toUpperCase() !== "NOT_STARTED";
     const hasProductionEntry = Boolean(meta?.hasProductionEntry);
-    if (isProductionRole(role) && released) {
+    if (isProductionRole(role)) {
       const execStatus = meta?.productionExecutionStatus ?? "NOT_STARTED";
       const action = productionExecutionPendingActionLabel(execStatus) ?? READY_TO_START_PRODUCTION;
       return {
@@ -190,12 +260,6 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
           "pending-actions",
           { actionLabel: action },
         ),
-      };
-    }
-    if (isProductionRole(role) && !released) {
-      return {
-        action: RM_ISSUED_WAITING_FOR_PRODUCTION,
-        href: buildRmControlCenterHref(stage, rmItemId),
       };
     }
     if (!isProductionRole(role)) {
@@ -231,9 +295,9 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
     const primaryPoId = meta?.primaryPoId != null ? Number(meta.primaryPoId) : 0;
     const href =
       primaryPoId > 0
-        ? `/rm-po-grn/${primaryPoId}?from=pending-actions`
+        ? `/rm-po-grn/${primaryPoId}?openGrn=1&from=pending-actions`
         : "/rm-po-grn?focus=pending-requests&from=pending-actions";
-    return { action: "GRN Pending", href };
+    return { action: "Create GRN", href };
   }
 
   if (stage.operationalKey === "PR_PENDING_PO" || (stage.prLineCount > 0 && stage.poLineCount === 0)) {
@@ -256,8 +320,37 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
     (queueType === "PMR_WAITING_ISSUE" && netShortage > QUEUE_EPS && stage.prLineCount === 0);
 
   if (needsCreatePr && stage.prLineCount === 0 && !procurementDone) {
+    const mrStatus = String(meta?.mrStatus ?? meta?.requisitionStatus ?? "").trim();
+    if (isDraftOrPendingApprovalMrStatus(mrStatus) && stage.materialRequirementId > 0) {
+      return {
+        action: APPROVE_MATERIAL_REQUIREMENT_ACTION,
+        href: buildMaterialRequirementApprovalHref(stage),
+      };
+    }
+
+    const regularSo = isRegularSoProcurementStage(stage);
+    const hasPurchaseVisibleMr =
+      Boolean(meta?.hasOpenMr) ||
+      (stage.materialRequirementId > 0 && !isDraftOrPendingApprovalMrStatus(mrStatus));
+    const regularSoShortageHandoff =
+      regularSo &&
+      stage.salesOrderId > 0 &&
+      (hasPurchaseVisibleMr ||
+        netShortage > QUEUE_EPS ||
+        queueType === "WO_BLOCKED_RM_SHORTAGE" ||
+        queueType === "WAITING_PURCHASE_ACTION" ||
+        stage.operationalKey === "PROCUREMENT_PENDING");
+
+    // Create PR only when Store can complete it in Procurement Workspace (MR or REGULAR_SO shortage).
+    if (!hasPurchaseVisibleMr && !regularSoShortageHandoff) {
+      return {
+        action: queueHints.recommendedAction || "Raise Store Requisition",
+        href: buildRmControlCenterHref(stage, rmItemId),
+      };
+    }
+
     return {
-      action: "Create Purchase Request",
+      action: createPurchaseRequestActionLabel(stage),
       href: buildProcurementWorkspaceHref(stage),
     };
   }
@@ -285,13 +378,20 @@ module.exports = {
   PREPARE_RM_PO,
   RM_ISSUED_WAITING_FOR_PRODUCTION,
   READY_TO_START_PRODUCTION,
+  CREATE_PURCHASE_REQUEST_ACTION,
+  CREATE_PURCHASE_REQUEST_REGULAR_SO_ACTION,
+  APPROVE_MATERIAL_REQUIREMENT_ACTION,
   deriveOperationalKeyFromCounts,
   summarizeProcurementStageFromTrace,
   summarizeProcurementStageFromMeta,
   resolveProcurementDemandPool,
   buildProcurementWorkspaceHref,
   buildRmControlCenterHref,
+  buildRegularSoPrepareWoHref,
   resolveRmRiskPendingAction,
   resolveRmRiskStorePendingAction,
   isPurchaseRole,
+  isCreatePurchaseRequestAction,
+  isRegularSoProcurementStage,
+  createPurchaseRequestActionLabel,
 };

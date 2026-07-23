@@ -1995,6 +1995,7 @@ export function MaterialIssuePage() {
                         onChange={(e) => setWaiveReason(e.target.value)}
                       >
                         <option value="">Select reason…</option>
+                        <option value="ROUNDING_TOLERANCE">Within rounding tolerance</option>
                         <option value="SCALE_LIMITATION">Scale limitation</option>
                         <option value="PACKING_LIMITATION">Packing limitation</option>
                         <option value="MANAGEMENT_DECISION">Management decision</option>
@@ -2013,7 +2014,9 @@ export function MaterialIssuePage() {
                       disabled={submitting || !waiveReason}
                       onClick={() => void handleWaiveRemaining()}
                     >
-                      Confirm Short Issue close
+                      {waiveReason === "ROUNDING_TOLERANCE"
+                        ? "Acknowledge rounding tolerance"
+                        : "Confirm Short Issue close"}
                     </Button>
                   </div>
                 ) : null}

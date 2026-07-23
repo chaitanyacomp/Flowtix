@@ -6,6 +6,7 @@ import {
   mapStoreActionToGuidedPhase,
   readinessBadgeFromBackendCase,
   resolveStoreActionPrimaryPresentation,
+  rmControlCenterCaseStatusLabel,
 } from "../../src/lib/rmControlCenterReadinessUx";
 
 describe("rmControlCenterReadinessUx", () => {
@@ -46,5 +47,11 @@ describe("rmControlCenterReadinessUx", () => {
         procurementStatusLabel: "Fully procured",
       }),
     ).toEqual({ label: "Ready for issue", variant: "success" });
+  });
+
+  it("case status chip never mirrors Create Work Order CTA", () => {
+    expect(rmControlCenterCaseStatusLabel({ storeActionKey: "CREATE_WO", storeActionLabel: "Create Work Order" })).toBe(
+      "RM Ready",
+    );
   });
 });

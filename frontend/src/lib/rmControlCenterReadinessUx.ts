@@ -42,6 +42,7 @@ export function mapStoreActionToGuidedPhase(storeActionKey: string | null | unde
     case "CONTINUE_PROCUREMENT":
     case "VIEW_PROCUREMENT":
     case "ADD_CASE_LINES":
+    case "AWAITING_PR":
       return "B_MR_ESCALATED";
     case "ESCALATE":
     case "REOPEN_REQUISITION":
@@ -76,8 +77,42 @@ export type StoreActionPrimaryPresentation =
   | { kind: "link"; label: string; href: string; description?: string | null }
   | { kind: "waiting"; label: string; description?: string | null; href?: string | null }
   | { kind: "raise_mr"; label: string; description?: string | null }
+  | { kind: "create_pr"; label: string; description?: string | null }
   | { kind: "allocation_fallback"; description?: string | null }
   | { kind: "none"; description?: string | null };
+
+/** Center/header status chip — never mirror primary CTA wording (e.g. Create Work Order). */
+export function rmControlCenterCaseStatusLabel(input: {
+  storeActionKey?: string | null;
+  storeActionLabel?: string | null;
+  fallbackLabel?: string | null;
+}): string {
+  const key = normalizeStoreActionKey(input.storeActionKey);
+  const label = String(input.storeActionLabel ?? "").trim();
+  const fallback = String(input.fallbackLabel ?? "").trim();
+
+  switch (key) {
+    case "CREATE_WO":
+      return "RM Ready";
+    case "AWAITING_PR":
+      return "Awaiting PR";
+    case "WAIT_PO":
+      return "Awaiting PO";
+    case "WAIT_GRN":
+      return "GRN Pending";
+    case "ISSUE":
+      return label || "Ready for issue";
+    case "HANDOFF_TO_PRODUCTION":
+    case "RELEASE_TO_PRODUCTION":
+      return label || "RM issued";
+    default:
+      break;
+  }
+
+  if (/^create work order$/i.test(label) || /^create work order$/i.test(fallback)) return "RM Ready";
+  if (/^create purchase request$/i.test(label) || /^create purchase request$/i.test(fallback)) return "Awaiting PR";
+  return label || fallback || "Review case";
+}
 
 export function resolveStoreActionPrimaryPresentation(input: {
   storeAction: BackendStoreAction | null | undefined;
@@ -87,6 +122,8 @@ export function resolveStoreActionPrimaryPresentation(input: {
   procurementWorkspaceHref?: string | null;
   noQtyPrepareWoHref?: string | null;
   isNoQtyOrder?: boolean;
+  /** When Create PR / Open Workspace already shown in procurement panel. */
+  hideDuplicateProcurementAction?: boolean;
 }): StoreActionPrimaryPresentation {
   const action = input.storeAction;
   const key = normalizeStoreActionKey(action?.key);
@@ -129,7 +166,22 @@ export function resolveStoreActionPrimaryPresentation(input: {
     };
   }
 
+  if (key === "AWAITING_PR") {
+    // Single primary CTA at top of the right action panel (not duplicated in center/header).
+    return {
+      kind: "create_pr",
+      label: label || "Create Purchase Request",
+      description,
+    };
+  }
+
   if (key === "CONTINUE_PROCUREMENT" || key === "VIEW_PROCUREMENT") {
+    if (input.hideDuplicateProcurementAction) {
+      return {
+        kind: "none",
+        description: description ?? "Continue procurement from the panel above.",
+      };
+    }
     return {
       kind: "link",
       label,

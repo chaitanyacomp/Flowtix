@@ -52,12 +52,10 @@ describe("productionReportDraftCache", () => {
           7: {
             rmConsumedQty: "10",
             rmReturnQty: "1",
-            scrapWasteQty: "2",
-            varianceQty: "2",
             remarks: "",
           },
         },
-        wastageRows: [{ key: "wd-1", wastageTypeId: 3, qty: "2", remarks: "trim" }],
+        wastageRows: [{ key: "wd-1", itemId: 7, wastageTypeId: 3, qty: "2", remarks: "trim" }],
         remarks: "operator note",
       },
       { dirty: true },

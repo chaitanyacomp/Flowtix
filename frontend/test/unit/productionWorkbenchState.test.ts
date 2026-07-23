@@ -72,7 +72,7 @@ describe("productionWorkbenchState canonical classifier", () => {
     expect(matchesProductionWorkspaceBucket(row, "readyToStart")).toBe(true);
   });
 
-  it("open draft → DRAFT_PENDING under Ready when nothing finalized", () => {
+  it("open draft → DRAFT_PENDING under Draft Awaiting Approval (not Ready)", () => {
     const row = {
       workOrderId: 3,
       itemName: "Box",
@@ -81,12 +81,13 @@ describe("productionWorkbenchState canonical classifier", () => {
       balanceQty: 100,
       nextAction: "PRODUCTION_DRAFT_REVIEW",
       hasOpenDraft: true,
-      canAcceptProductionEntry: true,
-      productionWorkState: "READY_TO_START" as const,
+      canAcceptProductionEntry: false,
+      productionWorkState: "DRAFT_PENDING" as const,
     };
     expect(classifyProductionWorkbenchState(row)).toBe("DRAFT_PENDING");
-    expect(classifyProductionWorkspaceSectionFromState(row)).toBe("ready");
+    expect(classifyProductionWorkspaceSectionFromState(row)).toBe("draftPending");
     expect(workbenchStatePrimaryActionLabel("DRAFT_PENDING")).toBe("Review & Finalize");
+    expect(matchesProductionWorkspaceBucket(row, "readyToStart")).toBe(false);
   });
 
   it("fully produced + Pending QC only → QC_PENDING_ONLY", () => {
@@ -125,6 +126,28 @@ describe("productionWorkbenchState canonical classifier", () => {
     expect(classifyProductionWorkspaceSectionFromState(row)).toBe("reportPending");
     expect(workbenchStateStatusLabel("PRODUCTION_REPORT_PENDING")).toBe("Report Pending");
     expect(workbenchStatePrimaryActionLabel("PRODUCTION_REPORT_PENDING")).toBe("Open Production Report");
+  });
+
+  it("confirmed Regular report with stale execution parking is Pending QA, not Report Pending", () => {
+    const row = {
+      workOrderId: 639,
+      workOrderNo: "WO-26-0001",
+      itemName: "Nozzle",
+      requiredQty: 15075,
+      producedQty: 14958,
+      balanceQty: 117,
+      orderType: "NORMAL",
+      status: "IN_PROGRESS",
+      productionExecutionStatus: "SHORTFALL_PENDING",
+      productionReportConfirmed: true,
+      productionReportId: 197,
+      nextAction: "QC_PENDING",
+      hasPendingQc: true,
+      pendingQcQty: 14958,
+      canAcceptProductionEntry: false,
+    };
+    expect(classifyProductionWorkbenchState(row)).toBe("QC_PENDING_ONLY");
+    expect(classifyProductionWorkspaceSectionFromState(row)).toBe("pendingQa");
   });
 
   it("paused with remaining → PAUSED_PRODUCTION", () => {

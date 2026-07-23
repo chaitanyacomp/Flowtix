@@ -10,6 +10,16 @@ import { Badge } from "../components/ui/badge";
 import { cn } from "../lib/utils";
 import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
+import {
+  MasterListHeader,
+  MasterListPageShell,
+  MasterListPagination,
+  MasterListToolbar,
+  MasterSearchInput,
+  resultCountLabel,
+} from "../components/masters/MasterListWorkbench";
+import { useMasterListWorkbench } from "../hooks/useMasterListWorkbench";
+import { matchesNameSearch, normalizeSearchText, paginateRows } from "../lib/masterListQuery";
 
 type LocationRow = {
   id: number;
@@ -68,6 +78,8 @@ export function LocationsPage() {
   const [formBaseline, setFormBaseline] = React.useState(() => JSON.stringify(emptyForm));
   const [saving, setSaving] = React.useState(false);
   const [showInactive, setShowInactive] = React.useState(false);
+  const wb = useMasterListWorkbench();
+  const { query, setSearch, clearSearch, clearFilters, setPage, setPageSize } = wb;
   useUnsavedChangesGuard({
     isDirty: JSON.stringify(form) !== formBaseline,
     message: "Location form has unsaved changes. Leave and discard them?",
@@ -86,6 +98,19 @@ export function LocationsPage() {
   React.useEffect(() => {
     load();
   }, [showInactive]);
+
+  const filtered = React.useMemo(() => {
+    const q = query.debouncedSearch;
+    return rows.filter(
+      (r) =>
+        matchesNameSearch(r.locationName, q) ||
+        matchesNameSearch(r.locationCode, q) ||
+        matchesNameSearch(r.locationTypeLabel ?? r.locationType, q),
+    );
+  }, [rows, query.debouncedSearch]);
+
+  const { pageRows, totalPages, from, to } = paginateRows(filtered, query.page, query.pageSize);
+  const searching = Boolean(normalizeSearchText(query.debouncedSearch));
 
   function selectRow(r: LocationRow) {
     setSelectedId(r.id);
@@ -143,35 +168,46 @@ export function LocationsPage() {
   }
 
   return (
-    <div className="loc-page flex min-h-0 flex-col gap-3">
-      <div>
-        <h2 className="text-lg font-semibold text-slate-900">Locations</h2>
-        <p className="mt-0.5 text-sm text-slate-600">
-          Physical and process locations for inventory. Quality state uses separate stock buckets.
-        </p>
-      </div>
+    <MasterListPageShell>
+      <MasterListHeader
+        title="Locations"
+        description="Physical and process locations for inventory. Quality state uses separate stock buckets."
+        actions={
+          <Button type="button" size="sm" variant="outline" onClick={newLocation}>
+            New
+          </Button>
+        }
+      />
 
       {error ? (
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>
       ) : null}
 
+      <MasterListToolbar
+        search={
+          <MasterSearchInput
+            value={query.search}
+            onChange={setSearch}
+            onClear={clearSearch}
+            placeholder="Search locations…"
+            aria-label="Search locations"
+          />
+        }
+        filters={
+          <label className="flex items-center gap-1.5 text-xs text-slate-600">
+            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+            Show inactive
+          </label>
+        }
+        resultLabel={resultCountLabel({ filtered: filtered.length, total: rows.length, searching })}
+        showClearFilters={searching}
+        onClearFilters={clearFilters}
+      />
+
       <div className="loc-workspace grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(16rem,0.9fr)]">
         <section className="flex min-h-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
           <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-100 px-2 py-1.5">
             <span className="text-[11px] font-bold uppercase tracking-wide text-slate-600">Location list</span>
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-1 text-[11px] text-slate-600">
-                <input
-                  type="checkbox"
-                  checked={showInactive}
-                  onChange={(e) => setShowInactive(e.target.checked)}
-                />
-                Inactive
-              </label>
-              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" onClick={newLocation}>
-                New
-              </Button>
-            </div>
           </div>
           <div className="min-h-0 flex-1 overflow-auto">
             <table className="loc-table w-full">
@@ -186,7 +222,7 @@ export function LocationsPage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
+                {pageRows.map((r) => (
                   <tr
                     key={r.id}
                     className={cn(
@@ -210,16 +246,30 @@ export function LocationsPage() {
                     </td>
                   </tr>
                 ))}
-                {!rows.length ? (
+                {!pageRows.length ? (
                   <tr>
                     <td colSpan={6} className="py-6 text-center text-slate-500">
-                      {loading ? "Loading…" : "No locations"}
+                      {loading ? "Loading…" : searching ? "No matching locations" : "No locations"}
                     </td>
                   </tr>
                 ) : null}
               </tbody>
             </table>
           </div>
+          {!loading && filtered.length > 0 ? (
+            <div className="shrink-0 border-t border-slate-100 px-2 py-1.5">
+              <MasterListPagination
+                page={query.page}
+                pageSize={query.pageSize}
+                totalPages={totalPages}
+                from={from}
+                to={to}
+                total={filtered.length}
+                onPageChange={setPage}
+                onPageSizeChange={setPageSize}
+              />
+            </div>
+          ) : null}
         </section>
 
         <section className="rounded-md border border-slate-200 bg-white p-3 shadow-sm">
@@ -305,6 +355,6 @@ export function LocationsPage() {
           </form>
         </section>
       </div>
-    </div>
+    </MasterListPageShell>
   );
 }

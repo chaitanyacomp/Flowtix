@@ -29,6 +29,11 @@ const {
   RM_REQUISITION_PURCHASE_REQUEST_ALLOWED_STATUSES,
 } = require("./rmRequisitionLifecycle");
 const { buildPlanDisplayLabel } = require("./monthlyPlanningPlanLifecycleService");
+const {
+  listRegularSoPreMrShortageSummaries,
+  regularSoWorkspaceSourceTypes,
+  isRegularSoWorkspaceSourceType,
+} = require("./regularSoProcurementHandoffService");
 
 function isApprovedPlanDocument(plan) {
   return String(plan?.status ?? "") === "APPROVED";
@@ -443,14 +448,19 @@ async function summarizeMaterialRequirement(mr, pendingByMr, db = prisma) {
   const lines = (mr.lines || []).map((line) => {
     const rem = remainingAfterPurchaseRequests(line, pendingByMr);
     const shortage = qtyToNumber(line.shortageQty);
+    const required = qtyToNumber(line.requiredQty);
+    const available = qtyToNumber(line.availableQtySnapshot);
+    const existingPrQty = Math.max(0, shortage - rem);
     return {
       lineId: line.id,
       rmItemId: line.rmItemId,
       itemName: line.rmItem?.itemName ?? "",
-      unit: line.rmItem?.unit ?? "",
-      requiredQty: qtyToNumber(line.requiredQty),
+      unit: line.rmItem?.unit ?? line.unitSnapshot ?? "",
+      requiredQty: required,
       shortageQty: shortage,
       remainingQty: rem,
+      availableQty: available,
+      existingPrQty,
       planningStatus: rem > QUEUE_EPS ? "Awaiting purchase request" : "Allocated to PR/PO",
     };
   });
@@ -635,6 +645,7 @@ async function buildGrnPendingSection(db = prisma) {
         supplierName: po.supplier?.name ?? "—",
         rmItemId: line.itemId,
         itemName: line.item?.itemName ?? "",
+        unit: line.item?.unit ?? "",
         orderedQty: ordered,
         receivedQty: received,
         pendingQty: pending,
@@ -735,7 +746,9 @@ function computeQueueCounts(pendingMrs) {
     },
   };
   for (const mr of pendingMrs) {
-    const pool = resolveDemandPoolForSourceType(mr.sourceType);
+    const pool = isRegularSoWorkspaceSourceType(mr.sourceType)
+      ? PROCUREMENT_DEMAND_POOL.REGULAR_SO
+      : resolveDemandPoolForSourceType(mr.sourceType);
     if (pool) counts.byDemandPool[pool] = (counts.byDemandPool[pool] || 0) + 1;
     switch (mr.sourceType) {
       case "MONTHLY_PLAN":
@@ -746,6 +759,8 @@ function computeQueueCounts(pendingMrs) {
         counts.woShortage += 1;
         break;
       case "WORK_ORDER_PLANNING":
+        // Legacy Regular SO rows — count on Sales Orders tab (workspace handoff).
+        counts.regularSo += 1;
         counts.woShortage += 1;
         break;
       case "STOCK_REPLENISHMENT":
@@ -761,6 +776,9 @@ function computeQueueCounts(pendingMrs) {
 function filterPendingMrsByDemandPool(pendingMrs, demandPool) {
   const key = normalizeDemandPoolKey(demandPool);
   if (!key) return pendingMrs;
+  if (key === PROCUREMENT_DEMAND_POOL.REGULAR_SO) {
+    return (pendingMrs || []).filter((mr) => isRegularSoWorkspaceSourceType(mr.sourceType));
+  }
   return filterMrsByDemandPool(pendingMrs, key);
 }
 
@@ -811,17 +829,40 @@ async function buildProcurementWorkspace(db = prisma, opts = {}) {
       ? String(opts.sourceType)
       : null;
 
+  const isRegularSoPool = demandPoolFilter === PROCUREMENT_DEMAND_POOL.REGULAR_SO;
+
   const [allPools, pendingMrsAll, pendingPrs, grnPending, completed] = await Promise.all([
     buildAllProcurementDemandPools(db),
     (async () => {
-      const poolTypes = demandPoolFilter ? sourceTypesForDemandPool(demandPoolFilter) : null;
+      // REGULAR_SO workspace includes legacy WORK_ORDER_PLANNING MRs for Store → PR handoff.
+      // Commercial pool aggregation (buildAllProcurementDemandPools) stays SALES_ORDER-only.
+      const poolTypes = isRegularSoPool
+        ? regularSoWorkspaceSourceTypes()
+        : demandPoolFilter
+          ? sourceTypesForDemandPool(demandPoolFilter)
+          : null;
       const mrs = await loadOpenMaterialRequirements(db, {
         salesOrderId: isMprsPool ? null : salesOrderId,
         sourceTypes: poolTypes,
         ensureMaterialRequirementId:
-          isMprsPool && materialRequirementId > 0 ? materialRequirementId : null,
+          materialRequirementId > 0 && (isMprsPool || isRegularSoPool) ? materialRequirementId : null,
       });
-      return buildPendingMaterialRequirementSummaries(db, mrs);
+      const fromMrs = await buildPendingMaterialRequirementSummaries(db, mrs);
+
+      // Align with Pending Actions: SO RM shortage without an open MR still needs Create PR.
+      if (!demandPoolFilter || isRegularSoPool) {
+        const coveredSoIds = new Set(
+          fromMrs
+            .map((row) => Number(row.salesOrderId ?? 0))
+            .filter((id) => Number.isFinite(id) && id > 0),
+        );
+        const projections = await listRegularSoPreMrShortageSummaries(db, {
+          salesOrderId: isMprsPool ? null : salesOrderId,
+          excludeSalesOrderIds: coveredSoIds,
+        });
+        return [...fromMrs, ...projections];
+      }
+      return fromMrs;
     })(),
     listPendingPurchaseRequests(db),
     buildGrnPendingSection(db),

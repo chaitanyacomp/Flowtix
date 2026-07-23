@@ -3,6 +3,7 @@ import {
   isCardActivationKey,
   productionWorkbenchCardAriaLabel,
   resolveProductionWorkbenchCardAction,
+  resolveProductionWorkspaceRowAccess,
 } from "../../src/lib/productionWorkbenchCardNavigation";
 import { workbenchStatePrimaryActionLabel } from "../../src/lib/productionWorkbenchState";
 
@@ -58,6 +59,45 @@ describe("productionWorkbenchCardNavigation", () => {
         hasOpenRowHandler: true,
       }),
     ).toEqual({ kind: "navigate", href: "/qc-entry?workOrderId=9" });
+  });
+
+  it("allows unfinished and finalized report access even when entry editing is locked", () => {
+    expect(
+      resolveProductionWorkspaceRowAccess({
+        workOrderId: 639,
+        itemName: "Nozzle",
+        requiredQty: 15075,
+        producedQty: 14958,
+        balanceQty: 117,
+        canAcceptProductionEntry: false,
+        productionExecutionStatus: "SHORTFALL_PENDING",
+      }),
+    ).toEqual({ allowed: true, reason: null });
+    expect(
+      resolveProductionWorkspaceRowAccess({
+        workOrderId: 639,
+        itemName: "Nozzle",
+        requiredQty: 15075,
+        producedQty: 14958,
+        balanceQty: 117,
+        canAcceptProductionEntry: false,
+        productionReportConfirmed: true,
+      }),
+    ).toEqual({ allowed: true, reason: null });
+  });
+
+  it("returns an actionable reason when report navigation identity is missing", () => {
+    const access = resolveProductionWorkspaceRowAccess({
+      workOrderId: 0,
+      itemName: "Nozzle",
+      requiredQty: 15075,
+      producedQty: 14958,
+      balanceQty: 117,
+      canAcceptProductionEntry: false,
+      productionReportConfirmed: true,
+    });
+    expect(access.allowed).toBe(false);
+    expect(access.reason).toMatch(/Work Order identity is missing/i);
   });
 
   it("keyboard activation keys are Enter and Space", () => {

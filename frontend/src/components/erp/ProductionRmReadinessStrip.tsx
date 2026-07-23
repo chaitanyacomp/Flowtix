@@ -97,41 +97,31 @@ export function resolveRegularRmAllowedNowQty(data: ProductionRmReadiness | null
 /**
  * Max producible qty the user may enter on the production entry form (save/approve validation).
  *
- * `productionAllowedNowQty` is the RM-supported batch ceiling shown in the readiness strip
- * ("Production allowed now"). For a **new** entry, cap = min(WO balance, that ceiling) — do not
- * subtract `draftAndApprovedQty` again (that double-counts prior production on partial WO continuation).
+ * `productionAllowedNowQty` is the RM-supported batch ceiling ("Production allowed now").
+ * For REGULAR and NO_QTY, entry max follows issued RM — do **not** clamp to WO plan remaining
+ * when intentional extra issue supports more FG. WO Target Remaining stays separate (Use Remaining).
  *
- * When editing an existing entry, subtract other entries on the line (same as backend exclude semantics).
+ * When editing an existing entry, subtract other unapproved qty on the line (backend exclude semantics).
+ * Prefer server `maxAdditionalQty` when present (already accounts for unapproved drafts).
  */
 export function resolveRegularRmEntryQtyCap(
   data: ProductionRmReadiness | null,
   options: RegularRmQtyCapOptions,
 ): number | null {
   if (!data || isProductionBlockedByRmReadiness(data)) return null;
-  const isNoQty = String(data.orderType ?? "").toUpperCase() === "NO_QTY";
-  if (isNoQty) {
-    const rmCap = safeRmQty(data.productionAllowedNowQty);
-    const exclude = safeRmQty(options.excludeProductionQty);
-    const unapprovedOnLine = safeRmQty(data.unapprovedProducedQty);
-    const others = exclude > 1e-6 ? Math.max(0, unapprovedOnLine - exclude) : unapprovedOnLine;
-    return Math.max(0, rmCap - others);
-  }
-  const woRem = resolveRegularRmWoRemaining(data, options.lineWoRemaining);
-  const rmBatchCeiling = safeRmQty(data.productionAllowedNowQty);
+  const rmCap = safeRmQty(data.productionAllowedNowQty);
   const exclude = safeRmQty(options.excludeProductionQty);
-
-  if (exclude > 1e-6) {
-    const onLine = safeRmQty(data.draftAndApprovedQty);
-    const others = Math.max(0, onLine - exclude);
-    return Math.max(0, Math.min(woRem, rmBatchCeiling - others));
-  }
-
-  const perBatchCap = Math.max(0, Math.min(woRem, rmBatchCeiling));
+  const unapprovedOnLine = safeRmQty(data.unapprovedProducedQty);
+  const others = exclude > 1e-6 ? Math.max(0, unapprovedOnLine - exclude) : unapprovedOnLine;
+  const fromAllowedNow = Math.max(0, rmCap - others);
   const apiIncremental = safeRmQty(data.maxAdditionalQty);
   if (apiIncremental > 1e-6) {
-    return Math.min(perBatchCap, apiIncremental);
+    // When editing, maxAdditionalQty was computed without excluding this draft — prefer
+    // the local envelope that restores the edited qty.
+    if (exclude > 1e-6) return fromAllowedNow;
+    return Math.min(fromAllowedNow, apiIncremental);
   }
-  return perBatchCap;
+  return fromAllowedNow;
 }
 
 type Props = {
@@ -308,7 +298,8 @@ export function ProductionRmReadinessStrip({
         )
       ) : null}
 
-      {data.rmLines.some((ln) => (ln.returnableQty ?? 0) > 0) ? (
+      {Number(data.approvedProducedQty ?? 0) > 1e-6 &&
+      data.rmLines.some((ln) => (ln.returnableQty ?? 0) > 0) ? (
         <div className="mt-1.5">
           <Link
             to={`/production/rm-returns?workOrderId=${data.workOrderId}${

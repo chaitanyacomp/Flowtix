@@ -82,9 +82,16 @@ export type GrnDocumentPayload = {
   trace: {
     lines: Array<{
       id: number;
-      item: { itemName?: string } | null;
+      item: { itemName?: string; unit?: string | null } | null;
       demandSources: RmPoTraceDemandSource[];
       traceChain: string[];
+      excessToStockQty?: number;
+      demandAllocatedQty?: number;
+      soAllocationBreakdown?: Array<{
+        salesOrderId: number | null;
+        salesOrderDocNo: string | null;
+        allocatedQty: number;
+      }>;
     }>;
   };
 };

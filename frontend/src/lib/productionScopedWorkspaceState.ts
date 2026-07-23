@@ -36,9 +36,26 @@ export function shouldShowScopedProductionReport(input: {
   hasApprovedProductionOnWorkOrder: boolean;
   navigateNoQtyContext: boolean;
   executionSummary: ProductionExecutionSummary | null | undefined;
+  /** REGULAR_SO only — SO-demand End Production / WO-plan complete gate. */
+  regularSo?: {
+    enabled: boolean;
+    reportPending?: boolean;
+    woTargetBalance?: number | null;
+  } | null;
 }): boolean {
   if (!(input.workOrderId > 0)) return false;
-  if (!executionSummaryMatchesWorkOrder(input.executionSummary, input.workOrderId)) return false;
+
+  // REGULAR: Production Report opens after End Production (report-pending) or when WO plan is fully produced.
+  if (input.regularSo?.enabled) {
+    if (!input.hasApprovedProductionOnWorkOrder) return false;
+    if (input.regularSo.reportPending) return true;
+    if (Number(input.regularSo.woTargetBalance ?? 1) <= 1e-6) return true;
+    // Still allow NO_QTY-style execution summary match if present (shared shell).
+  }
+
+  if (!executionSummaryMatchesWorkOrder(input.executionSummary, input.workOrderId)) {
+    return Boolean(input.regularSo?.enabled && input.regularSo.reportPending);
+  }
   const executionStatus = String(input.executionSummary?.executionStatus ?? "").toUpperCase();
   if (executionStatus === "BLOCKED") return false;
   if (executionStatus === "COMPLETED") return true;

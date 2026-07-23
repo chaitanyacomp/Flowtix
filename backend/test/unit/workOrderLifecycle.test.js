@@ -42,10 +42,19 @@ describe("workOrderLifecycleService", () => {
           status: "IN_PROGRESS",
           requirementSheetId: null,
           cycleId: null,
-          salesOrder: { id: 1, orderType: "NORMAL" },
-          lines: [{ id: 100, qty: "100", fgItem: { id: 1, itemName: "FG" } }],
+          salesOrderId: 1,
+          sourceType: null,
+          salesOrder: { id: 1, orderType: "NORMAL", docNo: "SO-1" },
+          lines: [{ id: 100, qty: "100", plannedQty: "100", fgItemId: 7, fgItem: { id: 7, itemName: "FG" } }],
+          productionExecution: null,
         }),
         update: async ({ data }) => ({ id: 10, docNo: "WO-10", ...data }),
+      },
+      salesOrder: {
+        findUnique: async () => ({
+          orderType: "NORMAL",
+          lines: [{ qty: 100, customerPoQty: 100, itemId: 7 }],
+        }),
       },
       productionWorkOrderReport: {
         findUnique: async () => ({ id: 20, status: "CONFIRMED" }),
@@ -59,7 +68,11 @@ describe("workOrderLifecycleService", () => {
         },
       },
       workOrderLine: {
+        findMany: async () => [],
         update: async () => ({}),
+      },
+      workOrderProductionExecution: {
+        upsert: async () => ({ workOrderId: 10, executionStatus: "COMPLETED" }),
       },
     };
 

@@ -17,6 +17,12 @@ const {
   syncSupplierLocations,
   getSupplierById,
 } = require("../services/supplierMasterService");
+const {
+  parseBulkIds,
+  runBulkIsActiveMutation,
+  runBulkHardDelete,
+  supplierHasBlockingReferences,
+} = require("../services/masterBulkMutationService");
 
 const supplierRouter = express.Router();
 
@@ -27,6 +33,8 @@ const SUPPLIER_NOT_FOUND = "Supplier not found.";
 const SUPPLIER_READ_ACCESS_DENIED =
   "Access denied. Only Admin, Store, and Accounts roles can view suppliers.";
 const supplierReadRoles = requireRole(["ADMIN", "STORE", "PURCHASE"], SUPPLIER_READ_ACCESS_DENIED);
+const supplierWriteRoles = requireRole(["ADMIN", "STORE"]);
+const supplierDeleteRoles = requireRole(["ADMIN"]);
 
 const locationSchema = z.object({
   id: z.number().int().positive().optional(),
@@ -63,11 +71,6 @@ async function supplierNameTakenByOther(displayName, excludeId) {
     select: { id: true, name: true },
   });
   return others.some((s) => normalizeMasterNameKey(s.name) === key);
-}
-
-async function supplierHasBlockingReferences(supplierId) {
-  const rmPoCount = await prisma.rmPurchaseOrder.count({ where: { supplierId } });
-  return rmPoCount > 0;
 }
 
 function trimNullableText(value) {
@@ -296,7 +299,55 @@ supplierRouter.put("/:id", requireAuth, requireRole(["ADMIN", "STORE"]), async (
   }
 });
 
-supplierRouter.delete("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
+supplierRouter.post("/bulk-activate", requireAuth, supplierWriteRoles, async (req, res, next) => {
+  try {
+    const ids = parseBulkIds(req.body);
+    const result = await runBulkIsActiveMutation(prisma, {
+      model: "supplier",
+      ids,
+      isActive: true,
+      alreadyReason: "Supplier is already active.",
+      notFoundReason: SUPPLIER_NOT_FOUND,
+    });
+    return res.json(result);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+supplierRouter.post("/bulk-deactivate", requireAuth, supplierWriteRoles, async (req, res, next) => {
+  try {
+    const ids = parseBulkIds(req.body);
+    const result = await runBulkIsActiveMutation(prisma, {
+      model: "supplier",
+      ids,
+      isActive: false,
+      alreadyReason: "Supplier is already inactive.",
+      notFoundReason: SUPPLIER_NOT_FOUND,
+    });
+    return res.json(result);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+supplierRouter.post("/bulk-delete", requireAuth, supplierDeleteRoles, async (req, res, next) => {
+  try {
+    const ids = parseBulkIds(req.body);
+    const result = await runBulkHardDelete(prisma, {
+      model: "supplier",
+      ids,
+      hasBlockingReferences: supplierHasBlockingReferences,
+      defaultBlockedReason: SUPPLIER_DELETE_BLOCKED,
+      notFoundReason: SUPPLIER_NOT_FOUND,
+    });
+    return res.json(result);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+supplierRouter.delete("/:id", requireAuth, supplierDeleteRoles, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) {
@@ -308,7 +359,7 @@ supplierRouter.delete("/:id", requireAuth, requireRole(["ADMIN"]), async (req, r
       return res.status(404).json({ error: { message: SUPPLIER_NOT_FOUND } });
     }
 
-    if (await supplierHasBlockingReferences(id)) {
+    if (await supplierHasBlockingReferences(prisma, id)) {
       return res.status(409).json({ error: { message: SUPPLIER_DELETE_BLOCKED } });
     }
 

@@ -328,9 +328,11 @@ export function resolveGuidedWorkflow(input: GuidedWorkflowInput): GuidedWorkflo
 }
 
 export function timelineStepsForPhase(activeIndex: number): Array<{ label: string; done: boolean; active: boolean }> {
-  return WO_PROCUREMENT_WORKFLOW_STAGES.map((label, i) => ({
-    label,
-    done: i < activeIndex,
-    active: i === activeIndex,
-  }));
+  return WO_PROCUREMENT_WORKFLOW_STAGES.map((stageLabel, i) => {
+    const done = i < activeIndex;
+    const active = i === activeIndex;
+    // Completed GRN step must read “GRN received ✓”, not “GRN pending ✓”.
+    const label = done && stageLabel === "GRN pending" ? "GRN received" : stageLabel;
+    return { label, done, active };
+  });
 }

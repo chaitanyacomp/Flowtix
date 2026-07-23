@@ -295,11 +295,14 @@ function normalizeRmRiskRow(raw) {
       itemName: raw?.itemName ?? raw?.itemCode ?? null,
       fgItemName: raw?.fgItemName ?? null,
       shortageQty: raw?.shortageAfterReservationQty ?? raw?.shortageQty ?? null,
+      unit: raw?.unit ?? null,
       queueType: raw?.queueType ?? null,
       blockerReason: raw?.blockerReason ?? null,
       href: raw?.href ?? null,
       salesOrderId,
+      salesOrderDocNo: raw?.salesOrderNo ?? null,
       workOrderId,
+      workOrderNo: raw?.workOrderNo ?? null,
       rmItemId,
       materialRequirementId: raw?.materialRequirementId != null ? Number(raw.materialRequirementId) : null,
       sourceType: raw?.sourceType ?? null,
@@ -486,7 +489,15 @@ function normalizeDispatchRow(raw) {
 
 function ownerForWoPlanningRow(raw) {
   const operationalKey = String(raw?.operationalKey ?? "");
+  const nextActionKey = String(raw?.nextActionKey ?? "");
   if (WO_PLANNING_STORE_OPERATIONAL_KEYS.includes(operationalKey)) {
+    return VISIBLE_OWNERS.STORE;
+  }
+  if (
+    operationalKey === "READY_FOR_WO" ||
+    nextActionKey === "CREATE_WO" ||
+    nextActionKey === "PREPARE_WO"
+  ) {
     return VISIBLE_OWNERS.STORE;
   }
   return VISIBLE_OWNERS.PRODUCTION;

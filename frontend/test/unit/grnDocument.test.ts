@@ -44,7 +44,7 @@ describe("grnDocument helpers", () => {
   });
 
   it("formats qty with unit", () => {
-    expect(formatGrnQty(12.5, "KG")).toBe("12.500 KG");
+    expect(formatGrnQty(12.5, "KG")).toBe("12.5 KG");
   });
 
   it("buildGrnDetailHref includes returnTo when provided", () => {

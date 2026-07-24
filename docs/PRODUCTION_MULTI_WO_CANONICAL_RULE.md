@@ -16,6 +16,8 @@ Workbench queues: Ready to Start · Continue Production · Paused Production · 
 
 ## Draft finalization and remaining-WO disposition
 
+The three-choice Review & Finalize disposition below is the NO_QTY execution rule. REGULAR approves the recorded batch once and then shows a separate two-choice decision: **Continue Later** or **End Production with Shortage**. That Regular decision contains no Produced Qty input and no Return Unused RM control.
+
 Draft quantity is editable and is not finalized production, QC output, shortage, stock, or carry-forward. **Review & Finalize** shows WO planned quantity, previously finalized quantity, the current draft, total after the entry, **WO quantity balance**, UOM, **RM-supported production maximum**, **unused RM-supported capacity** (FG-equivalent; not itself a wastage posting), and tolerance. A partial draft requires exactly one persisted decision in the same transaction as finalization:
 
 - **Continue Production** — finalize batch → QC; WO stays active; **no** Production Report.
@@ -39,6 +41,18 @@ Finalized entries are immutable. Pause never creates recovery and never blocks a
 Unconsumed RM remains **available for continued production** until explicitly returned or declared as actual wastage. Before final confirmation: `available = issued − consumed − returned − declared actual wastage`. At confirmation, consumed + approved return + explicitly classified actual wastage must equal issued RM within tolerance. Unconsumed RM is never inferred as wastage.
 
 The Production Report is mandatory whenever the operator chooses to **close** the WO (shortage, equal, or extra). It is not required for intermediate Continue/Pause finalization. Pending QC, navigation, pause, and resume never open or confirm it. A paused WO cannot render or submit report, reconciliation, wastage, closure, or carry-forward actions.
+
+## REGULAR permanent shortage isolation
+
+For a REGULAR WO, End Production with Shortage is permanent: confirmed Production Report and the saved closure decision atomically transition the WO to `CLOSED_WITH_SHORTFALL`. No carry-forward, Requirement Sheet recovery, Monthly Plan demand, or automatic successor WO is created. The SO line remains operationally open only for already-produced QC-approved usable FG. Dispatch displays that usable balance separately from the permanent customer shortage and never offers Plan / Continue Production on the terminal line.
+
+Customer closure math uses `SalesOrderLine.customerPoQty`, not the buffered WO `plannedQty`. Thus customer shortage is `max(customer PO qty - confirmed dispatched - usable accepted FG pending dispatch, 0)`; the WO target shortfall remains a distinct manufacturing measure. When usable accepted FG reaches zero after dispatch, the SO operationally closes as `COMPLETED` with audited `AUTO_CLOSE_REGULAR_WITH_SHORTAGE` quantities (ordered, produced, accepted, dispatched, permanent short). Closed WOs disappear from active Production and planning queues.
+
+Admin may reopen an accidental REGULAR shortage closure only when the backend proves it safe: original status is `CLOSED_WITH_SHORTFALL`, a confirmed Production Report remains, no dispatch for the affected SO+FG pool, no Sales Bill/Tally export, and no later production/QC/RM-issue conflict. The SO+FG boundary is intentional because dispatch stock is pooled and Dispatch has no WO identity. Reopen preserves the original closure audit/report/output/stock, records a new audit event and reason, clears only terminal WO projection fields, and recalculates readiness from real material state. Returned RM is not reissued; Store must reissue before further production. NO_QTY is rejected.
+
+## Dispatch draft reservation ownership
+
+An `UNLOCKED` dispatch row is the reservation owner. Create/edit reserves its quantity; reducing or cancelling releases the difference. Reopening and finalizing validates physical usable stock as `own reservation + currently unreserved stock`, excluding other drafts. It consumes/posts the same row exactly once under SO/item/dispatch row locks. Increasing a draft needs only incremental availability. Duplicate or concurrent finalization cannot double-post or oversell, and a reservation never manufactures physical stock when the ledger is genuinely short.
 
 The business document number (`WorkOrder.docNo`, for example `WO-26-0001`) is the only user-facing WO identity. The numeric primary key is permitted in route and API keys only.
 

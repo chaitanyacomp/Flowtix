@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearErpModalStackForTests,
   registerErpModal,
@@ -7,8 +7,27 @@ import {
 } from "../../src/lib/erpModalEscape";
 
 describe("erpModalEscape", () => {
+  class FakeElement {
+    closest() {
+      return null;
+    }
+  }
+
+  const fakeDocument = {
+    addEventListener: vi.fn(),
+    querySelector: vi.fn(() => null as Element | null),
+    activeElement: null,
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("document", fakeDocument);
+    vi.stubGlobal("Element", FakeElement);
+    fakeDocument.querySelector.mockReturnValue(null);
+  });
+
   afterEach(() => {
     clearErpModalStackForTests();
+    vi.unstubAllGlobals();
   });
 
   it("closes only the topmost modal", () => {
@@ -32,21 +51,17 @@ describe("erpModalEscape", () => {
   });
 
   it("defers when dropdown marker is open", () => {
-    const marker = document.createElement("div");
-    marker.setAttribute("data-erp-dropdown-open", "true");
-    document.body.appendChild(marker);
-    try {
-      const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true });
-      Object.defineProperty(event, "target", { value: document.body });
-      expect(shouldDeferErpModalEscape(event)).toBe(true);
-    } finally {
-      marker.remove();
-    }
+    fakeDocument.querySelector.mockReturnValue({} as Element);
+    const event = {
+      key: "Escape",
+      defaultPrevented: false,
+      target: new FakeElement(),
+    } as unknown as KeyboardEvent;
+    expect(shouldDeferErpModalEscape(event)).toBe(true);
   });
 
   it("defers when event defaultPrevented", () => {
-    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
-    event.preventDefault();
+    const event = { key: "Escape", defaultPrevented: true, target: null } as KeyboardEvent;
     expect(shouldDeferErpModalEscape(event)).toBe(true);
   });
 });

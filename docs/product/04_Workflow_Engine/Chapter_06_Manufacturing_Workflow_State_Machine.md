@@ -693,6 +693,14 @@ NO_QTY Review & Finalize disposition cards are **not** used for REGULAR. For REG
 | WO plan fully produced | Produced ≥ WO planned | Production Report → `COMPLETED` |
 
 WO-plan remainder after SO demand coverage is **not** a shortage and must not force another production entry.
+
+REGULAR partial approval never uses the NO_QTY Review & Finalize disposition cards. After approval, the only remaining-balance choices are Continue Later (same resumable WO; no report or RM reconciliation) and End Production with Shortage (reason + explicit permanent acknowledgement; report-pending). Report confirmation applies the saved shortage choice and `CLOSED_WITH_SHORTFALL` atomically; execution `COMPLETED` with an active WO is invalid legacy projection, not an intermediate state.
+
+Production Pending Actions deep-link directly to `/production`: Ready to Start selects `productionBucket=readyToStart`, `pwSection=ready`, and `pwFocus=<WO>`; Continue selects the active section. Pending Actions navigation preserves `from=pending-actions` / `returnTo=pending-actions`. A released WO never routes to RM Control Center, and Regular links do not carry NO_QTY SO/cycle/source filters.
+
+After permanent Regular shortage closure, accepted usable FG remains dispatchable. The line shows usable FG pending dispatch and permanent customer short separately, with no planning continuation. Final dispatch closes the operational SO with audited shortage quantities based on customer PO quantity; it creates no RS, Monthly Plan, recovery, carry-forward, or next WO.
+
+Store partial RM issue transitions to `PARTIALLY_ISSUED`, focuses that PMR/WO, and requires an explicit decision: Issue Remaining Later retains the open balance; Close Remaining as Short Issue requires a reason, records the short quantity, and releases only under the Regular short-issue rules. Neither choice is automatic.
 # RM planning and mandatory Production Report (2026-07)
 
 ## Production Report reconciliation guard (authoritative)

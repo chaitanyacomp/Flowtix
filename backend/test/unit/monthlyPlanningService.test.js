@@ -97,7 +97,15 @@ describe("monthlyPlanningService.normalizePeriodKey", () => {
 describe("monthlyPlanningService.createMonthlyPlan", () => {
   it("creates a DRAFT plan at revision 0 with a docNo and empty lines", async () => {
     const db = createMockDb({ existingPlan: null });
-    const res = await createMonthlyPlan({ db, period: CURRENT_PERIOD, actorUserId: 7 });
+    const res = await createMonthlyPlan({
+      db,
+      period: CURRENT_PERIOD,
+      actorUserId: 7,
+      loadComposition: async () => ({
+        sheetCount: 1,
+        items: [{ itemId: 50, productionRequirementQty: 10 }],
+      }),
+    });
     assert.equal(res.exists, true);
     assert.equal(res.plan.periodKey, CURRENT_PERIOD);
     assert.equal(res.plan.status, "DRAFT");
@@ -113,7 +121,15 @@ describe("monthlyPlanningService.createMonthlyPlan", () => {
       existingPlans: [{ id: 5, periodKey: CURRENT_PERIOD, status: "DRAFT", planSequenceNo: 1 }],
     });
     await assert.rejects(
-      () => createMonthlyPlan({ db, period: CURRENT_PERIOD, actorUserId: 7 }),
+      () => createMonthlyPlan({
+        db,
+        period: CURRENT_PERIOD,
+        actorUserId: 7,
+        loadComposition: async () => ({
+          sheetCount: 1,
+          items: [{ itemId: 50, productionRequirementQty: 10 }],
+        }),
+      }),
       (e) => e instanceof MonthlyPlanningError && e.code === "ACTIVE_PLAN_EXISTS" && e.httpStatus === 409,
     );
   });
@@ -124,6 +140,24 @@ describe("monthlyPlanningService.createMonthlyPlan", () => {
       () => createMonthlyPlan({ db, period: "bad" }),
       (e) => e instanceof MonthlyPlanningError && e.code === "INVALID_PERIOD",
     );
+  });
+
+  it("blocks an orphan plan when no locked NO_QTY Requirement Sheet demand exists", async () => {
+    const db = createMockDb({ existingPlan: null });
+    await assert.rejects(
+      () =>
+        createMonthlyPlan({
+          db,
+          period: CURRENT_PERIOD,
+          actorUserId: 7,
+          loadComposition: async () => ({ sheetCount: 0, items: [] }),
+        }),
+      (e) =>
+        e instanceof MonthlyPlanningError &&
+        e.code === "NO_ELIGIBLE_NO_QTY_RS_DEMAND" &&
+        e.httpStatus === 409,
+    );
+    assert.equal(db.__state?.created ?? null, null);
   });
 });
 
@@ -453,6 +487,7 @@ describe("monthlyPlanningService.updateProductionLines", () => {
         items: [{ fgItemId: 75, additionalRequirementQty: 16768, unit: "Nos" }],
         totals: { totalAdditionalRequirementQty: 16768 },
       }),
+      loadComposition: async () => ({ items: [] }),
       loadGreenLevelsFn: emptyGreenLoader,
     });
     assert.equal(res.lines.length, 1);
@@ -542,6 +577,7 @@ describe("monthlyPlanningService.updateProductionLines", () => {
         items: [{ fgItemId: 75, additionalRequirementQty: 16768 }],
         totals: { totalAdditionalRequirementQty: 16768 },
       }),
+      loadComposition: async () => ({ items: [] }),
       loadGreenLevelsFn: emptyGreenLoader,
     });
     assert.equal(res.lines[0].plannedFgQty, 10000);

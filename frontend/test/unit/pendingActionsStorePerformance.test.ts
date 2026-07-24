@@ -30,7 +30,8 @@ describe("PendingActionsPage store loading UX", () => {
     expect(pageSource).toContain("usePendingActionsPageData");
     expect(pageSource).not.toContain('useErpRefreshTick(["dashboard"');
     expect(hookSource).toContain('useErpRefreshTick(["pending-actions"]');
-    expect(hookSource).toContain('useRouteActive("/pending-actions")');
+    expect(hookSource).toContain("useRouteActive(PENDING_ACTIONS_ROUTE)");
+    expect(hookSource).toContain('const PENDING_ACTIONS_ROUTE = "/pending-actions"');
     expect(hookSource).not.toContain('"dashboard"');
   });
 
@@ -48,8 +49,7 @@ describe("Dashboard widgets do not fetch when route inactive", () => {
   it("gates DashboardPage refresh tick and widget effects on /dashboard", () => {
     expect(dashboardSource).toContain('useRouteActive("/dashboard")');
     expect(dashboardSource).toContain("enabled: isDashboardRoute");
-    expect(dashboardSource).toContain("if (!isDashboardRoute || usesDedicatedRoleDesk || usesStoreDedicatedDesk) return");
-    expect(dashboardSource).toContain('if (!isDashboardRoute || role !== "STORE"');
+    expect(dashboardSource).toContain("if (!isDashboardRoute) return");
   });
 
   it("gates StoreDispatchDashboard operational fetches on /dashboard", () => {

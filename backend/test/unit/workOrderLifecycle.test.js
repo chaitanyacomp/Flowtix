@@ -6,6 +6,7 @@ const {
   HOLD_REASONS,
   WO_PRODUCTION_BLOCKED,
   closeWorkOrderWithShortfall,
+  regularShortageClosureReasonFromPendingExecution,
 } = require("../../src/services/workOrderLifecycleService");
 
 describe("workOrderLifecycleService", () => {
@@ -83,5 +84,22 @@ describe("workOrderLifecycleService", () => {
     });
     assert.equal(result.shortfallQty, 30);
     assert.equal(result.workOrder.status, "CLOSED_WITH_SHORTFALL");
+  });
+
+  it("projects a confirmed Regular shortage report into permanent WO closure using the saved decision", () => {
+    assert.equal(
+      regularShortageClosureReasonFromPendingExecution({
+        executionStatus: "SHORTFALL_PENDING",
+        blockRemarks: "REGULAR: End with SO shortage — Production Report pending. Customer asked us to stop",
+      }),
+      "Customer asked us to stop",
+    );
+    assert.equal(
+      regularShortageClosureReasonFromPendingExecution({
+        executionStatus: "COMPLETED",
+        blockRemarks: "REGULAR: Production Report confirmed.",
+      }),
+      null,
+    );
   });
 });

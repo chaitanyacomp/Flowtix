@@ -208,8 +208,16 @@ export function resolveCycleManagementCurrentCycleStatus(row: NoQtyPlannerInboxR
   else if (flow?.readyToPlaceWo) production = "Ready for WO";
   else if (row.rsStatus === "Locked") production = "Awaiting WO";
 
+  const hasSoCycle =
+    Boolean(String(row.so.noQtyListPositionLabel ?? "").trim()) ||
+    Number(row.so.noQtyActualActiveCycleNo ?? 0) > 0 ||
+    Number(row.so.currentCycle?.cycleNo ?? 0) > 0;
+
   return {
-    cycle: planningInboxCycleLabel(row.so),
+    cycle:
+      !hasSoCycle && row.cycleNo != null && Number(row.cycleNo) > 0
+        ? `Cycle ${Number(row.cycleNo)}`
+        : planningInboxCycleLabel(row.so),
     rsStatus: row.rsStatus,
     monthlyPlanning,
     procurement,

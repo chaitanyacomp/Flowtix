@@ -120,6 +120,7 @@ const {
   regularWoLifecycleActions,
   cancelRegularWorkOrder,
   reopenRegularWorkOrder,
+  regularShortageClosureReasonFromPendingExecution,
 } = require("../services/workOrderLifecycleService");
 const {
   computeRegularSoWorkOrderDemandCoverage,
@@ -1183,6 +1184,7 @@ productionRouter.post(
         .object({
           decision: z.enum(["END_COVERED", "END_SHORTAGE"]),
           closureReason: z.string().max(500).optional().nullable(),
+          permanentClosureAcknowledged: z.literal(true).optional(),
         })
         .parse(req.body ?? {});
       const result = await prisma.$transaction(async (tx) => {
@@ -1190,6 +1192,7 @@ productionRouter.post(
         return requestRegularEndProduction(tx, id, {
           decision: body.decision,
           closureReason: body.closureReason,
+          permanentClosureAcknowledged: body.permanentClosureAcknowledged === true,
           actorUserId: req.user?.userId,
           actorRole: req.user?.role,
         });
@@ -1284,7 +1287,10 @@ productionRouter.post(
         await lockWorkOrderForUpdate(tx, id);
         const executionGuard = await tx.workOrder.findUnique({
           where: { id },
-          select: { status: true, productionExecution: { select: { executionStatus: true } } },
+          select: {
+            status: true,
+            productionExecution: { select: { executionStatus: true, blockRemarks: true } },
+          },
         });
         if (
           String(executionGuard?.status ?? "").toUpperCase() === "PAUSED" ||
@@ -1324,25 +1330,33 @@ productionRouter.post(
             source: "PRODUCTION_REPORT_EXECUTION_CLOSE",
           });
         } else if (orderType !== "NO_QTY" && !isGreenLevel) {
-          // REGULAR: a confirmed report ends Production's report obligation even
-          // when the WO still needs an explicit CLOSED_WITH_SHORTFALL decision.
-          // Do not leave the pre-report SHORTFALL_PENDING parking state behind.
-          await tx.workOrderProductionExecution.updateMany({
-            where: { workOrderId: id, executionStatus: "SHORTFALL_PENDING" },
-            data: {
-              executionStatus: "COMPLETED",
-              completedAt: new Date(),
-              completedByUserId: req.user?.userId ?? null,
-              blockReason: null,
-              blockRemarks: "REGULAR: Production Report confirmed. WO shortfall closure/reconciliation is separate.",
-            },
-          });
-          // Production Report confirm is the final RM gate; auto-complete when SO demand covered.
-          await reconcileWorkOrderStatusFromProduction(tx, id, {
-            actorUserId: req.user?.userId,
-            actorRole: req.user?.role,
-            source: "PRODUCTION_REPORT_CONFIRM_REGULAR",
-          });
+          const closureReason = regularShortageClosureReasonFromPendingExecution(
+            executionGuard?.productionExecution,
+          );
+          if (closureReason) {
+            executionClose = await closeWorkOrderWithShortfall(tx, id, {
+              closureReason,
+              actorUserId: req.user?.userId,
+              actorRole: req.user?.role,
+            });
+          } else {
+            await tx.workOrderProductionExecution.updateMany({
+              where: { workOrderId: id, executionStatus: "SHORTFALL_PENDING" },
+              data: {
+                executionStatus: "COMPLETED",
+                completedAt: new Date(),
+                completedByUserId: req.user?.userId ?? null,
+                blockReason: null,
+                blockRemarks: "REGULAR: Production Report confirmed.",
+              },
+            });
+            // Production Report confirm is the final RM gate; complete normally when SO demand is covered.
+            await reconcileWorkOrderStatusFromProduction(tx, id, {
+              actorUserId: req.user?.userId,
+              actorRole: req.user?.role,
+              source: "PRODUCTION_REPORT_CONFIRM_REGULAR",
+            });
+          }
         }
         return { confirmed, executionClose };
       });

@@ -225,6 +225,10 @@ type LineStat = {
   dispatchBlockedReason?: string | null;
   /** NORMAL only — server UX hint: READY_FULL vs PARTIAL_AVAILABLE vs NOT_READY (vs pending). */
   regularDispatchReadiness?: "READY_FULL" | "PARTIAL_AVAILABLE" | "NOT_READY";
+  /** NORMAL only: all production for this item is terminal and at least one WO was permanently short-closed. */
+  permanentShortClosure?: boolean;
+  usableFgPendingDispatchQty?: number;
+  permanentlyClosedShortQty?: number;
   /** FG in QC hold + awaiting QC + rework (global for SKU). */
   inQcReworkQty?: number;
   /** Display-only: bucket rollups (global by SKU). */
@@ -7065,7 +7069,17 @@ export function DispatchPage() {
                     </div>
                   ) : null}
 
-                  {needsPartialDispatchAck && selectedSo && currentLine ? (
+                  {currentLine?.permanentShortClosure ? (
+                    <div
+                      className="rounded border border-amber-200 bg-amber-50 px-2.5 py-2 text-[12px] text-amber-950"
+                      data-testid="regular-closed-short-quantities"
+                    >
+                      <p>Usable FG pending dispatch: {fmtDispatchQty(currentLine.usableFgPendingDispatchQty ?? 0)}</p>
+                      <p>Permanently closed short: {fmtDispatchQty(currentLine.permanentlyClosedShortQty ?? 0)}</p>
+                    </div>
+                  ) : null}
+
+                  {needsPartialDispatchAck && selectedSo && currentLine && !currentLine.permanentShortClosure ? (
                     <Button
                       type="button"
                       variant="secondary"

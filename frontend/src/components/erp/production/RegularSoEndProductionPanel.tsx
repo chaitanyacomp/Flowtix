@@ -126,7 +126,7 @@ export function RegularSoEndProductionPanel({
             onClick={onEndShortage}
             data-testid="regular-so-end-production-shortage-btn"
           >
-            {busy ? "Working…" : "End Production with Shortage"}
+            {busy ? "Working…" : "Permanently Close WO with Shortage"}
           </Button>
         ) : null}
         {onContinueLater ? (

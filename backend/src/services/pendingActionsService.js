@@ -618,6 +618,9 @@ async function fetchMonthlyPlanPendingActions(db = prisma, opts = {}) {
     const ageHours = ageHoursFromTimestamp(plan.updatedAt ?? plan.createdAt);
 
     if (plan.status === "DRAFT") {
+      const composition = await require("./monthlyPlanningRequirementCompositionService")
+        .getRequirementComposition({ db, periodKey });
+      if (!(Number(composition?.sheetCount) > 0)) continue;
       actions.push({
         id: `monthly-plan:draft:${plan.id}`,
         priority: PENDING_PRIORITY.MEDIUM,

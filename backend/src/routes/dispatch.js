@@ -49,6 +49,7 @@ const {
   buildDispatchDraftLockEligibilityContext,
   attachDraftLockEligibilityToDispatchRows,
 } = require("../services/dispatchDraftLockEligibility");
+const { resolveDispatchDraftReservation } = require("../services/dispatchDraftReservationService");
 const {
   filterNoQtyDispatchRowsForActiveCycle,
   netNoQtyCycleDispatchedByItemId,
@@ -1378,6 +1379,10 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
           quotation: true,
           lines: { include: { item: true } },
           dispatch: true,
+          workOrders: {
+            where: { status: { not: "REJECTED" } },
+            select: { status: true, lines: { select: { fgItemId: true } } },
+          },
         },
       }),
       prisma.stockTransaction.groupBy({
@@ -1655,6 +1660,15 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
         const netForItem = netByItem.get(line.itemId) ?? 0;
         const qcApprovedRemaining = getSoItemQcApprovedRemainingQty(qcAccepted, netForItem);
         const dispatchable = dispatchableByLineId.get(line.id) ?? 0;
+        const itemWorkOrders = (so.workOrders || []).filter((wo) =>
+          (wo.lines || []).some((woLine) => Number(woLine.fgItemId) === Number(line.itemId)),
+        );
+        const permanentShortClosure =
+          itemWorkOrders.some((wo) => wo.status === "CLOSED_WITH_SHORTFALL") &&
+          itemWorkOrders.every((wo) => ["COMPLETED", "CLOSED_WITH_SHORTFALL"].includes(wo.status));
+        const permanentlyClosedShortQty = permanentShortClosure
+          ? Math.max(0, fifoCommitment - dispatched - qcApprovedRemaining)
+          : 0;
         const dispatchBlockedReason = getDispatchBlockedReason({
           orderType: so.orderType,
           pendingDispatchQty,
@@ -1711,6 +1725,13 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
           dispatchableQty: dispatchable,
           dispatchBlockedReason,
           regularDispatchReadiness: regularDispatchReadinessLabel(so.orderType, pendingDispatchQty, dispatchable),
+          ...(so.orderType === "NORMAL"
+            ? {
+                permanentShortClosure,
+                usableFgPendingDispatchQty: dispatchable,
+                permanentlyClosedShortQty,
+              }
+            : {}),
           quantityContexts: {
             soLineRemaining: { qty: remaining, metricContext: METRIC_CONTEXT.SO_FIFO },
             qcPoolRemaining: { qty: qcApprovedRemaining, metricContext: METRIC_CONTEXT.QC_POOL },
@@ -2849,15 +2870,29 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
           if (!(body.dispatchedQty > 0)) throw friendlyNoQtyDispatchError("Dispatch quantity must be greater than zero.", 400);
         }
       } else {
+        existingDraft = await tx.dispatch.findFirst({
+          where: {
+            soId: so.id,
+            itemId: body.itemId,
+            reversalOfId: null,
+            workflowStatus: "UNLOCKED",
+          },
+          orderBy: { id: "desc" },
+        });
         const lineInputs = mapSoLinesToDispatchFifoInputs(so.lines, so.orderType);
+        const competingDispatches = (so.dispatch || []).filter(
+          (row) => Number(row.id) !== Number(existingDraft?.id),
+        );
         await assertDispatchAllowedForSoItem(
           tx,
           {
             soId: so.id,
             itemId: body.itemId,
             lineInputs,
-            dispatchRecords: so.dispatch,
+            dispatchRecords: competingDispatches,
             requestQty: body.dispatchedQty,
+            orderType: so.orderType,
+            customerReturnId: so.customerReturnId ?? null,
           },
           { skipStockCheck: true },
         );
@@ -2901,7 +2936,7 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
 
       /** Draft row: UNLOCKED until POST /dispatches/:id/lock posts stock (DISPATCH) and sets LOCKED. */
       // UX guard: reuse/update existing draft for same SO + item instead of creating overlapping drafts.
-      if (!isNoQty) {
+      if (!isNoQty && !existingDraft) {
         existingDraft = await tx.dispatch.findFirst({
           where: {
             soId: so.id,
@@ -3106,6 +3141,25 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
       } else {
         const lineInputs = mapSoLinesToDispatchFifoInputs(so.lines, so.orderType);
         const others = so.dispatch.filter((x) => x.id !== id);
+        const physicalUsableQty = await getItemStockQty(existing.itemId, tx, {
+          stockBucket: "USABLE",
+          allLocations: true,
+        });
+        const reservation = resolveDispatchDraftReservation({
+          dispatchId: id,
+          itemId: existing.itemId,
+          requestedQty: qty,
+          physicalUsableQty,
+          dispatchRows: so.dispatch || [],
+        });
+        if (!reservation.allowed) {
+          const err = new Error(
+            `Insufficient usable stock for dispatch. Available to this draft: ${reservation.availableToThisDraftQty}, required: ${qty}.`,
+          );
+          err.statusCode = 400;
+          err.code = "DISPATCH_DRAFT_RESERVATION_SHORTAGE";
+          throw err;
+        }
         await assertDispatchAllowedForSoItem(tx, {
           soId: existing.soId,
           itemId: existing.itemId,
@@ -3384,6 +3438,25 @@ dispatchRouter.post(
           // NORMAL / REPLACEMENT etc: keep standard validation but exclude this draft row from "already dispatched".
           const lineInputs = mapSoLinesToDispatchFifoInputs(so.lines, so.orderType);
           const others = (so.dispatch || []).filter((x) => x.id !== id);
+          const physicalUsableQty = await getItemStockQty(existing.itemId, tx, {
+            stockBucket: "USABLE",
+            allLocations: true,
+          });
+          const reservation = resolveDispatchDraftReservation({
+            dispatchId: id,
+            itemId: existing.itemId,
+            requestedQty: qty,
+            physicalUsableQty,
+            dispatchRows: so.dispatch || [],
+          });
+          if (!reservation.allowed) {
+            const err = new Error(
+              `Insufficient usable stock for dispatch. Available to this draft: ${reservation.availableToThisDraftQty}, required: ${qty}.`,
+            );
+            err.statusCode = 400;
+            err.code = "DISPATCH_DRAFT_RESERVATION_SHORTAGE";
+            throw err;
+          }
           await assertDispatchAllowedForSoItem(tx, {
             soId: existing.soId,
             itemId: existing.itemId,

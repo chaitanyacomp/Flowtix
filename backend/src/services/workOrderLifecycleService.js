@@ -32,6 +32,15 @@ const WO_STATUS_SYNC_FROZEN = new Set(["HOLD", "PAUSED", "CLOSED_WITH_SHORTFALL"
 
 const WO_TERMINAL = new Set(["CLOSED_WITH_SHORTFALL", "COMPLETED", "REJECTED"]);
 
+function regularShortageClosureReasonFromPendingExecution(execution) {
+  if (String(execution?.executionStatus ?? "").toUpperCase() !== "SHORTFALL_PENDING") return null;
+  const remarks = String(execution?.blockRemarks ?? "");
+  if (!remarks.startsWith("REGULAR: End with SO shortage")) return null;
+  const marker = "Production Report pending.";
+  const reason = remarks.includes(marker) ? remarks.slice(remarks.indexOf(marker) + marker.length).trim() : "";
+  return reason || "Permanent Regular SO shortage confirmed in Production Report.";
+}
+
 function n(v) {
   const x = typeof v === "number" ? v : Number(v);
   return Number.isFinite(x) ? x : 0;
@@ -340,9 +349,55 @@ async function regularWoLifecycleActions(db, workOrderId, actorRole = null) {
   if (!isAdmin && !isStore) cancelBlockers.push("User lacks permission");
 
   const reopenBlockers = [];
-  if (!["COMPLETED", "CLOSED_WITH_SHORTFALL"].includes(wo.status)) reopenBlockers.push("WO is not closed");
-  if (qaCount) reopenBlockers.push("QA completed");
-  if (reportCount) reopenBlockers.push("Reconciliation finalized");
+  if (wo.status !== "CLOSED_WITH_SHORTFALL") {
+    reopenBlockers.push("WO was not permanently closed through the Regular SO shortage path");
+  }
+  const fgItemIds = (wo.lines || []).map((line) => line.fgItemId);
+  const dispatches = fgItemIds.length
+    ? await db.dispatch.findMany({
+        where: {
+          soId: so.id,
+          itemId: { in: fgItemIds },
+          reversalOfId: null,
+          dispatchedQty: { gt: 0 },
+        },
+        select: { id: true, docNo: true, workflowStatus: true },
+      })
+    : [];
+  if (dispatches.length) reopenBlockers.push("dispatch exists against produced stock");
+  const salesBillCount = await db.salesBill.count({
+    where: {
+      OR: [
+        { soId: so.id, status: { not: "CANCELLED" } },
+        { dispatchId: { in: dispatches.map((row) => row.id) }, status: { not: "CANCELLED" } },
+      ],
+    },
+  });
+  if (salesBillCount) reopenBlockers.push("sales bill exists");
+  const tallyExportCount = await db.salesBill.count({
+    where: {
+      OR: [{ soId: so.id }, { dispatchId: { in: dispatches.map((row) => row.id) } }],
+      isExported: true,
+    },
+  });
+  if (tallyExportCount) reopenBlockers.push("Tally export exists");
+  let laterConflictingTransactionCount = 0;
+  if (wo.closedAt) {
+    const [laterProductionCount, laterQcCount, laterIssueCount] = await Promise.all([
+      db.productionEntry.count({
+        where: { workOrderLineId: { in: lineIds }, date: { gt: wo.closedAt } },
+      }),
+      db.qcEntry.count({
+        where: { production: { workOrderLineId: { in: lineIds } }, date: { gt: wo.closedAt }, reversedAt: null },
+      }),
+      db.materialIssueNote.count({ where: { workOrderId, createdAt: { gt: wo.closedAt } } }),
+    ]);
+    laterConflictingTransactionCount = laterProductionCount + laterQcCount + laterIssueCount;
+  }
+  if (laterConflictingTransactionCount) {
+    reopenBlockers.push("a later production, QC, or RM issue transaction conflicts with the closure");
+  }
+  if (!reportCount) reopenBlockers.push("original Production Report is missing");
   if (!isAdmin) reopenBlockers.push("User lacks permission");
   return {
     workOrderId,
@@ -351,7 +406,16 @@ async function regularWoLifecycleActions(db, workOrderId, actorRole = null) {
     hardDelete: { enabled: deleteBlockers.length === 0, blockers: deleteBlockers },
     cancel: { enabled: cancelBlockers.length === 0, blockers: cancelBlockers },
     reopen: { enabled: reopenBlockers.length === 0, blockers: reopenBlockers },
-    facts: { productionCount, approvedProductionCount, qaCount, pmrCount, issueCount, allocationCount, reportCount },
+    facts: {
+      productionCount,
+      approvedProductionCount,
+      qaCount,
+      pmrCount,
+      issueCount,
+      allocationCount,
+      reportCount,
+      laterConflictingTransactionCount,
+    },
   };
 }
 
@@ -378,6 +442,12 @@ async function cancelRegularWorkOrder(tx, workOrderId, { reason, actorUserId, ac
 }
 
 async function reopenRegularWorkOrder(tx, workOrderId, { reason, actorUserId, actorRole }) {
+  if (!String(reason ?? "").trim()) {
+    const err = new Error("Admin reopening reason is required.");
+    err.statusCode = 400;
+    err.code = "REGULAR_WO_REOPEN_REASON_REQUIRED";
+    throw err;
+  }
   const actions = await regularWoLifecycleActions(tx, workOrderId, actorRole);
   if (!actions.reopen.enabled) {
     const err = new Error(`Cannot reopen work order: ${actions.reopen.blockers.join("; ")}.`);
@@ -385,9 +455,40 @@ async function reopenRegularWorkOrder(tx, workOrderId, { reason, actorUserId, ac
     err.code = "REGULAR_WO_REOPEN_BLOCKED";
     throw err;
   }
+  const before = await tx.workOrder.findUnique({
+    where: { id: workOrderId },
+    select: { status: true, shortfallQty: true, closureReason: true, closedAt: true, closedByUserId: true },
+  });
+  await tx.workOrderLine.updateMany({
+    where: { workOrderId },
+    data: { shortfallQty: null },
+  });
   const updated = await tx.workOrder.update({
     where: { id: workOrderId },
-    data: { status: "PENDING", closureReason: null, closedAt: null, closedByUserId: null },
+    data: {
+      status: "IN_PROGRESS",
+      shortfallQty: null,
+      closureReason: null,
+      closedAt: null,
+      closedByUserId: null,
+      materialReleasedToProductionAt: null,
+      materialReleasedByUserId: null,
+    },
+  });
+  await tx.workOrderProductionExecution.upsert({
+    where: { workOrderId },
+    create: {
+      workOrderId,
+      executionStatus: "RUNNING",
+      blockRemarks: "Accidental closure reopened. Store must reissue any RM returned during closure.",
+    },
+    update: {
+      executionStatus: "RUNNING",
+      completedAt: null,
+      completedByUserId: null,
+      blockReason: null,
+      blockRemarks: "Accidental closure reopened. Store must reissue any RM returned during closure.",
+    },
   });
   if (typeof actorUserId === "number") {
     await auditLog.write(tx, {
@@ -396,8 +497,18 @@ async function reopenRegularWorkOrder(tx, workOrderId, { reason, actorUserId, ac
       entityId: `WORK_ORDER:${workOrderId}`,
       actorUserId,
       actorRole,
-      summary: `Work order ${workOrderId} reopened: ${reason}`,
-      payload: { module: "WORK_ORDER_LIFECYCLE", actionLabel: "REOPEN", reason },
+      summary: `Work order ${workOrderId} accidental shortage closure reopened: ${reason}`,
+      payload: {
+        module: "WORK_ORDER_LIFECYCLE",
+        actionLabel: "REOPEN_ACCIDENTAL_REGULAR_SHORTAGE_CLOSURE",
+        reason,
+        originalClosure: before,
+        productionReportPreserved: true,
+        approvedProductionPreserved: true,
+        stockReposted: false,
+        rmReissueRequiredFromActualBalance: true,
+      },
+      reason: String(reason).trim(),
     });
   }
   return updated;
@@ -448,6 +559,20 @@ async function requestRegularEndProduction(tx, workOrderId, input) {
     err.statusCode = 409;
     err.code = "NO_SO_SHORTAGE";
     throw err;
+  }
+  if (decision === "END_SHORTAGE") {
+    if (!String(input.closureReason ?? "").trim()) {
+      const err = new Error("Closure reason is required for permanent Regular SO shortage closure.");
+      err.statusCode = 400;
+      err.code = "REGULAR_SHORTAGE_CLOSURE_REASON_REQUIRED";
+      throw err;
+    }
+    if (input.permanentClosureAcknowledged !== true) {
+      const err = new Error("Explicit acknowledgement of permanent WO shortage closure is required.");
+      err.statusCode = 400;
+      err.code = "REGULAR_SHORTAGE_CLOSURE_ACK_REQUIRED";
+      throw err;
+    }
   }
 
   if (WO_TERMINAL.has(coverage.workOrderStatus)) {
@@ -582,5 +707,6 @@ module.exports = {
   regularWoLifecycleActions,
   cancelRegularWorkOrder,
   reopenRegularWorkOrder,
+  regularShortageClosureReasonFromPendingExecution,
   loadWorkOrderLifecycleContext,
 };

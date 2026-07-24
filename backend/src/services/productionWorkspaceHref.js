@@ -47,6 +47,12 @@ function buildProductionWorkspaceHrefFromPendingMeta(meta = {}, from = "pending-
       params.set("productionBucket", bucket);
       // Workbench tab must match Pending Actions classification.
       params.set("pwSection", bucket === "readyToStart" ? "ready" : "active");
+      if (bucket === "readyToStart" && workOrderId > 0) {
+        params.delete("workOrderId");
+        params.delete("workOrderLineId");
+        params.set("pwFocus", String(workOrderId));
+        return `/production?${params.toString()}`;
+      }
     }
   }
   if (sourceType === GREEN_LEVEL_WO_SOURCE_TYPE || orderType === "GREEN_LEVEL") {

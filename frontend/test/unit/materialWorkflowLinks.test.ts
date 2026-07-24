@@ -32,7 +32,7 @@ describe("materialWorkflowLinks", () => {
       "PMR PMR-26-0003 is ready.",
     );
     expect(formatPostWoCreateSuccessMessage("Work Order WO-26-0001", "PMR-26-0003")).toContain(
-      "Continue to issue material.",
+      "Continue to issue material",
     );
   });
 

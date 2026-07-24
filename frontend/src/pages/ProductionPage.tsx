@@ -856,6 +856,7 @@ export function ProductionPage() {
   const [reviewDisposition, setReviewDisposition] = React.useState<RemainingDisposition | null>(null);
   const [reviewPauseReason, setReviewPauseReason] = React.useState("MACHINE_BREAKDOWN");
   const [reviewRemarks, setReviewRemarks] = React.useState("");
+  const [reviewPermanentClosureAcknowledged, setReviewPermanentClosureAcknowledged] = React.useState(false);
   /** Sticky gate: End/Equal/Extra finalize → report. Blocks Continue/runner flash until report layout mounts. */
   const [productionReportTransitionWoId, setProductionReportTransitionWoId] = React.useState(0);
   const productionReportTransitionWoIdRef = React.useRef(0);
@@ -1180,12 +1181,21 @@ export function ProductionPage() {
   const handleRegularEndProduction = React.useCallback(
     async (decision: "END_COVERED" | "END_SHORTAGE") => {
       if (!(effectiveScopedWoId > 0)) return;
+      let closureReason: string | null = null;
+      if (decision === "END_SHORTAGE") {
+        closureReason =
+          window.prompt(
+            `Permanent shortage: ${fmtProdQty(regularSoCoverage?.soShortageQty ?? 0)} will not carry forward.\n\nEnter the closure reason. Choose Continue Later instead if production may resume.`,
+          )?.trim() || null;
+        if (!closureReason) return;
+        if (!window.confirm("I understand this WO will close permanently.")) return;
+      }
       setRegularEndProductionBusy(true);
       try {
         const result = await requestRegularEndProduction(effectiveScopedWoId, {
           decision,
-          closureReason:
-            decision === "END_SHORTAGE" ? "End production with SO demand shortage — Production Report required" : null,
+          closureReason,
+          ...(decision === "END_SHORTAGE" ? { permanentClosureAcknowledged: true as const } : {}),
         });
         setRegularSoCoverage(result.coverage);
         setExecutionPanelRefreshTick((t) => t + 1);
@@ -1200,7 +1210,7 @@ export function ProductionPage() {
         setRegularEndProductionBusy(false);
       }
     },
-    [effectiveScopedWoId, toast],
+    [effectiveScopedWoId, regularSoCoverage, toast],
   );
 
   const flowMismatchMessage = React.useMemo(() => {
@@ -7363,7 +7373,9 @@ export function ProductionPage() {
         <div>
           <h2 id="review-finalize-title" className="text-xl font-semibold text-slate-900">Review &amp; Finalize</h2>
           <p className="mt-1 text-sm text-slate-600">
-            Finalizing confirms this output and sends it to QC. Choose what happens to the remaining WO balance.
+            {isRegularFlow
+              ? "Finalizing confirms this output and sends it to QC. After approval, choose Continue Later or End Production with Shortage."
+              : "Finalizing confirms this output and sends it to QC. Choose what happens to the remaining WO balance."}
           </p>
         </div>
         <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm sm:grid-cols-3">
@@ -7377,7 +7389,7 @@ export function ProductionPage() {
           <div><span className="text-slate-500">Unused RM-supported capacity</span><div className="font-semibold">{rmEntryQtyCap != null ? fmtProdQty(Math.max(0, Number(rmEntryQtyCap) - reviewFinalize.totalAfter)) : "—"}</div></div>
           <div><span className="text-slate-500">Approved tolerance</span><div className="font-semibold">WO plan + 5% where applicable</div></div>
         </div>
-        {reviewFinalize.remaining > 1e-6 ? (
+        {!isRegularFlow && reviewFinalize.remaining > 1e-6 ? (
           <div className="grid gap-3 md:grid-cols-2" role="radiogroup" aria-label="Remaining work order disposition">
             {REVIEW_FINALIZE_REMAINING_OPTIONS.map(({ id, title, description }) => (
               <button
@@ -7398,6 +7410,14 @@ export function ProductionPage() {
               </button>
             ))}
           </div>
+        ) : isRegularFlow ? (
+          <div
+            className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950"
+            data-testid="regular-review-finalize-next-decision"
+          >
+            Approve this recorded quantity once. The next decision contains only Continue Later or End Production with
+            Shortage; RM return, runner, and wastage remain in the Production Report.
+          </div>
         ) : (
           <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
             <p className="font-medium">Complete Production — Production Report is still required.</p>
@@ -7409,14 +7429,35 @@ export function ProductionPage() {
             </p>
           </div>
         )}
-        {reviewFinalize.remaining > 1e-6 && reviewDisposition === "PAUSE" ? (
+        {!isRegularFlow && reviewFinalize.remaining > 1e-6 && reviewDisposition === "PAUSE" ? (
           <label className="block text-sm font-medium text-slate-700">Pause reason
             <select className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" value={reviewPauseReason} onChange={(e) => setReviewPauseReason(e.target.value)}>
               <option value="MACHINE_BREAKDOWN">Machine Breakdown</option><option value="WAITING_FOR_RM">Waiting for RM</option><option value="TOOL_MOULD_MAINTENANCE">Tool / Mould Maintenance</option><option value="QUALITY_CONCERN">Quality Concern</option><option value="POWER_UTILITY_FAILURE">Power / Utility Failure</option><option value="MANAGEMENT_HOLD">Management Hold</option><option value="OTHER">Other</option>
             </select>
           </label>
         ) : null}
-        <label className="block text-sm font-medium text-slate-700">Remarks (optional)
+        {!isRegularFlow && reviewFinalize.remaining > 1e-6 && reviewDisposition === "END_WITH_SHORTAGE" ? (
+          <div className="space-y-2 rounded-lg border-2 border-red-300 bg-red-50 p-3 text-sm text-red-950">
+            <p className="font-semibold">
+              Permanently closing leaves exactly {fmtProdQty(reviewFinalize.remaining)} unproduced.
+            </p>
+            <p>
+              This WO cannot be continued normally and this shortage will not carry forward. Choose Continue Later
+              if production may resume.
+            </p>
+            <label className="flex items-start gap-2 font-medium">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={reviewPermanentClosureAcknowledged}
+                onChange={(event) => setReviewPermanentClosureAcknowledged(event.target.checked)}
+              />
+              <span>I understand this WO will close permanently.</span>
+            </label>
+          </div>
+        ) : null}
+        <label className="block text-sm font-medium text-slate-700">
+          {!isRegularFlow && reviewDisposition === "END_WITH_SHORTAGE" ? "Closure reason (required)" : "Remarks (optional)"}
           <textarea className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" rows={2} value={reviewRemarks} onChange={(e) => setReviewRemarks(e.target.value)} />
         </label>
         <div className="flex justify-end gap-2">
@@ -7425,14 +7466,17 @@ export function ProductionPage() {
             type="button"
             variant={reviewDisposition === "END_WITH_SHORTAGE" ? "destructive" : "default"}
             disabled={
-              !isReviewFinalizeDispositionReady({
+              (!isRegularFlow && !isReviewFinalizeDispositionReady({
                 remainingAfterEntry: reviewFinalize.remaining,
                 disposition: reviewDisposition,
-              })
+              })) ||
+              (!isRegularFlow && reviewDisposition === "END_WITH_SHORTAGE" &&
+                (!reviewRemarks.trim() || !reviewPermanentClosureAcknowledged))
             }
             onClick={() => {
             const id = reviewFinalizeEntryId;
             if (
+              !isRegularFlow &&
               !isReviewFinalizeDispositionReady({
                 remainingAfterEntry: reviewFinalize.remaining,
                 disposition: reviewDisposition,
@@ -7440,7 +7484,7 @@ export function ProductionPage() {
             ) {
               return;
             }
-            const closeDecision = isProductionReportCloseDecision({
+            const closeDecision = !isRegularFlow && isProductionReportCloseDecision({
               remainingAfterEntry: reviewFinalize.remaining,
               disposition: reviewDisposition,
             });
@@ -7455,7 +7499,7 @@ export function ProductionPage() {
             if (id != null) {
               executeDraftFinalization(
                 id,
-                reviewFinalize.remaining > 1e-6 && reviewDisposition
+                !isRegularFlow && reviewFinalize.remaining > 1e-6 && reviewDisposition
                   ? {
                       remainingDisposition: reviewDisposition,
                       pauseReason: reviewDisposition === "PAUSE" ? reviewPauseReason : undefined,
@@ -7465,10 +7509,12 @@ export function ProductionPage() {
               );
             }
           }}>
-            {reviewFinalizePrimaryButtonLabel({
-              remainingAfterEntry: reviewFinalize.remaining,
-              disposition: reviewDisposition,
-            })}
+            {!isRegularFlow && reviewDisposition === "END_WITH_SHORTAGE"
+              ? "Permanently Close WO with Shortage"
+              : reviewFinalizePrimaryButtonLabel({
+                  remainingAfterEntry: reviewFinalize.remaining,
+                  disposition: reviewDisposition,
+                })}
           </Button>
         </div>
       </div>

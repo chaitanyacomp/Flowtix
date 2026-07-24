@@ -90,7 +90,12 @@ function resolveWoTrackingOrderedQty({ orderType, soLines, fgItemId, requirement
     }
     return found ? sum : null;
   }
-  return aggregateSoOrderedQtyByItemId(soLines || []).get(Number(fgItemId)) ?? 0;
+  return (soLines || [])
+    .filter((line) => Number(line.itemId) === Number(fgItemId))
+    .reduce((sum, line) => {
+      const customerQty = Number(line.customerPoQty ?? 0);
+      return sum + (customerQty > 0 ? customerQty : Number(line.qty ?? 0));
+    }, 0);
 }
 
 /** @alias netDispatchedByItemId — name matches reporting vocabulary */

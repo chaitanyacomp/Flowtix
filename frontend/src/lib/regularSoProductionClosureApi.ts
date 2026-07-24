@@ -7,7 +7,11 @@ export async function fetchRegularSoDemandCoverage(workOrderId: number): Promise
 
 export async function requestRegularEndProduction(
   workOrderId: number,
-  body: { decision: "END_COVERED" | "END_SHORTAGE"; closureReason?: string | null },
+  body: {
+    decision: "END_COVERED" | "END_SHORTAGE";
+    closureReason?: string | null;
+    permanentClosureAcknowledged?: true;
+  },
 ): Promise<{
   outcome: string;
   decision: string;

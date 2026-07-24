@@ -33,13 +33,8 @@ export function buildNoQtyDashboardTraceLine(input: NoQtyDashboardTraceInput): N
   const ahead = Boolean(input.noQtyPlanningPointerAhead);
   const draft = String(input.lastRsStatus ?? "").toUpperCase() === "DRAFT";
 
-  if (ahead && docCycle != null && ptrCycle != null && ptrCycle > docCycle) {
-    return {
-      positionText: `Previous cycle: Cycle ${docCycle} completed · Now planning Cycle ${ptrCycle}`,
-      isBetweenCycles: true,
-    };
-  }
-
+  // A draft is the live state of the planning-pointer cycle and takes
+  // precedence over the generic between-cycles history description.
   if (draft) {
     const n = ptrCycle ?? docCycle;
     if (n != null) {
@@ -48,6 +43,13 @@ export function buildNoQtyDashboardTraceLine(input: NoQtyDashboardTraceInput): N
         isBetweenCycles: false,
       };
     }
+  }
+
+  if (ahead && docCycle != null && ptrCycle != null && ptrCycle > docCycle) {
+    return {
+      positionText: `Previous cycle: Cycle ${docCycle} completed · Now planning Cycle ${ptrCycle}`,
+      isBetweenCycles: true,
+    };
   }
 
   const active = ahead ? (ptrCycle ?? docCycle) : (docCycle ?? ptrCycle);

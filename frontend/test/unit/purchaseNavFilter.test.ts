@@ -8,9 +8,11 @@ import { PURCHASE_WIDGET_UNAVAILABLE } from "../../src/lib/purchaseDashboardWidg
 const appLayoutPath = resolve(__dirname, "../../src/components/AppLayout.tsx");
 const appPath = resolve(__dirname, "../../src/App.tsx");
 const dashboardPath = resolve(__dirname, "../../src/pages/DashboardPage.tsx");
+const dashboardRouterPath = resolve(__dirname, "../../src/pages/dashboard/DashboardRoleRouter.tsx");
 const appLayoutSource = readFileSync(appLayoutPath, "utf8");
 const appSource = readFileSync(appPath, "utf8");
 const dashboardSource = readFileSync(dashboardPath, "utf8");
+const dashboardRouterSource = readFileSync(dashboardRouterPath, "utf8");
 
 describe("purchaseNavFilter", () => {
   it("hides store-owned planning workspaces from PURCHASE sidebar", () => {
@@ -34,13 +36,10 @@ describe("Purchase route alignment with backend permissions", () => {
   });
 
   it("renders dedicated purchase desk before generic dashboard loading gate", () => {
-    expect(dashboardSource).toContain("!usesDedicatedRoleDesk");
-    expect(dashboardSource).toMatch(/if \(role === "PURCHASE"\)[\s\S]*PurchaseDashboardPage/);
-    const purchaseIdx = dashboardSource.indexOf('if (role === "PURCHASE")');
-    const loadingIdx = dashboardSource.indexOf("if (loading)");
-    expect(purchaseIdx).toBeGreaterThan(-1);
-    expect(loadingIdx).toBeGreaterThan(-1);
-    expect(purchaseIdx).toBeLessThan(loadingIdx);
+    expect(dashboardRouterSource).toContain('case "PURCHASE"');
+    expect(dashboardRouterSource).toContain("<PurchaseDashboardWithPending />");
+    expect(dashboardRouterSource).not.toContain("if (loading)");
+    expect(dashboardSource).toContain("if (loading)");
   });
 });
 

@@ -42,7 +42,7 @@ SO No · Customer · WO No · Item · **Ordered Qty** · Required · Planned · 
 
 | Field | Rule |
 |-------|------|
-| Ordered Qty | Sum of `SalesOrderLine.qty` for the FG on the SO |
+| Ordered Qty | Sum of `SalesOrderLine.customerPoQty` for the FG on a NORMAL SO (legacy fallback `qty`); never the buffered WO target |
 | Required | `WorkOrderLine.qty` |
 | Planned | `WorkOrderLine.plannedQty` |
 | Produced / Accepted / Rejected | APPROVED production + active QC |
@@ -50,6 +50,8 @@ SO No · Customer · WO No · Item · **Ordered Qty** · Required · Planned · 
 | Production Pending | `max(0, Required − Produced)` |
 | Dispatch Pending | `max(0, Accepted − WO-FIFO dispatched)` |
 | Status | Quantity stage gate (`deriveWoTrackingOperationalStatus`) |
+
+For `CLOSED_WITH_SHORTFALL`, reports preserve and distinguish customer ordered, approved produced, QC accepted, confirmed dispatched, and permanent customer shortage. `WorkOrderLine.plannedQty - produced` is the manufacturing target shortfall and must not replace the customer shortage. Closed-short WOs are history-only under Include Closed and contribute zero active production demand.
 
 ### Empty state
 

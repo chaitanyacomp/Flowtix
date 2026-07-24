@@ -274,10 +274,22 @@ async function createMonthlyPlan({
   confirmPastPeriod = false,
   remarks = null,
   now = new Date(),
+  loadComposition = null,
 } = {}) {
   const periodKey = assertPeriodWriteAllowed({ periodKey: period, actorRole, confirmPastPeriod, now });
 
   const run = async (tx) => {
+    const composition = await resolveRequirementCompositionLoader(loadComposition)({ db: tx, periodKey });
+    const eligibleItems = (composition?.items || []).filter(
+      (row) => round3(row.productionRequirementQty ?? row.customerProductionQty ?? row.suggestedProduction) > ADDITIONAL_PLAN_QTY_EPS,
+    );
+    if (!(Number(composition?.sheetCount) > 0) || eligibleItems.length === 0) {
+      throw new MonthlyPlanningError(
+        "NO_ELIGIBLE_NO_QTY_RS_DEMAND",
+        "Monthly Planning requires an active NO_QTY sales order with a LOCKED Requirement Sheet and uncovered RS-backed demand for this period.",
+        409,
+      );
+    }
     await assertNoOtherActivePlanInPeriod(tx, periodKey);
     const planSequenceNo = await getNextPlanSequenceNo(tx, periodKey);
     const planKind = resolvePlanKindForSequence(planSequenceNo);
@@ -329,6 +341,17 @@ async function loadPlanForEdit(db, planId) {
     throw new MonthlyPlanningError("PLAN_NOT_FOUND", "Monthly Production Plan not found.", 404);
   }
   return plan;
+}
+
+async function assertPlanHasEligibleRsContext(db, plan, loadComposition = null) {
+  const composition = await resolveRequirementCompositionLoader(loadComposition)({ db, periodKey: plan.periodKey });
+  if (composition?.sheetCount != null && !(Number(composition.sheetCount) > 0)) {
+    throw new MonthlyPlanningError(
+      "MONTHLY_PLAN_RS_CONTEXT_REQUIRED",
+      "This Monthly Plan has no eligible LOCKED NO_QTY Requirement Sheet context. Manual FG lines cannot be added to a standalone plan.",
+      409,
+    );
+  }
 }
 
 /** Load the FG demand lines for a plan (read-only) with Phase 8A variance / green-gap visibility. */
@@ -409,6 +432,7 @@ async function updateProductionLines({
   const coverageLoader = resolvePeriodCoverageLoader(loadPeriodCoverage);
   const run = async (tx) => {
     const plan = await loadPlanForEdit(tx, planId);
+    await assertPlanHasEligibleRsContext(tx, plan, loadComposition);
     assertPeriodWriteAllowed({
       periodKey: plan.periodKey,
       actorRole,

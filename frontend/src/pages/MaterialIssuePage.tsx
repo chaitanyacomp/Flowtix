@@ -987,6 +987,26 @@ export function MaterialIssuePage() {
         remainingQty: issued.remainingQty,
         unit: issued.unit,
       }));
+      const affected = freshPending.find((row) => Number(row.id) === Number(issued.pmrId));
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.set("bucket", "partiallyIssued");
+      nextParams.delete("queue");
+      nextParams.set("pmrId", String(issued.pmrId));
+      nextParams.set("workOrderId", String(issued.workOrderId));
+      if (returnTo) nextParams.set("returnTo", returnTo);
+      setSearchParams(nextParams, { replace: true });
+      if (affected) {
+        setSessionComplete(null);
+        selectPmr(affected.id, affected.workOrderId);
+      } else {
+        setActivePmrId(issued.pmrId);
+        setWorkOrderId(issued.workOrderId);
+        await loadPmrIntoForm(
+          issued.pmrId,
+          typeof fromLocationId === "number" ? fromLocationId : undefined,
+        );
+      }
+      return;
     } else {
       showSuccess(formatMaterialIssueSuccessMessage(woLabel));
     }
@@ -1948,7 +1968,7 @@ export function MaterialIssuePage() {
                       disabled={submitting}
                       onClick={() => void handleIssueLater()}
                     >
-                      Issue Later
+                      Issue Remaining Later
                     </Button>
                     <Button
                       type="button"
@@ -1958,7 +1978,7 @@ export function MaterialIssuePage() {
                       disabled={submitting}
                       onClick={() => setShowWaiveForm((v) => !v)}
                     >
-                      Close remaining (Short Issue)
+                      Close Remaining as Short Issue
                     </Button>
                     {issueDecision.canReleaseToProduction ? (
                       <Button

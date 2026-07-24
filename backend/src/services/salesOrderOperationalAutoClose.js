@@ -1,6 +1,7 @@
 const auditLog = require("./auditLog");
 const { lockSalesOrderForUpdate } = require("./dispatchWriteLocks");
 const { computeSalesOrderDispatchLineStats } = require("./reportMetrics");
+const { netDispatchedByItemId, DISPATCH_ALLOC_MODE } = require("./salesOrderDispatchAllocation");
 const { hasPendingProductionOrQc, OPEN_QC_REJECTED_DISPOSITION_STATUSES } = require("./noQtySoOperationalGates");
 
 const CLOSED_STATUSES = new Set(["COMPLETED", "CLOSED", "MANUALLY_CLOSED", "CLOSED_WITH_WAIVER"]);
@@ -36,17 +37,86 @@ function operationalCompletionBlockMessage(reason) {
   }
 }
 
+function summarizeRegularClosedShortQuantities(full) {
+  const byItem = new Map();
+  for (const line of full.lines || []) {
+    const itemId = Number(line.itemId);
+    const row = byItem.get(itemId) || {
+      itemId,
+      orderedQty: 0,
+      producedQty: 0,
+      acceptedQty: 0,
+      dispatchedQty: 0,
+      usableFgPendingDispatchQty: 0,
+      permanentlyClosedShortQty: 0,
+    };
+    const customerQty = Number(line.customerPoQty ?? 0);
+    row.orderedQty += customerQty > 0 ? customerQty : Number(line.qty ?? 0);
+    byItem.set(itemId, row);
+  }
+  for (const wo of full.workOrders || []) {
+    for (const line of wo.lines || []) {
+      const row = byItem.get(Number(line.fgItemId));
+      if (!row) continue;
+      for (const production of line.productions || []) {
+        if (production.workflowStatus !== "APPROVED") continue;
+        row.producedQty += Number(production.producedQty ?? 0);
+        for (const qc of production.qcEntries || []) {
+          if (qc.reversedAt == null) row.acceptedQty += Number(qc.acceptedQty ?? 0);
+        }
+      }
+    }
+  }
+  const dispatched = netDispatchedByItemId(full.dispatch || [], DISPATCH_ALLOC_MODE.CONFIRMED);
+  for (const row of byItem.values()) {
+    row.dispatchedQty = Math.max(0, Number(dispatched.get(row.itemId) ?? 0));
+    row.usableFgPendingDispatchQty = Math.max(0, row.acceptedQty - row.dispatchedQty);
+    row.permanentlyClosedShortQty = Math.max(
+      0,
+      row.orderedQty - row.dispatchedQty - row.usableFgPendingDispatchQty,
+    );
+  }
+  return [...byItem.values()];
+}
+
 async function regularDispatchComplete(tx, so) {
   const full = await tx.salesOrder.findUnique({
     where: { id: so.id },
-    include: { lines: true, dispatch: true },
+    include: {
+      lines: true,
+      dispatch: true,
+      workOrders: {
+        where: { status: { not: "REJECTED" } },
+        include: {
+          lines: {
+            include: {
+              productions: {
+                where: { workflowStatus: "APPROVED" },
+                include: { qcEntries: true },
+              },
+            },
+          },
+        },
+      },
+    },
   });
   if (!full) return { complete: false, reason: "SO_NOT_FOUND" };
   const unlockedForward = (full.dispatch || []).some((d) => d.reversalOfId == null && d.workflowStatus === "UNLOCKED");
   if (unlockedForward) return { complete: false, reason: "DRAFT_DISPATCH_EXISTS" };
+  const quantitySummary = summarizeRegularClosedShortQuantities(full);
   const { dispatchSummary } = computeSalesOrderDispatchLineStats(full.lines || [], full.dispatch || [], full.orderType);
-  if (!dispatchSummary.fullyDispatched) return { complete: false, reason: "PENDING_DISPATCH" };
-  return { complete: true, reason: null };
+  if (dispatchSummary.fullyDispatched) return { complete: true, reason: null, quantitySummary, closedWithShortage: false };
+
+  const workOrders = full.workOrders || [];
+  const allTerminal = workOrders.length > 0 && workOrders.every((wo) =>
+    ["COMPLETED", "CLOSED_WITH_SHORTFALL"].includes(String(wo.status)),
+  );
+  const anyPermanentShortClose = workOrders.some((wo) => String(wo.status) === "CLOSED_WITH_SHORTFALL");
+  const usableFgPending = quantitySummary.reduce((sum, row) => sum + row.usableFgPendingDispatchQty, 0);
+  if (!allTerminal || !anyPermanentShortClose || usableFgPending > 1e-6) {
+    return { complete: false, reason: "PENDING_DISPATCH", quantitySummary };
+  }
+  return { complete: true, reason: null, quantitySummary, closedWithShortage: true };
 }
 
 async function noQtyOperationallyComplete(tx, so) {
@@ -115,7 +185,7 @@ async function evaluateSalesOrderOperationalCompletion(tx, salesOrderId) {
     so.orderType === "NO_QTY" ? await noQtyOperationallyComplete(tx, so) : await regularDispatchComplete(tx, so);
   if (!flow.complete) return { eligible: false, reason: flow.reason, so };
 
-  return { eligible: true, reason: null, so };
+  return { eligible: true, reason: null, so, flow };
 }
 
 /**
@@ -176,6 +246,8 @@ async function completeSalesOrderOperationally(tx, salesOrderId, opts = {}) {
       actionLabel: opts.actionLabel ?? "CLOSE_OPERATIONAL",
       status: { from: so.internalStatus, to: "COMPLETED" },
       orderType: so.orderType,
+      closedWithShortage: Boolean(evaluation.flow?.closedWithShortage),
+      quantities: evaluation.flow?.quantitySummary ?? null,
     },
     reason: opts.reason ?? "Operational workflow completed; billing/export may continue separately.",
   });
@@ -198,7 +270,9 @@ async function maybeAutoCloseSalesOrderOperationally(tx, salesOrderId, opts = {}
     }
     return await completeSalesOrderOperationally(tx, salesOrderId, {
       ...opts,
-      actionLabel: "AUTO_CLOSE_OPERATIONAL",
+      actionLabel: evaluation.flow?.closedWithShortage
+        ? "AUTO_CLOSE_REGULAR_WITH_SHORTAGE"
+        : "AUTO_CLOSE_OPERATIONAL",
     });
   } catch (err) {
     console.error("[salesOrderOperationalAutoClose] auto-close failed (QC/ops save continues):", err);
@@ -213,4 +287,5 @@ module.exports = {
   completeSalesOrderOperationally,
   operationalCompletionBlockMessage,
   OPEN_QC_REJECTED_DISPOSITION_STATUSES,
+  summarizeRegularClosedShortQuantities,
 };

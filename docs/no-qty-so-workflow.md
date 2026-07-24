@@ -156,6 +156,11 @@ Export uses **SalesBillLine.qty** (dispatch-derived) only.
 - **Blocked**:
   - SO closed (history-only)
 
+#### Monthly Plan
+- **Allowed** only when an active `NO_QTY` SO, an eligible `LOCKED` Requirement Sheet for the selected active cycle/period, and uncovered RS-backed demand all exist.
+- Initial and Additional plans remain linked to that RS/cycle. Manual FG additions, where enabled, are additions inside that valid plan context; they cannot create a standalone plan.
+- REGULAR SO demand, Regular WO shortage, and orphan/empty drafts never activate Monthly Planning. Store Pending Actions hide drafts that no longer have an eligible NO_QTY/locked-RS context.
+
 #### Production + QC
 - **Allowed** only when:
   - Work Order belongs to the **current cycle**

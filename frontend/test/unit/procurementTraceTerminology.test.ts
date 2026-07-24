@@ -14,7 +14,7 @@ import { buildProcurementWorkspaceHref } from "../../src/lib/woProcurementContin
 describe("procurementTraceTerminology", () => {
   it("maps source types to procurement source keys and labels", () => {
     expect(demandPoolKeyForSourceType("SALES_ORDER")).toBe("REGULAR_SO");
-    expect(demandPoolLabelForSourceType("MONTHLY_PLAN")).toBe("Monthly Planning");
+    expect(demandPoolLabelForSourceType("MONTHLY_PLAN")).toBe("No Qty SO");
     expect(demandPoolLabelForSourceType("WORK_ORDER_PLANNING")).toBe(LEGACY_HISTORICAL_DEMAND_LABEL);
   });
 
@@ -43,7 +43,7 @@ describe("procurementTraceTerminology", () => {
   });
 
   it("parses procurement source suffix from PR remarks", () => {
-    expect(demandPoolLabelFromRemarks("Purchase request for MR-26-0001 · MPRS")).toBe("Monthly Planning");
+    expect(demandPoolLabelFromRemarks("Purchase request for MR-26-0001 · MPRS")).toBe("No Qty SO");
   });
 
   it("resolveConnectivityDemandSourceLabel replaces unknown demand labels", () => {

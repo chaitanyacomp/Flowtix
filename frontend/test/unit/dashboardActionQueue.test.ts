@@ -166,7 +166,7 @@ describe("dashboardActionQueue", () => {
 
     expect(g.production).toHaveLength(0);
 
-    expect(g.noQtyPlanning[0]?.buttonLabel).toBe("Open NO_QTY SO");
+    expect(g.noQtyPlanning[0]?.buttonLabel).toBe("Create Next Requirement Sheet");
 
   });
 
@@ -364,7 +364,7 @@ describe("dashboardActionQueue", () => {
 
     expect(enriched.noQtyPlanning).toHaveLength(1);
 
-    expect(enriched.noQtyPlanning[0]?.buttonLabel).toBe("Open NO_QTY SO");
+    expect(enriched.noQtyPlanning[0]?.buttonLabel).toBe("Create Next Requirement Sheet");
 
 
 
@@ -426,7 +426,7 @@ describe("dashboardActionQueue", () => {
 
 
 
-  it("Production / QA / Store / Purchase never see NO_QTY Create Next RS planning rows", () => {
+  it("Store owns NO_QTY Create Next RS; Production / QA / Purchase do not see it", () => {
 
     const base = enforceUniqueSalesOrdersAcrossGroups({
 
@@ -446,7 +446,7 @@ describe("dashboardActionQueue", () => {
 
 
 
-    for (const role of ["PRODUCTION", "QA", "STORE", "PURCHASE"]) {
+    for (const role of ["PRODUCTION", "QA", "PURCHASE"]) {
 
       const enriched = enrichActionRequiredWithNoQtyPlanning(
 
@@ -474,6 +474,13 @@ describe("dashboardActionQueue", () => {
 
     }
 
+    const storeEnriched = enrichActionRequiredWithNoQtyPlanning(
+      base,
+      [{ salesOrderId: 88, customerName: "Cust", createNextRsEligible: true }],
+      { role: "STORE" },
+    );
+    expect(storeEnriched.noQtyPlanning).toHaveLength(1);
+
   });
 
   it("shows Continue Production only before next RS exists", () => {
@@ -495,4 +502,3 @@ describe("dashboardActionQueue", () => {
   });
 
 });
-

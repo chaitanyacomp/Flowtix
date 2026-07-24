@@ -18,6 +18,9 @@ const {
   regularSoProcurementSourceTypes,
 } = require("./regularSoProcurementSource");
 const { assertActorMayCreatePurchaseRequest } = require("./procurementPurchaseRequestOwnership");
+const {
+  reconcileRegularSoResidualMaterialRequirements,
+} = require("./regularSoProcurementDemandService");
 
 const EPS = QUEUE_EPS;
 
@@ -128,6 +131,21 @@ async function createPurchaseRequestFromRegularSalesOrder(input, actor = {}, db 
   }
 
   assertActorMayCreatePurchaseRequest(actor, [REGULAR_SO_PROCUREMENT_SOURCE]);
+
+  const lifecycle = await reconcileRegularSoResidualMaterialRequirements(db, salesOrderId);
+  if (!lifecycle.demand.hasGenuineDemand) {
+    const err = new Error(
+      lifecycle.reviewRequiredMaterialRequirementIds.length
+        ? "Customer demand is fulfilled. Existing PR/PO procurement requires Purchase/Admin excess-stock review."
+        : "Customer demand is fulfilled; no additional Regular SO procurement is allowed.",
+    );
+    err.statusCode = 409;
+    err.code = lifecycle.reviewRequiredMaterialRequirementIds.length
+      ? "REGULAR_SO_EXCESS_PROCUREMENT_REVIEW"
+      : "REGULAR_SO_DEMAND_FULFILLED";
+    err.lifecycle = lifecycle;
+    throw err;
+  }
 
   let mr = await findOpenRegularSoMaterialRequirement(salesOrderId, db);
   let reusedMr = Boolean(mr);

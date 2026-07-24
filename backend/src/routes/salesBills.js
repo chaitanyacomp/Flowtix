@@ -18,6 +18,7 @@ const {
   patchDraftSalesBillLineRate,
   getDraftShipToOptions,
   patchDraftShipTo,
+  refreshDraftCustomerDetails,
   updateSalesBillPaymentTracking,
   addSalesBillReceipt,
   deleteSalesBillReceipt,
@@ -443,6 +444,16 @@ salesBillsRouter.patch("/:id/ship-to", requireAuth, requireRole(SALES_BILL_WRITE
         : undefined,
     });
 
+    return res.json(updated);
+  } catch (e) {
+    return next(e);
+  }
+});
+
+salesBillsRouter.post("/:id/refresh-customer-details", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const updated = await refreshDraftCustomerDetails(prisma, id, { userId: req.user?.userId });
     return res.json(updated);
   } catch (e) {
     return next(e);

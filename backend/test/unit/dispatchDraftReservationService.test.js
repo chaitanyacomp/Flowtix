@@ -24,6 +24,23 @@ function snapshot(requestedQty, rows = [ownDraft], physicalUsableQty = 1515) {
 }
 
 describe("dispatch draft reservation ownership", () => {
+  it("REGULAR_SO 10,005 FG with a 10,000 reopened draft remains finalizable", () => {
+    const result = resolveDispatchDraftReservation({
+      dispatchId: 397,
+      itemId: 5705,
+      requestedQty: 10000,
+      physicalUsableQty: 10005,
+      dispatchRows: [
+        { id: 397, itemId: 5705, dispatchedQty: 10000, workflowStatus: "UNLOCKED", reversalOfId: null },
+      ],
+    });
+    assert.equal(result.ownReservedQty, 10000);
+    assert.equal(result.otherReservedQty, 0);
+    assert.equal(result.availableToThisDraftQty, 10005);
+    assert.equal(result.allowed, true);
+    assert.equal(result.requestedQty - result.releasedQty, 10000);
+  });
+
   it("reproduces DT-26-0001: 1515 usable, own 1500 reservation, 15 unreserved", () => {
     const result = snapshot(1500);
     assert.deepEqual(result, {

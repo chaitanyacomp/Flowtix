@@ -23,6 +23,12 @@ const {
   suggestGroupMapping,
 } = require("./tallyMasterGroupUnitMapping");
 const { logActivity } = require("../activityLogService");
+const {
+  findEquivalentUnit,
+  normalizeUnitCode: normalizeImportedUnitCode,
+  unitFamily,
+  cleanUnitCreateError,
+} = require("./tallyUnitIdentity");
 
 /** @typedef {"SKIP" | "UPDATE_EMPTY_FIELDS_ONLY"} DuplicateAction */
 /** @typedef {"RM" | "FG"} DefaultItemType */
@@ -415,6 +421,109 @@ async function applyIdentityBackfillSafe(db, model, existingErpId, row, entityTy
     );
     return "FAILED";
   }
+}
+
+async function rebuildPreviewFromToken(db, token, mappingOptions, actorUserId) {
+  const s = getPreviewSessionRaw(token);
+  if (!s || s.status !== "ready") {
+    const err = new Error("Preview session expired, invalid, or currently in use. Run Preview again.");
+    err.statusCode = 409;
+    err.code = "PREVIEW_SESSION_INVALID";
+    throw err;
+  }
+  const actorId = actorUserId != null ? Number(actorUserId) : null;
+  if (s.ownerUserId != null && actorId != null && s.ownerUserId !== actorId) {
+    const err = new Error("This preview belongs to another user.");
+    err.statusCode = 403;
+    err.code = "PREVIEW_SESSION_FORBIDDEN";
+    throw err;
+  }
+  const options = {
+    ...s.options,
+    groupTypeOverrides: mappingOptions?.groupTypeOverrides || {},
+    unitMapOverrides: mappingOptions?.unitMapOverrides || {},
+  };
+  const payload = await buildPreviewPayload(db, s.xmlUtf8, options, s.decodeMeta);
+  if (payload.ok) s.options = options;
+  return payload;
+}
+
+/**
+ * Recheck unit identity and create atomically. A concurrent equivalent create is
+ * resolved to REUSED; unrelated unique conflicts return a sanitized business failure.
+ */
+async function createOrReuseImportedUnit(db, row) {
+  const select = {
+    id: true,
+    unitName: true,
+    unitCode: true,
+    tallyName: true,
+    tallyUnitSymbol: true,
+  };
+  const candidate = {
+    unitName: row.mapped.unitName,
+    unitCode: row.mapped.unitCode || null,
+    tallyName: row.tallyName,
+    tallyUnitSymbol: row.mapped.tallyUnitSymbol || null,
+  };
+
+  const perform = async (tx) => {
+    const current = await tx.unit.findMany({ where: { isActive: true }, select });
+    const existing = findEquivalentUnit(current, candidate);
+    if (existing) return { outcome: "REUSED", row: existing };
+    const created = await tx.unit.create({
+      data: {
+        unitName: candidate.unitName,
+        unitCode: candidate.unitCode,
+        tallyUnitSymbol: candidate.tallyUnitSymbol,
+        isActive: true,
+        ...tallyIdentityCreateData(row),
+      },
+      select,
+    });
+    return { outcome: "CREATED", row: created };
+  };
+
+  try {
+    return await db.$transaction(perform);
+  } catch (error) {
+    const code = error && typeof error === "object" ? error.code : null;
+    if (code === "P2002") {
+      const current = await db.unit.findMany({ where: { isActive: true }, select });
+      const existing = findEquivalentUnit(current, candidate);
+      if (existing) return { outcome: "REUSED", row: existing };
+      return { outcome: "FAILED", ...cleanUnitCreateError() };
+    }
+    throw error;
+  }
+}
+
+async function backfillReusedUnitIdentity(db, row, pushResult) {
+  const existing = await db.unit.findUnique({
+    where: { id: row.existingErpId },
+    select: {
+      id: true,
+      tallyName: true,
+      tallyGuid: true,
+      tallyImportedAt: true,
+      tallyUnitSymbol: true,
+    },
+  });
+  if (!existing) {
+    pushResult("UNIT", row.tallyName, "SKIPPED", row.existingErpId, null, "Equivalent unit is no longer available.");
+    return "SKIPPED";
+  }
+  const patch = tallyIdentityBackfillPatch(existing, row);
+  if (isEmptyField(existing.tallyUnitSymbol) && row.mapped.tallyUnitSymbol) {
+    patch.tallyUnitSymbol = row.mapped.tallyUnitSymbol;
+  }
+  if (!Object.keys(patch).length) {
+    pushResult("UNIT", row.tallyName, "REUSED", existing.id, null, row.warnings?.[0] || null);
+    return "SKIPPED";
+  }
+  await db.unit.update({ where: { id: existing.id }, data: patch });
+  pushResult("UNIT", row.tallyName, "REUSED", existing.id, null, "Equivalent ERP unit reused; Tally identity was backfilled.");
+  return "UPDATED";
 }
 
 /** Simple email check to avoid Prisma issues. */
@@ -833,7 +942,10 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
       tallyGuid: true,
     },
   });
-  const unitsDb = await db.unit.findMany({ where: { isActive: true }, select: { id: true, unitName: true, unitCode: true } });
+  const unitsDb = await db.unit.findMany({
+    where: { isActive: true },
+    select: { id: true, unitName: true, unitCode: true, tallyName: true, tallyUnitSymbol: true },
+  });
 
   const customerByKey = new Map(customersDb.map((c) => [normalizeMasterNameKey(c.name), c]));
   const customerByTallyName = new Map(
@@ -907,18 +1019,33 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
     process.env.TALLY_IMPORT_DEBUG === "true" ||
     String(process.env.NODE_ENV || "").toLowerCase() === "development";
 
-  /** @type {Map<string, { unitName: string; unitCode: string | null; tallyGuid: string | null }>} */
-  const tallyUnitsToImport = new Map();
+  /**
+   * Preserve every UNIT master row for audit and preview. Operational equivalence
+   * is resolved later; collapsing aliases here made XML UNIT counts disagree with
+   * the preview and allowed Stage 2 to make a second, contradictory decision.
+   * @type {Array<{ sourceKey: string; unitName: string; unitCode: string | null; tallyUnitSymbol: string | null; codeShortened: boolean; tallyGuid: string | null; sourceOrdinal: number }>}
+   */
+  const tallyUnitsToImport = [];
+  const explicitUnitSourceKeys = new Set();
+  const explicitUnitFamilies = new Set();
 
-  for (const uRaw of parsed.units) {
+  for (const [sourceOrdinal, uRaw] of parsed.units.entries()) {
     const mu = mapTallyUnitMaster(uRaw);
     if (!mu) continue;
-    const k = normalizeUnitKey(mu.unitName);
+    const k = normalizeUnitKey(mu.unitName) || normalizeUnitKey(mu.unitCode);
     if (!k) continue;
-    tallyUnitsToImport.set(k, {
+    const normalizedCode = normalizeImportedUnitCode(mu.unitCode, mu.unitName);
+    explicitUnitSourceKeys.add(k);
+    const sourceFamily = unitFamily(mu.unitName) || unitFamily(mu.unitCode);
+    if (sourceFamily) explicitUnitFamilies.add(sourceFamily);
+    tallyUnitsToImport.push({
+      sourceKey: k,
       unitName: normalizeMasterNameDisplay(mu.unitName),
-      unitCode: mu.unitCode,
+      unitCode: normalizedCode.unitCode,
+      tallyUnitSymbol: normalizedCode.originalSymbol,
+      codeShortened: normalizedCode.shortened,
       tallyGuid: mu.tallyGuid || null,
+      sourceOrdinal,
     });
   }
 
@@ -945,31 +1072,45 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
     mappedStockItems.push(mi);
     if (mi.baseUnit) {
       const k = normalizeUnitKey(mi.baseUnit);
-      if (k && !tallyUnitsToImport.has(k)) {
-        tallyUnitsToImport.set(k, {
+      const baseFamily = unitFamily(mi.baseUnit);
+      if (k && !explicitUnitSourceKeys.has(k) && !(baseFamily && explicitUnitFamilies.has(baseFamily))) {
+        explicitUnitSourceKeys.add(k);
+        tallyUnitsToImport.push({
+          sourceKey: k,
           unitName: normalizeMasterNameDisplay(mi.baseUnit),
           unitCode: null,
+          tallyUnitSymbol: null,
+          codeShortened: false,
           tallyGuid: null,
+          sourceOrdinal: parsed.units.length + tallyUnitsToImport.length,
         });
       }
     }
   }
 
-  for (const [uKey, uData] of tallyUnitsToImport) {
-    const existing = unitByKey.get(uKey);
+  for (const uData of tallyUnitsToImport) {
+    const existing = findEquivalentUnit(unitsDb, {
+      unitName: uData.unitName,
+      unitCode: uData.unitCode,
+      tallyName: uData.unitName,
+      tallyUnitSymbol: uData.tallyUnitSymbol,
+    });
     const tallyName = uData.unitName;
     let proposedAction = "CREATE";
     const rowWarnings = [];
     const rowErrors = [];
-    if (existing) {
-      if (options.duplicateAction === "UPDATE_EMPTY_FIELDS_ONLY") {
-        const canFillCode = isEmptyField(existing.unitCode) && uData.unitCode;
-        proposedAction = canFillCode ? "UPDATE_EMPTY_FIELDS" : "SKIP_DUPLICATE";
-        if (!canFillCode) rowWarnings.push("Unit already exists.");
-      } else {
-        proposedAction = "SKIP_DUPLICATE";
-        rowWarnings.push("Unit already exists.");
-      }
+    const notApplicable = normalizeUnitKey(uData.unitName) === "not applicable";
+    if (notApplicable) {
+      proposedAction = "REVIEW";
+      rowWarnings.push("Not Applicable is not a stock UOM. Exclude affected items or explicitly map a genuine ERP unit.");
+    } else if (existing) {
+      proposedAction = "REUSE";
+      rowWarnings.push(`Equivalent ERP unit '${existing.unitName}' will be reused.`);
+    }
+    if (uData.codeShortened) {
+      rowWarnings.push(
+        `Tally symbol '${uData.tallyUnitSymbol}' was normalized to ERP code '${uData.unitCode}' (maximum 16 characters).`,
+      );
     }
     units.push({
       entityType: "UNIT",
@@ -981,7 +1122,17 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
       errors: rowErrors,
       fieldIssues: [],
       status: rowPreviewStatus(proposedAction, rowWarnings, rowErrors),
-      mapped: { unitName: uData.unitName, unitCode: uData.unitCode },
+      mapped: {
+        unitName: uData.unitName,
+        unitCode: uData.unitCode,
+        tallyUnitSymbol: uData.tallyUnitSymbol,
+        sourceKey: uData.sourceKey,
+        sourceOrdinal: uData.sourceOrdinal,
+        selectedErpUnitId: existing ? existing.id : null,
+        selectedErpUnitName: existing ? existing.unitName : null,
+        selectedErpUnitCode: existing ? existing.unitCode : null,
+        authoritativeDecision: proposedAction,
+      },
     });
   }
 
@@ -1344,11 +1495,39 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
       );
     }
 
-    const unitAlias = suggestUnitMapping(mi.baseUnit);
-    const unitKey = unitAlias.aliasKey || (mi.baseUnit ? normalizeUnitKey(mi.baseUnit) : "");
-    const suggestedErpUnitName = unitAlias.suggestedErpUnitName;
-    const erpUnit = suggestedErpUnitName ? unitByKey.get(normalizeUnitKey(suggestedErpUnitName)) : unitKey ? unitByKey.get(unitKey) : null;
-    const unitRow = unitKey ? tallyUnitsToImport.get(unitKey) : null;
+    const suggestedUnitAlias = suggestUnitMapping(mi.baseUnit);
+    const unitKey = suggestedUnitAlias.aliasKey || (mi.baseUnit ? normalizeUnitKey(mi.baseUnit) : "");
+    const explicitUnitOverride =
+      options.unitMapOverrides &&
+      Object.prototype.hasOwnProperty.call(options.unitMapOverrides, unitKey)
+        ? options.unitMapOverrides[unitKey]
+        : undefined;
+    const suggestedErpUnitName =
+      explicitUnitOverride === undefined
+        ? suggestedUnitAlias.suggestedErpUnitName
+        : explicitUnitOverride == null || String(explicitUnitOverride).trim() === ""
+          ? null
+          : String(explicitUnitOverride).trim();
+    const unitAlias = {
+      ...suggestedUnitAlias,
+      suggestedErpUnitName,
+      unresolved: !suggestedErpUnitName,
+    };
+    const erpUnit =
+      (!unitAlias.unresolved
+        ? findEquivalentUnit(unitsDb, {
+            unitName: suggestedErpUnitName || mi.baseUnit,
+            unitCode: mi.baseUnit,
+          })
+        : null) ||
+      (!unitAlias.unresolved
+        ? suggestedErpUnitName
+          ? unitByKey.get(normalizeUnitKey(suggestedErpUnitName))
+          : unitKey
+            ? unitByKey.get(unitKey)
+            : null
+        : null);
+    const unitRow = unitKey ? units.find((u) => normalizeUnitKey(u.tallyName) === unitKey) : null;
 
     let proposedAction = "CREATE";
     let matchClass = "NEW";
@@ -1403,6 +1582,11 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
     const mappingChoice = groupSuggestion.suggested;
     const erpFromGroup = resolveErpItemType(mappingChoice);
     const suggestedItemType = erpFromGroup || mi.autoDetectedItemType || null;
+    const requiresUnitReview = normalizeUnitKey(mi.baseUnit) === "not applicable" && !erpUnit;
+    if (requiresUnitReview) {
+      proposedAction = "EXCLUDED";
+      rowWarnings.push("Item excluded: Not Applicable cannot be auto-assigned as a stock UOM. Select a genuine ERP unit to import.");
+    }
 
     items.push({
       entityType: "ITEM",
@@ -1423,7 +1607,7 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
         mappingChoice,
         suggestedItemType,
         itemType: suggestedItemType,
-        importAction: erpFromGroup ? "IMPORT" : "EXCLUDE",
+        importAction: requiresUnitReview ? "EXCLUDE" : erpFromGroup ? "IMPORT" : "EXCLUDE",
         matchClass,
         baseUnit: mi.baseUnit ? normalizeMasterNameDisplay(mi.baseUnit) : "",
         proposedErpUnitName: suggestedErpUnitName,
@@ -1509,20 +1693,24 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
     options.unitMapOverrides && typeof options.unitMapOverrides === "object" ? options.unitMapOverrides : {};
 
   const groupMapping = buildGroupMappingTable(
-    items.map((r) => ({ parentGroup: r.mapped?.parentGroup, tallyStockGroup: r.mapped?.tallyStockGroup })),
+    items.map((r) => ({
+      parentGroup: r.mapped?.parentGroup,
+      tallyStockGroup: r.mapped?.tallyStockGroup,
+      itemName: r.mapped?.itemName,
+    })),
     groupTypeOverrides,
   );
   const unitMapping = buildUnitMappingTable(
     items.map((r) => ({ baseUnit: r.mapped?.baseUnit })),
     unitMapOverrides,
     unitsDb,
+    units,
   );
   const groupChoiceByKey = new Map(groupMapping.map((g) => [g.groupKey, g]));
   const unitChoiceByKey = new Map(unitMapping.map((u) => [u.aliasKey, u]));
 
   // Gate stock import on resolved group + unit mapping (never silently import Labour Charges etc.).
   for (const row of items) {
-    if (row.proposedAction === "ERROR" || row.proposedAction === "CONFLICT") continue;
     const gKey = normalizeGroupKey(row.mapped?.parentGroup) || "(blank)";
     const gRow = groupChoiceByKey.get(gKey);
     const erpType = gRow ? resolveErpItemType(gRow.choice) : null;
@@ -1549,8 +1737,8 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
     }
     if (row.mapped.unitUnresolved) {
       if (row.proposedAction === "CREATE" || row.proposedAction === "UPDATE_EMPTY_FIELDS") {
-        row.proposedAction = "EXCLUDED";
-        row.warnings.push("Unit unresolved — map to an existing ERP unit or exclude.");
+        row.proposedAction = "ERROR";
+        row.errors.push("Unit unresolved — select a genuine ERP unit or exclude the item's stock group.");
         row.status = rowPreviewStatus(row.proposedAction, row.warnings, row.errors);
       }
     }
@@ -1569,6 +1757,70 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
     unresolvedUnits: items.filter((r) => r.mapped?.unitUnresolved).length,
     unresolvedGst: items.filter((r) => r.mapped?.gstStatus === "Unresolved/Inherited").length,
     openingBalanceNotPosted: true,
+  };
+  stockPreview.effectiveItemTypes = {
+    RM: items.filter((r) => r.mapped?.importAction === "IMPORT" && r.mapped?.itemType === "RM").length,
+    FG: items.filter((r) => r.mapped?.importAction === "IMPORT" && r.mapped?.itemType === "FG").length,
+    SFG: items.filter((r) => r.mapped?.importAction === "IMPORT" && r.mapped?.itemType === "SFG").length,
+    CONSUMABLE: items.filter(
+      (r) => r.mapped?.importAction === "IMPORT" && r.mapped?.itemType === "CONSUMABLE",
+    ).length,
+    EXCLUDED: items.filter((r) => r.mapped?.importAction === "EXCLUDE").length,
+  };
+  stockPreview.expectedActions = {
+    created: items.filter((r) => r.proposedAction === "CREATE").length,
+    reused: items.filter((r) => r.proposedAction === "SKIP_DUPLICATE").length,
+    updated: items.filter((r) => r.proposedAction === "UPDATE_EMPTY_FIELDS").length,
+    skipped: items.filter((r) => r.proposedAction === "CONFLICT" || r.proposedAction === "ERROR").length,
+    excluded: items.filter((r) => r.proposedAction === "EXCLUDED").length,
+  };
+
+  const warningCategoryRows = {
+    missingHsn: new Set(),
+    inheritedHsn: new Set(),
+    invalidHsnGst: new Set(),
+    excludedByGroup: new Set(),
+    unitMappingIssue: new Set(),
+    duplicateItem: new Set(),
+    sanitizedXmlReferences: new Set(),
+    other: new Set(),
+  };
+  for (const [index, row] of items.entries()) {
+    const messages = [...(row.warnings || []), ...(row.errors || []), ...(row.fieldIssues || []).map((i) => i.message)];
+    let categorized = false;
+    for (const message of messages) {
+      const text = String(message || "");
+      if (/HSN missing/i.test(text)) {
+        warningCategoryRows.missingHsn.add(index);
+        categorized = true;
+      } else if (/HSN inherited/i.test(text)) {
+        warningCategoryRows.inheritedHsn.add(index);
+        categorized = true;
+      } else if (/HSN could not be normalized|GST.*(?:invalid|unresolved)|IGST blank/i.test(text)) {
+        warningCategoryRows.invalidHsnGst.add(index);
+        categorized = true;
+      } else if (/Excluded by stock-group mapping/i.test(text)) {
+        warningCategoryRows.excludedByGroup.add(index);
+        categorized = true;
+      } else if (/unit.*(?:unresolved|map|stock UOM)/i.test(text)) {
+        warningCategoryRows.unitMappingIssue.add(index);
+        categorized = true;
+      } else if (/duplicate item/i.test(text) || row.proposedAction === "SKIP_DUPLICATE") {
+        warningCategoryRows.duplicateItem.add(index);
+        categorized = true;
+      }
+    }
+    if (!categorized && messages.length) warningCategoryRows.other.add(index);
+  }
+  const warningSummary = {
+    missingHsn: warningCategoryRows.missingHsn.size,
+    inheritedHsn: warningCategoryRows.inheritedHsn.size,
+    invalidHsnGst: warningCategoryRows.invalidHsnGst.size,
+    excludedByGroup: warningCategoryRows.excludedByGroup.size,
+    unitMappingIssue: warningCategoryRows.unitMappingIssue.size,
+    duplicateItem: warningCategoryRows.duplicateItem.size,
+    sanitizedXmlReferences: parseStats.sanitizedInvalidRefCount ?? 0,
+    other: warningCategoryRows.other.size,
   };
 
   summary.stockPreview = stockPreview;
@@ -1629,6 +1881,13 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
         (Array.isArray(r.errors) && r.errors[0]) ||
         `${r.entityType} '${r.tallyName}' has a blocking error.`,
     }));
+  const confirmBlockingErrors = blockingErrors.filter(
+    (e) =>
+      e.entityType === "ITEM" &&
+      /unit unresolved|item[- ]type|no importable ERP item type/i.test(
+        [e.message, ...(e.errors || [])].join(" "),
+      ),
+  );
 
   const previewTotal = customers.length + suppliers.length + items.length + units.length;
   const rawTagSum =
@@ -1675,6 +1934,8 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
     infoNotes,
     blockingErrors,
     blockingErrorCount: blockingErrors.length,
+    confirmBlockingErrors,
+    confirmBlockingErrorCount: confirmBlockingErrors.length,
     identityBackfillEligible: identityColumnsAvailable,
     parsedMasterCounts,
     summary,
@@ -1684,6 +1945,7 @@ async function buildPreviewPayload(db, xmlString, options, decodeMeta = null, pr
     units,
     groupMapping,
     unitMapping,
+    warningSummary,
     stockPreview,
     parseStats,
     runtime: {
@@ -1764,6 +2026,15 @@ async function applyFromPreviewToken(db, token, applyOpts) {
     err.statusCode = 400;
     throw err;
   }
+  if (payload.confirmBlockingErrorCount > 0) {
+    const err = new Error(
+      `Confirm Import is blocked: ${payload.confirmBlockingErrorCount} importable row(s) still have unresolved unit or item-type errors.`,
+    );
+    err.statusCode = 409;
+    err.code = "TALLY_IMPORT_PREVIEW_BLOCKED";
+    err.blockingErrors = payload.confirmBlockingErrors;
+    throw err;
+  }
 
   const results = [];
   let created = 0;
@@ -1784,9 +2055,24 @@ async function applyFromPreviewToken(db, token, applyOpts) {
   const stateById = new Map(stateRows.map((s) => [s.id, s]));
 
   for (const row of payload.units) {
-    if (row.proposedAction === "SKIP_DUPLICATE" || row.proposedAction === "ERROR") {
-      if (row.proposedAction === "SKIP_DUPLICATE") {
-        const outcome = await applyIdentityBackfillSafe(db, "unit", row.existingErpId, row, "UNIT", pushResult);
+    if (row.proposedAction === "REVIEW") {
+      excluded += 1;
+      pushResult(
+        "UNIT",
+        row.tallyName,
+        "EXCLUDED",
+        row.existingErpId,
+        null,
+        "Not Applicable requires explicit review and is never auto-assigned as a stock UOM.",
+      );
+      continue;
+    }
+    if (row.proposedAction === "SKIP_DUPLICATE" || row.proposedAction === "REUSE" || row.proposedAction === "ERROR") {
+      if (row.proposedAction === "SKIP_DUPLICATE" || row.proposedAction === "REUSE") {
+        const outcome =
+          row.proposedAction === "REUSE"
+            ? await backfillReusedUnitIdentity(db, row, pushResult)
+            : await applyIdentityBackfillSafe(db, "unit", row.existingErpId, row, "UNIT", pushResult);
         if (outcome === "UPDATED") updated += 1;
         else if (outcome === "FAILED") failed += 1;
         else skipped += 1;
@@ -1798,17 +2084,24 @@ async function applyFromPreviewToken(db, token, applyOpts) {
     }
     try {
       if (row.proposedAction === "CREATE") {
-        const createdRow = await db.unit.create({
-          data: {
-            unitName: row.mapped.unitName,
-            unitCode: row.mapped.unitCode || null,
-            isActive: true,
-            ...tallyIdentityCreateData(row),
-          },
-          select: { id: true },
-        });
-        created += 1;
-        pushResult("UNIT", row.tallyName, "CREATED", createdRow.id, null, null);
+        const outcome = await createOrReuseImportedUnit(db, row);
+        if (outcome.outcome === "CREATED") {
+          created += 1;
+          pushResult("UNIT", row.tallyName, "CREATED", outcome.row.id, null, null);
+        } else if (outcome.outcome === "REUSED") {
+          skipped += 1;
+          pushResult(
+            "UNIT",
+            row.tallyName,
+            "REUSED",
+            outcome.row.id,
+            null,
+            "Equivalent ERP unit already exists; reused without creating a duplicate.",
+          );
+        } else {
+          failed += 1;
+          pushResult("UNIT", row.tallyName, "FAILED", null, outcome.reason, outcome.correctiveAction);
+        }
       } else if (row.proposedAction === "UPDATE_EMPTY_FIELDS" && row.existingErpId) {
         const ex = await db.unit.findUnique({ where: { id: row.existingErpId } });
         if (ex) {
@@ -1829,7 +2122,14 @@ async function applyFromPreviewToken(db, token, applyOpts) {
       }
     } catch (e) {
       failed += 1;
-      pushResult("UNIT", row.tallyName, "FAILED", null, e instanceof Error ? e.message : String(e), null);
+      pushResult(
+        "UNIT",
+        row.tallyName,
+        "FAILED",
+        null,
+        "The unit could not be imported safely.",
+        "Review the unit mapping and retry. No duplicate unit was created.",
+      );
     }
   }
 
@@ -2381,6 +2681,7 @@ module.exports = {
   buildPreviewPayload,
   createPreviewSession,
   getPreviewSession,
+  rebuildPreviewFromToken,
   claimPreviewSessionForApply,
   fingerprintXmlText,
   applyFromPreviewToken,
@@ -2397,5 +2698,6 @@ module.exports = {
   formatImportRowError,
   resolveExistingPartyMatch,
   tallyIdentityBackfillPatch,
+  createOrReuseImportedUnit,
   TALLY_IMPORT_PIPELINE_ID,
 };

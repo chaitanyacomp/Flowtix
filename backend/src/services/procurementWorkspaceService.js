@@ -34,6 +34,10 @@ const {
   regularSoWorkspaceSourceTypes,
   isRegularSoWorkspaceSourceType,
 } = require("./regularSoProcurementHandoffService");
+const {
+  loadRegularSoProcurementDemandState,
+  reconcileRegularSoResidualMaterialRequirements,
+} = require("./regularSoProcurementDemandService");
 
 function isApprovedPlanDocument(plan) {
   return String(plan?.status ?? "") === "APPROVED";
@@ -421,6 +425,14 @@ async function summarizeMaterialRequirement(mr, pendingByMr, db = prisma) {
   }
 
   const primaryPoId = linkage.poIds.length ? linkage.poIds[0] : null;
+  const regularSoDemand =
+    mr.salesOrderId && isRegularSoWorkspaceSourceType(mr.sourceType)
+      ? await loadRegularSoProcurementDemandState(db, mr.salesOrderId)
+      : null;
+  const fulfilledWithExternalProcurement =
+    regularSoDemand?.applies &&
+    !regularSoDemand.hasGenuineDemand &&
+    (linkage.prPendingCount > 0 || linkage.hasOpenPo || linkage.hasGrnPending || linkage.poIds.length > 0);
 
   let customerCommittedQty = null;
   let productionBufferPercent = null;
@@ -487,22 +499,30 @@ async function summarizeMaterialRequirement(mr, pendingByMr, db = prisma) {
     totalShortageQty,
     totalRemainingQty,
     pendingGrnQty: linkage.pendingGrnQty ?? 0,
-    procurementStage: op.label,
+    procurementStage: fulfilledWithExternalProcurement ? "Excess Procurement Review" : op.label,
     createdAt: mr.createdAt?.toISOString?.() ?? null,
     createdByName: mr.createdBy?.name ?? mr.createdBy?.email ?? null,
     status: mr.status,
-    operationalKey: op.key,
-    operationalLabel: op.label,
-    blockerReason: procurementBlockerReasonForOperationalKey(op.key),
-    recommendedAction: procurementRecommendedActionForOperationalKey(op.key),
+    operationalKey: fulfilledWithExternalProcurement ? "EXCESS_PROCUREMENT_REVIEW" : op.key,
+    operationalLabel: fulfilledWithExternalProcurement ? "Purchase/Admin Review" : op.label,
+    blockerReason: fulfilledWithExternalProcurement
+      ? "Customer demand is fulfilled; linked PR/PO is retained for excess/stock review"
+      : procurementBlockerReasonForOperationalKey(op.key),
+    recommendedAction: fulfilledWithExternalProcurement
+      ? "Review Excess / Stock Procurement"
+      : procurementRecommendedActionForOperationalKey(op.key),
     pendingPoStatus: op.pendingPoStatus,
     pendingGrnStatus: op.pendingGrnStatus,
     supplierPendingStatus: op.supplierPendingStatus,
     primaryPoId,
     lines,
-    canCreatePurchaseRequest: RM_REQUISITION_PURCHASE_REQUEST_ALLOWED_STATUSES.includes(String(mr.status || "")),
+    canCreatePurchaseRequest:
+      !fulfilledWithExternalProcurement &&
+      RM_REQUISITION_PURCHASE_REQUEST_ALLOWED_STATUSES.includes(String(mr.status || "")),
     nextActionKey:
-      op.key === "PR_PENDING_PO"
+      fulfilledWithExternalProcurement
+        ? "REVIEW_EXCESS_PROCUREMENT"
+        : op.key === "PR_PENDING_PO"
         ? "CREATE_PO"
         : op.key === "GRN_PENDING"
           ? "OPEN_GRN"
@@ -555,12 +575,23 @@ async function loadOpenMaterialRequirements(
   }
   if (salesOrderId != null && Number(salesOrderId) > 0) where.salesOrderId = Number(salesOrderId);
 
-  const mrs = await db.materialRequirement.findMany({
+  let mrs = await db.materialRequirement.findMany({
     where,
     include: MATERIAL_REQUIREMENT_WORKSPACE_INCLUDE,
     orderBy: { id: "desc" },
     take: 150,
   });
+  const regularSoIds = [...new Set(
+    mrs
+      .filter((mr) => mr.salesOrderId && isRegularSoWorkspaceSourceType(mr.sourceType))
+      .map((mr) => Number(mr.salesOrderId)),
+  )];
+  const closedIds = new Set();
+  for (const soId of regularSoIds) {
+    const reconciliation = await reconcileRegularSoResidualMaterialRequirements(db, soId);
+    for (const id of reconciliation.closedMaterialRequirementIds) closedIds.add(id);
+  }
+  if (closedIds.size) mrs = mrs.filter((mr) => !closedIds.has(mr.id));
 
   const ensureId = Number(ensureMaterialRequirementId ?? 0);
   if (ensureId > 0 && !mrs.some((mr) => mr.id === ensureId)) {

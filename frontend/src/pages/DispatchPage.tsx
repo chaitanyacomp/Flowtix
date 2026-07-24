@@ -188,6 +188,12 @@ type LineStat = {
   onHand: number;
   /** Alias of onHand — usable FG for SKU (GET /api/stock/summary basis). */
   totalStock?: number;
+  /** Global active UNLOCKED draft reservation for this item (audit/UI only). */
+  draftReservedQty?: number;
+  /** Active draft reservations for this item excluding this SO's draft. */
+  otherDraftReservedQty?: number;
+  /** Physical usable FG less other drafts; the current draft's own reservation is included. */
+  availableToDraftQty?: number;
   /** Sum of active QC acceptedQty for this SO + FG item (via work orders). */
   qcAccepted: number;
   /** Gross QC accepted for this SO + item (same as qcAccepted; API alias). */
@@ -477,6 +483,15 @@ type DispatchContextPick =
 
 function getUsableStock(ls: LineStat): number {
   return safeNum(ls.usableQcPassedStock ?? ls.totalStock ?? ls.onHand);
+}
+
+function getTotalUsableStock(ls: LineStat): number {
+  return safeNum(ls.totalStock ?? ls.onHand ?? ls.usableQcPassedStock);
+}
+
+function getAvailableToCurrentDraft(so: SoRow | null | undefined, ls: LineStat, draftQty: number): number {
+  if (so?.orderType !== "NORMAL" || !(draftQty > 1e-9)) return getUsableStock(ls);
+  return Math.max(0, safeNum(ls.availableToDraftQty ?? getTotalUsableStock(ls)));
 }
 
 /** Confirmed pending qty on the SO line (open-lines table). */
@@ -5537,7 +5552,9 @@ export function DispatchPage() {
                                 <div className="rounded border border-slate-200 bg-white px-2 py-1">
                                   <div className="text-slate-500">Usable</div>
                                   <div className="font-semibold tabular-nums text-slate-900">
-                                    {fmtDispatchQty(Math.max(0, safeNum(getUsableStock(currentLine))))}
+                                    {fmtDispatchQty(
+                                      Math.max(0, getAvailableToCurrentDraft(selectedSo, currentLine, existingDraftQty)),
+                                    )}
                                   </div>
                                 </div>
                                 <div className="rounded border border-slate-200 bg-white px-2 py-1">
@@ -5567,6 +5584,28 @@ export function DispatchPage() {
                                 </div>
                               </div>
                             ) : null}
+                            {selectedSo?.orderType === "NORMAL" && currentLine && existingDraftQty > 1e-9 ? (
+                              <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-slate-700">
+                                <div className="rounded border border-slate-200 bg-white px-2 py-1">
+                                  <div className="text-slate-500">Total usable FG</div>
+                                  <div className="font-semibold tabular-nums text-slate-900">
+                                    {fmtDispatchQty(getTotalUsableStock(currentLine))}
+                                  </div>
+                                </div>
+                                <div className="rounded border border-slate-200 bg-white px-2 py-1">
+                                  <div className="text-slate-500">Reserved by this draft</div>
+                                  <div className="font-semibold tabular-nums text-slate-900">
+                                    {fmtDispatchQty(existingDraftQty)}
+                                  </div>
+                                </div>
+                                <div className="rounded border border-slate-200 bg-white px-2 py-1">
+                                  <div className="text-slate-500">Available to this draft</div>
+                                  <div className="font-semibold tabular-nums text-emerald-900">
+                                    {fmtDispatchQty(getAvailableToCurrentDraft(selectedSo, currentLine, existingDraftQty))}
+                                  </div>
+                                </div>
+                              </div>
+                            ) : null}
                             {!noQtyPartialAfterFirstDispatchThisCycle && !roleUi.quietNoQtyExplanations ? (
                               <p className="mt-1.5 text-[11px] leading-snug text-slate-600">
                                 Enter quantity on the right and tap <span className="font-semibold text-slate-800">Dispatch Now</span>. Allocation
@@ -5577,7 +5616,12 @@ export function DispatchPage() {
                               <p className="mt-1 text-[11px] text-slate-600">
                                 After dispatch, remaining usable (preview):{" "}
                                 <span className="font-semibold tabular-nums text-slate-900">
-                                  {fmtDispatchQty(Math.max(0, safeNum(getUsableStock(currentLine)) - dispatchQtyParsed))}
+                                  {fmtDispatchQty(
+                                    Math.max(
+                                      0,
+                                      getAvailableToCurrentDraft(selectedSo, currentLine, existingDraftQty) - dispatchQtyParsed,
+                                    ),
+                                  )}
                                 </span>
                               </p>
                             ) : null}
@@ -6535,7 +6579,7 @@ export function DispatchPage() {
                 <CardContent className="space-y-2 border-t border-amber-100/80 bg-amber-50/15 px-3 py-2.5">
                   <DispatchCurrentWorkbenchChrome
                     soBalance={remainingSoLine}
-                    usableFg={currentLine ? getUsableStock(currentLine) : 0}
+                    usableFg={currentLine ? getAvailableToCurrentDraft(selectedSo, currentLine, existingDraftQty) : 0}
                     dispatchingNow={currentWorkbenchDispatchingNow}
                     remainingAfter={currentWorkbenchRemainingAfter}
                     formatQty={fmtDispatchQty}
@@ -6670,7 +6714,7 @@ export function DispatchPage() {
                 >
                   <DispatchCurrentWorkbenchChrome
                     soBalance={remainingSoLine}
-                    usableFg={currentLine ? getUsableStock(currentLine) : 0}
+                    usableFg={currentLine ? getAvailableToCurrentDraft(selectedSo, currentLine, existingDraftQty) : 0}
                     dispatchingNow={currentWorkbenchDispatchingNow}
                     remainingAfter={currentWorkbenchRemainingAfter}
                     formatQty={fmtDispatchQty}

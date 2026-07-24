@@ -9,6 +9,7 @@ import { useToast } from "../../contexts/ToastContext";
 import { useDemoMode } from "../../contexts/DemoModeContext";
 import {
   filterActionableDispatchBacklogRows,
+  dispatchReadyRowsFromBacklog,
   type DispatchBacklogRow,
   ROW_NUM_EPS,
 } from "../../lib/dispatchBacklog";
@@ -423,20 +424,10 @@ export function StoreDashboardPage() {
     );
   }
 
-  const storeDispatchReady: StoreDispatchActionRow[] = actionRequiredGroups.dispatch.map((d) => ({
-    key: d.key,
-    salesOrderId: d.salesOrderId,
-    salesOrderDocNo: d.salesOrderDocNo,
-    customerName: d.customerName,
-    itemName: d.itemName,
-    orderType: d.orderType,
-    metricQty: d.metricQty,
-    href: d.href,
-  }));
-
   // Backend already filters to dispatchableNow > 0; keep a defensive client filter so
   // zero-headroom / blocked lines never inflate backlog or preview qty.
   const actionableBacklog = filterActionableDispatchBacklogRows(backlog ?? []);
+  const storeDispatchReady: StoreDispatchActionRow[] = dispatchReadyRowsFromBacklog(backlog ?? []);
 
   return (
     <StoreDispatchDashboard

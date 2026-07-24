@@ -17,6 +17,10 @@ const {
 } = require("./regularSoProcurementSource");
 const { evaluateWoPrepareReadiness } = require("./materialPlanningService");
 const { computeFgGapLinesForSalesOrder } = require("./rmCheckService");
+const {
+  loadRegularSoProcurementDemandState,
+  reconcileRegularSoResidualMaterialRequirements,
+} = require("./regularSoProcurementDemandService");
 
 const SO_INCLUDE = {
   customer: { select: { name: true } },
@@ -50,6 +54,12 @@ function salesOrderIdFromSyntheticRequirementId(materialRequirementId) {
 async function buildRegularSoPreMrShortageSummary(so, db = prisma) {
   if (!so?.id || so.orderType === "NO_QTY") return null;
   if (so.orderType && so.orderType !== "NORMAL") return null;
+
+  const demand = await loadRegularSoProcurementDemandState(db, so.id);
+  if (!demand.hasGenuineDemand) {
+    await reconcileRegularSoResidualMaterialRequirements(db, so.id);
+    return null;
+  }
 
   const { fgLines } = await computeFgGapLinesForSalesOrder(so, db);
   const readiness = await evaluateWoPrepareReadiness(

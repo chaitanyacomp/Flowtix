@@ -7,6 +7,19 @@ const row = (overrides = {}) => ({ dispatchId: 1, allocatedQty: 1, itemId: 1, it
   unit: "Nos", rate: 100, discountRate: 0, gstRate: 18, taxTreatment: "GOODS", ...overrides });
 
 describe("multi-dispatch Sales Bill calculation", () => {
+  it("leaves all GST components uncommitted while POS is unresolved", () => {
+    const result = calculateSalesBillSnapshot({
+      allocationRows: [row({ rate: 44000, gstRate: 28 })],
+      transportation: { amount: 1000, chargedBy: "OUR_COMPANY" },
+      intraState: null,
+    });
+    assert.equal(result.totals.totalCgst.toString(), "0");
+    assert.equal(result.totals.totalSgst.toString(), "0");
+    assert.equal(result.totals.totalIgst.toString(), "0");
+    assert.equal(result.totals.totalTax.toString(), "0");
+    assert.equal(result.lines[0].igstAmount.toString(), "0");
+  });
+
   it("splits the observed 18% GST bucket equally after proportional freight allocation", () => {
     const result = calculateSalesBillSnapshot({
       allocationRows: [row({ rate: 101826 })],

@@ -31,10 +31,18 @@ import {
 } from "../lib/tallyMasterImportProgress";
 import { xhrFormDataUpload } from "../lib/tallyMasterImportUpload";
 import { buildTallyConfirmImportBody, formatTallyConfirm413Message } from "../lib/tallyMasterImportConfirm";
+import {
+  sanitizeTallyImportResultText,
+  tallyImportCorrectiveAction,
+} from "../lib/tallyImportResultPresentation";
+import {
+  displayedEffectiveItemType,
+  tallyConfirmIsDisabled,
+} from "../lib/tallyImportPreviewProjection";
 
 type DuplicateAction = "SKIP" | "UPDATE_EMPTY_FIELDS_ONLY";
 type DefaultItemType = "RM" | "FG";
-type ProposedAction = "CREATE" | "SKIP_DUPLICATE" | "UPDATE_EMPTY_FIELDS" | "ERROR";
+type ProposedAction = "CREATE" | "REUSE" | "REVIEW" | "SKIP_DUPLICATE" | "UPDATE_EMPTY_FIELDS" | "ERROR";
 type PreviewStatus = "OK" | "WARNING" | "ERROR";
 
 type FieldIssue = {
@@ -95,6 +103,9 @@ type GroupMappingRow = {
   erpItemType: string | null;
   importAction: string;
   note: string;
+  representativeItems?: string[];
+  recommendedMapping?: string;
+  businessRisk?: string;
 };
 
 type UnitMappingRow = {
@@ -104,8 +115,22 @@ type UnitMappingRow = {
   suggestedErpUnitName: string | null;
   proposedErpUnitName: string | null;
   proposedErpUnitId: number | null;
+  decision?: "CREATE" | "REUSE" | "REVIEW";
+  willCreate?: boolean;
+  semanticMismatch?: boolean;
   unresolved: boolean;
   importAction: string;
+};
+
+type WarningSummary = {
+  missingHsn: number;
+  inheritedHsn: number;
+  invalidHsnGst: number;
+  excludedByGroup: number;
+  unitMappingIssue: number;
+  duplicateItem: number;
+  sanitizedXmlReferences: number;
+  other: number;
 };
 
 type DecodeMeta = {
@@ -367,15 +392,17 @@ export function TallyMasterImportPage() {
   const [parseStats, setParseStats] = React.useState<ParseStats | null>(null);
   const [pipelineId, setPipelineId] = React.useState<string | null>(null);
   const [applyResult, setApplyResult] = React.useState<ApplyResult | null>(null);
-  const [itemRowTypes, setItemRowTypes] = React.useState<Record<string, DefaultItemType>>({});
   const [tab, setTab] = React.useState<"customers" | "suppliers" | "items" | "units" | "alerts">("customers");
   const [blockingErrors, setBlockingErrors] = React.useState<BlockingError[]>([]);
+  const [confirmBlockingErrors, setConfirmBlockingErrors] = React.useState<BlockingError[]>([]);
   const [alertFilter, setAlertFilter] = React.useState<AlertFilter>("all");
   const [lastCorrelationId, setLastCorrelationId] = React.useState<string | null>(null);
   const [groupMapping, setGroupMapping] = React.useState<GroupMappingRow[]>([]);
   const [unitMapping, setUnitMapping] = React.useState<UnitMappingRow[]>([]);
+  const [warningSummary, setWarningSummary] = React.useState<WarningSummary | null>(null);
   const [groupTypeOverrides, setGroupTypeOverrides] = React.useState<Record<string, string>>({});
   const [unitMapOverrides, setUnitMapOverrides] = React.useState<Record<string, string>>({});
+  const [mappingsDirty, setMappingsDirty] = React.useState(false);
   const [decodeMeta, setDecodeMeta] = React.useState<DecodeMeta | null>(null);
   const [wizardStage, setWizardStage] = React.useState<1 | 2>(1);
   /** After successful preview, Stage 1 file/options stay locked until Start over. */
@@ -540,15 +567,16 @@ export function TallyMasterImportPage() {
     setSuppliers([]);
     setItems([]);
     setUnits([]);
-    setItemRowTypes({});
     setParseStats(null);
     setPipelineId(null);
     setParsedMasterCounts(null);
     setInfoNotes([]);
     setWarnings([]);
     setBlockingErrors([]);
+    setConfirmBlockingErrors([]);
     setGroupMapping([]);
     setUnitMapping([]);
+    setWarningSummary(null);
     setGroupTypeOverrides({});
     setUnitMapOverrides({});
     setDecodeMeta(null);
@@ -681,6 +709,9 @@ export function TallyMasterImportPage() {
       setWarnings(Array.isArray(data.warnings) ? (data.warnings as string[]) : []);
       setInfoNotes(Array.isArray(data.infoNotes) ? (data.infoNotes as string[]) : []);
       setBlockingErrors(Array.isArray(data.blockingErrors) ? (data.blockingErrors as BlockingError[]) : []);
+      setConfirmBlockingErrors(
+        Array.isArray(data.confirmBlockingErrors) ? (data.confirmBlockingErrors as BlockingError[]) : [],
+      );
       setParsedMasterCounts((data.parsedMasterCounts as ParsedMasterCounts) ?? null);
       setSummary((data.summary as PreviewSummary) ?? null);
       setCustomers((data.customers as PreviewRow[]) ?? []);
@@ -692,6 +723,7 @@ export function TallyMasterImportPage() {
       setPipelineId(runtime?.pipelineId ?? null);
       setGroupMapping(Array.isArray(data.groupMapping) ? (data.groupMapping as GroupMappingRow[]) : []);
       setUnitMapping(Array.isArray(data.unitMapping) ? (data.unitMapping as UnitMappingRow[]) : []);
+      setWarningSummary((data.warningSummary as WarningSummary) ?? null);
       setDecodeMeta((data.decode as DecodeMeta) ?? null);
       setWizardStage(2);
       setPreviewLocked(true);
@@ -700,23 +732,16 @@ export function TallyMasterImportPage() {
         if (g?.groupKey) gInit[g.groupKey] = g.choice || g.suggested || "EXCLUDE";
       }
       setGroupTypeOverrides(gInit);
-      const uInit: Record<string, string> = {};
-      for (const u of (data.unitMapping as UnitMappingRow[]) ?? []) {
-        if (u?.aliasKey && u.proposedErpUnitName) uInit[u.aliasKey] = u.proposedErpUnitName;
-      }
-      setUnitMapOverrides(uInit);
-      const itemList: PreviewRow[] = (data.items as PreviewRow[]) ?? [];
-      const initTypes: Record<string, DefaultItemType> = {};
-      for (const r of itemList) {
-        const t = r.mapped?.suggestedItemType;
-        initTypes[r.tallyName] = t === "RM" || t === "FG" ? t : defaultItemType;
-      }
-      setItemRowTypes(initTypes);
+      // Keep only explicit operator edits as overrides. Copying backend defaults
+      // into this map turns an authoritative CREATE into a manual "map existing"
+      // request during confirmation.
+      setUnitMapOverrides({});
+      setMappingsDirty(false);
       setProgressView(buildPreviewReadyView(filename, Date.now() - progressStartedAtRef.current));
       const blockCount = Array.isArray(data.blockingErrors) ? data.blockingErrors.length : 0;
       toast.showSuccess(
         blockCount
-          ? `Stage 2 ready with ${blockCount} blocking error(s). Review mappings — Confirm still imports valid rows.`
+          ? `Stage 2 ready with ${blockCount} row error(s). Resolve importable unit/type blockers before confirmation.`
           : "Stage 2: review group/unit mappings, then confirm import.",
       );
       window.setTimeout(() => {
@@ -740,6 +765,40 @@ export function TallyMasterImportPage() {
     }
   }
 
+  async function recalculatePreview() {
+    if (!previewToken || busy) return;
+    if (!tryAcquireBusy(busyRef)) return;
+    setPreviewing(true);
+    try {
+      const data = await apiFetch<Record<string, unknown>>("/api/admin/tally-import/preview/recalculate", {
+        method: "POST",
+        body: JSON.stringify({ previewToken, groupTypeOverrides, unitMapOverrides }),
+      });
+      setWarnings(Array.isArray(data.warnings) ? (data.warnings as string[]) : []);
+      setInfoNotes(Array.isArray(data.infoNotes) ? (data.infoNotes as string[]) : []);
+      setBlockingErrors(Array.isArray(data.blockingErrors) ? (data.blockingErrors as BlockingError[]) : []);
+      setConfirmBlockingErrors(
+        Array.isArray(data.confirmBlockingErrors) ? (data.confirmBlockingErrors as BlockingError[]) : [],
+      );
+      setParsedMasterCounts((data.parsedMasterCounts as ParsedMasterCounts) ?? null);
+      setSummary((data.summary as PreviewSummary) ?? null);
+      setCustomers((data.customers as PreviewRow[]) ?? []);
+      setSuppliers((data.suppliers as PreviewRow[]) ?? []);
+      setItems((data.items as PreviewRow[]) ?? []);
+      setUnits((data.units as PreviewRow[]) ?? []);
+      setGroupMapping(Array.isArray(data.groupMapping) ? (data.groupMapping as GroupMappingRow[]) : []);
+      setUnitMapping(Array.isArray(data.unitMapping) ? (data.unitMapping as UnitMappingRow[]) : []);
+      setWarningSummary((data.warningSummary as WarningSummary) ?? null);
+      setMappingsDirty(false);
+      toast.showSuccess("Mappings applied to the authoritative preview.");
+    } catch (e) {
+      toast.showError(formatTallyImportError(e));
+    } finally {
+      setPreviewing(false);
+      releaseBusy(busyRef);
+    }
+  }
+
   async function runApply() {
     if (!tryAcquireBusy(busyRef)) return;
     if (!previewToken) {
@@ -750,9 +809,9 @@ export function TallyMasterImportPage() {
     // Lock Stage 2 immediately (sync ref + React state) before confirm dialog / API.
     setApplying(true);
     const ok = window.confirm(
-      "Import the rows shown in the preview into the ERP?\n\n" +
+        "Import the rows shown in the preview into the ERP?\n\n" +
         "Valid rows will be processed (creates, empty-field updates, and Tally identity backfills). " +
-        "Rows with blocking errors are left unresolved.\n\n" +
+        "Importable unit/type blockers must already be resolved; other invalid rows remain unresolved.\n\n" +
         "We recommend creating a database backup first (Masters → Backup & Restore).\n\n" +
         "Vouchers and accounting entries are never imported.",
     );
@@ -880,11 +939,18 @@ export function TallyMasterImportPage() {
     tab === "customers" ? customers : tab === "suppliers" ? suppliers : tab === "items" ? items : tab === "units" ? units : [];
 
   const allPreviewRows = [...customers, ...suppliers, ...items, ...units];
-  const duplicateRows = allPreviewRows.filter((r) => r.proposedAction === "SKIP_DUPLICATE");
+  const duplicateRows = allPreviewRows.filter(
+    (r) => r.proposedAction === "SKIP_DUPLICATE" || r.proposedAction === "REUSE",
+  );
   const warningOnlyRows = allPreviewRows.filter((r) => rowStatus(r) === "WARNING");
   const hasSchemaBlockingError = blockingErrors.some((e) => /schema|identity column|prisma generate|migration/i.test(e.message));
-  // Confirm stays enabled for row-level ERROR (those rows are left unresolved). Only hard schema blockers disable it.
-  const confirmDisabled = busy || !previewToken || hasSchemaBlockingError || !stage2Editable;
+  const confirmDisabled = tallyConfirmIsDisabled({
+    busy,
+    hasPreviewToken: Boolean(previewToken),
+    confirmBlockingCount: confirmBlockingErrors.length,
+    mappingsDirty,
+    stage2Editable,
+  });
 
   const counts = parsedMasterCounts;
 
@@ -1103,7 +1169,8 @@ export function TallyMasterImportPage() {
                       <th className="px-2 py-1.5">Tally group</th>
                       <th className="px-2 py-1.5">Count</th>
                       <th className="px-2 py-1.5">ERP type / Exclude</th>
-                      <th className="px-2 py-1.5">Note</th>
+                      <th className="px-2 py-1.5">Examples</th>
+                      <th className="px-2 py-1.5">Recommendation / risk</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1117,9 +1184,10 @@ export function TallyMasterImportPage() {
                             value={groupTypeOverrides[g.groupKey] || g.choice}
                             disabled={!stage2Editable}
                             data-testid="tally-import-group-map-select"
-                            onChange={(e) =>
-                              setGroupTypeOverrides((prev) => ({ ...prev, [g.groupKey]: e.target.value }))
-                            }
+                            onChange={(e) => {
+                              setGroupTypeOverrides((prev) => ({ ...prev, [g.groupKey]: e.target.value }));
+                              setMappingsDirty(true);
+                            }}
                           >
                             <option value="RM">RM</option>
                             <option value="FG">FG</option>
@@ -1130,7 +1198,13 @@ export function TallyMasterImportPage() {
                             <option value="EXCLUDE">EXCLUDE</option>
                           </NativeSelect>
                         </td>
-                        <td className="px-2 py-1.5 text-slate-600">{g.note}</td>
+                        <td className="max-w-[16rem] px-2 py-1.5 text-slate-600">
+                          {(g.representativeItems || []).join(", ") || "—"}
+                        </td>
+                        <td className="max-w-[22rem] px-2 py-1.5 text-slate-600">
+                          <div className="font-medium text-slate-800">{g.recommendedMapping || g.suggested}</div>
+                          <div>{g.businessRisk || g.note}</div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1163,12 +1237,19 @@ export function TallyMasterImportPage() {
                             placeholder="Nos / Kg / …"
                             disabled={!stage2Editable}
                             data-testid="tally-import-unit-map-input"
-                            onChange={(e) =>
-                              setUnitMapOverrides((prev) => ({ ...prev, [u.aliasKey]: e.target.value }))
-                            }
+                            onChange={(e) => {
+                              setUnitMapOverrides((prev) => ({ ...prev, [u.aliasKey]: e.target.value }));
+                              setMappingsDirty(true);
+                            }}
                           />
                         </td>
-                        <td className="px-2 py-1.5 text-slate-600">{u.unresolved ? "Unresolved" : "Mapped"}</td>
+                        <td className="px-2 py-1.5 text-slate-600">
+                          {u.semanticMismatch
+                            ? "Invalid dimensional mapping"
+                            : u.unresolved
+                              ? "Unresolved"
+                              : u.decision || (u.willCreate ? "CREATE" : "REUSE")}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1320,19 +1401,24 @@ export function TallyMasterImportPage() {
                 </div>
               </div>
             ) : tab === "items" ? (
-              <ItemsPreviewTable
-                items={items}
-                itemRowTypes={itemRowTypes}
-                setItemRowTypes={setItemRowTypes}
-                defaultItemType={defaultItemType}
-                disabled={!stage2Editable}
-              />
+              <ItemsPreviewTable items={items} />
             ) : tab === "units" ? (
               <UnitsPreviewTable rows={units} />
             ) : (
               <PartyPreviewTable rows={activeRows} />
             )}
             <div className="flex flex-wrap items-center gap-2 pt-2">
+              {mappingsDirty ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void recalculatePreview()}
+                  disabled={busy || !previewToken}
+                  data-testid="tally-import-recalculate-btn"
+                >
+                  Apply mappings to preview
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 onClick={() => void runApply()}
@@ -1369,10 +1455,14 @@ export function TallyMasterImportPage() {
                 <p className="w-full text-xs text-red-800">
                   Confirm is disabled until Tally identity columns are available (apply migration + prisma generate).
                 </p>
-              ) : blockingErrors.length > 0 ? (
+              ) : confirmBlockingErrors.length > 0 ? (
                 <p className="w-full text-xs text-amber-900">
-                  {blockingErrors.length} blocking row(s) will be left unresolved. SKIP_DUPLICATE rows are warnings and still receive
-                  identity backfill. Confirm imports all valid rows.
+                  Confirm is disabled until all importable rows have valid unit and item-type decisions. Excluded rows may remain
+                  unresolved because they will not be imported.
+                </p>
+              ) : mappingsDirty ? (
+                <p className="w-full text-xs text-amber-900">
+                  Apply the mapping changes to refresh item types, actions, and validation before confirmation.
                 </p>
               ) : null}
               {lastCorrelationId ? (
@@ -1401,14 +1491,46 @@ export function TallyMasterImportPage() {
               Download result report (CSV)
             </Button>
             {applyResult.failed > 0 ? (
-              <div className="max-h-48 overflow-auto rounded border border-red-200 bg-red-50 p-2 text-xs text-red-900">
-                {applyResult.results
-                  .filter((r) => r.action === "FAILED")
-                  .map((r) => (
-                    <div key={`${r.entityType}-${r.tallyName}-fail`}>
-                      {r.entityType} · {r.tallyName}: {r.error}
-                    </div>
-                  ))}
+              <div className="max-h-64 overflow-auto rounded border border-red-200 bg-red-50">
+                <table className="w-full text-left text-xs text-red-950" data-testid="tally-import-failure-table">
+                  <thead className="sticky top-0 bg-red-100">
+                    <tr>
+                      <th className="px-2 py-1.5 font-semibold">Unit / master</th>
+                      <th className="px-2 py-1.5 font-semibold">Reason</th>
+                      <th className="px-2 py-1.5 font-semibold">Corrective action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {applyResult.results
+                      .filter((r) => r.action === "FAILED")
+                      .map((r) => (
+                        <tr key={`${r.entityType}-${r.tallyName}-fail`} className="border-t border-red-200">
+                          <td className="px-2 py-1.5 font-medium">{r.tallyName}</td>
+                          <td className="px-2 py-1.5">
+                            {sanitizeTallyImportResultText(r.error) || "Import failed."}
+                          </td>
+                          <td className="px-2 py-1.5">{tallyImportCorrectiveAction(r.error, r.warning)}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+            {warningSummary ? (
+              <div className="overflow-x-auto rounded-md border border-slate-200">
+                <div className="border-b border-slate-100 bg-slate-50 px-2 py-1.5 text-xs font-semibold text-slate-800">
+                  Validation summary by affected row
+                </div>
+                <div className="grid grid-cols-2 gap-2 p-2 sm:grid-cols-4">
+                  <CountChip label="Missing HSN" value={warningSummary.missingHsn} warn={warningSummary.missingHsn > 0} />
+                  <CountChip label="Inherited HSN" value={warningSummary.inheritedHsn} />
+                  <CountChip label="Invalid HSN / GST" value={warningSummary.invalidHsnGst} warn={warningSummary.invalidHsnGst > 0} />
+                  <CountChip label="Excluded by group" value={warningSummary.excludedByGroup} />
+                  <CountChip label="Unit mapping issue" value={warningSummary.unitMappingIssue} warn={warningSummary.unitMappingIssue > 0} />
+                  <CountChip label="Duplicate item" value={warningSummary.duplicateItem} />
+                  <CountChip label="Sanitized XML refs" value={warningSummary.sanitizedXmlReferences} />
+                  <CountChip label="Other" value={warningSummary.other} warn={warningSummary.other > 0} />
+                </div>
               </div>
             ) : null}
           </CardContent>
@@ -1589,17 +1711,30 @@ function UnitsPreviewTable({ rows }: { rows: PreviewRow[] }) {
       <table className="w-full min-w-[640px] border-collapse text-left text-xs">
         <thead className="sticky top-0 z-[1] bg-slate-100 text-slate-700">
           <tr>
-            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Name</th>
-            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Code</th>
-            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Action</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Tally unit</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Original symbol</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Selected ERP unit</th>
+            <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Decision</th>
             <th className="border-b border-slate-200 px-2 py-1.5 font-semibold">Status</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={`UNIT-${r.tallyName}`} className="border-b border-slate-100 odd:bg-white even:bg-slate-50/80">
-              <td className="px-2 py-1 align-top font-medium text-slate-900">{display(r.mapped?.unitName) || r.tallyName}</td>
-              <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-800">{display(r.mapped?.unitCode)}</td>
+            <tr
+              key={`UNIT-${r.tallyName}-${display(r.mapped?.sourceOrdinal)}`}
+              className="border-b border-slate-100 odd:bg-white even:bg-slate-50/80"
+            >
+              <td className="px-2 py-1 align-top font-medium text-slate-900">{r.tallyName}</td>
+              <td className="px-2 py-1 align-top font-mono text-[11px] text-slate-800">
+                {display(r.mapped?.tallyUnitSymbol)}
+              </td>
+              <td className="px-2 py-1 align-top text-slate-800">
+                {r.proposedAction === "REUSE"
+                  ? `#${display(r.mapped?.selectedErpUnitId)} ${display(r.mapped?.selectedErpUnitName)} / ${display(r.mapped?.selectedErpUnitCode)}`
+                  : r.proposedAction === "CREATE"
+                    ? `${display(r.mapped?.unitName)} / ${display(r.mapped?.unitCode)}`
+                    : "—"}
+              </td>
               <td className="whitespace-nowrap px-2 py-1 align-top">{r.proposedAction}</td>
               <td className="px-2 py-1 align-top">
                 <StatusBadge status={rowStatus(r)} />
@@ -1614,16 +1749,8 @@ function UnitsPreviewTable({ rows }: { rows: PreviewRow[] }) {
 
 function ItemsPreviewTable({
   items,
-  itemRowTypes,
-  setItemRowTypes,
-  defaultItemType,
-  disabled = false,
 }: {
   items: PreviewRow[];
-  itemRowTypes: Record<string, DefaultItemType>;
-  setItemRowTypes: React.Dispatch<React.SetStateAction<Record<string, DefaultItemType>>>;
-  defaultItemType: DefaultItemType;
-  disabled?: boolean;
 }) {
   return (
     <div className="max-h-80 overflow-auto rounded border border-slate-200">
@@ -1650,11 +1777,7 @@ function ItemsPreviewTable({
               gstRaw != null && gstRaw !== "" && Number.isFinite(Number(gstRaw)) ? String(Number(gstRaw)) : "—";
             const stockGroup = display(r.mapped?.tallyStockGroup);
             const auto = r.mapped?.autoDetectedItemType;
-            const rowType =
-              itemRowTypes[r.tallyName] ??
-              (r.mapped?.suggestedItemType === "RM" || r.mapped?.suggestedItemType === "FG"
-                ? r.mapped.suggestedItemType
-                : defaultItemType);
+            const rowType = displayedEffectiveItemType(r.mapped);
             const notes = [...r.warnings, ...r.errors].join(" · ");
             return (
               <tr key={`ITEM-${r.tallyName}`} className="border-b border-slate-100 odd:bg-white even:bg-slate-50/80">
@@ -1680,21 +1803,7 @@ function ItemsPreviewTable({
                     <span className="text-slate-400">—</span>
                   )}
                 </td>
-                <td className="px-2 py-1 align-top">
-                  <NativeSelect
-                    className="h-7 max-w-[5.5rem] py-0 pr-6 text-xs"
-                    value={rowType}
-                    disabled={disabled}
-                    onChange={(e) => {
-                      const v = e.target.value as DefaultItemType;
-                      setItemRowTypes((prev) => ({ ...prev, [r.tallyName]: v }));
-                    }}
-                    aria-label={`Item type for ${r.tallyName}`}
-                  >
-                    <option value="RM">RM</option>
-                    <option value="FG">FG</option>
-                  </NativeSelect>
-                </td>
+                <td className="px-2 py-1 align-top font-semibold text-slate-900">{rowType}</td>
                 <td className="whitespace-nowrap px-2 py-1 align-top">{r.proposedAction}</td>
                 <td className="px-2 py-1 align-top" title={notes || undefined}>
                   <StatusBadge status={rowStatus(r)} />

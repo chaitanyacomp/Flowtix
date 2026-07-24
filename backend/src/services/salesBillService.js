@@ -48,10 +48,10 @@ function computeLineTaxSplit(basic, gstRatePct, intraState) {
   let cgst = 0;
   let sgst = 0;
   let igst = 0;
-  if (intraState && rate > 0) {
+  if (intraState === true && rate > 0) {
     cgst = round2(tax / 2);
     sgst = round2(tax - cgst);
-  } else {
+  } else if (intraState === false && rate > 0) {
     igst = tax;
   }
   const lineTotal = round2(basicN + tax);
@@ -91,6 +91,9 @@ function resolveSalesIntraForBilling({ bill, customer, companyState }) {
     };
   }
   const legacy = resolveSalesIntraFromStateCodes({ customer });
+  if (legacy.basis === "MISSING_CUSTOMER_STATE_CODE") {
+    return { intraState: null, basis: legacy.basis, compareStateCode: null };
+  }
   return {
     ...legacy,
     compareStateCode:
@@ -205,7 +208,7 @@ function withSalesBillGstBreakup(bill, { intraState, companyState }) {
 
   return {
     ...bill,
-    taxIntraState: Boolean(intraState),
+    taxIntraState: intraState === true ? true : intraState === false ? false : null,
     gstMode,
     posStateCode,
     posStateName,
@@ -217,6 +220,37 @@ function withSalesBillGstBreakup(bill, { intraState, companyState }) {
     /** NO_QTY: document-linked cycle for operator UI (not SalesOrder.currentCycle). */
     operationalCycleNo,
   };
+}
+
+/** Recompute persisted draft tax components from the authoritative POS mode. */
+async function refreshDraftTaxClassification(tx, bill, intraState) {
+  if (!bill || bill.status !== "DRAFT") return bill;
+  const rebuilt = [];
+  for (const ln of bill.lines || []) {
+    const calc = computeLineTaxSplit(Number(ln.basicAmount ?? 0), Number(ln.gstRate ?? 0), intraState);
+    await tx.salesBillLine.update({
+      where: { id: ln.id },
+      data: {
+        cgstAmount: String(calc.cgstAmount),
+        sgstAmount: String(calc.sgstAmount),
+        igstAmount: String(calc.igstAmount),
+        lineTotal: String(calc.lineTotal),
+        transportationCgstAmount: "0",
+        transportationSgstAmount: "0",
+        transportationIgstAmount: "0",
+      },
+    });
+    rebuilt.push(calc);
+  }
+  const totals = sumTotals(rebuilt);
+  await tx.salesBill.update({
+    where: { id: bill.id },
+    data: {
+      totalBasic: String(totals.totalBasic), totalCgst: String(totals.totalCgst), totalSgst: String(totals.totalSgst),
+      totalIgst: String(totals.totalIgst), totalTax: String(totals.totalTax), netAmount: String(totals.netAmount),
+    },
+  });
+  return tx.salesBill.findUnique({ where: { id: bill.id }, include: billInclude });
 }
 
 async function listSalesBills(prisma, query) {
@@ -779,11 +813,10 @@ async function finalizeBill(prisma, billId, userId) {
     } else if (bill.dispatchId != null) {
       await assertDispatchEligibleForBillingFinalize(tx, bill.dispatchId);
     }
-    if (
-      !bill.customer?.stateRef?.stateCode &&
-      !trimCommercialSnapshot(bill.customerStateCodeSnapshot)
-    ) {
-      throw friendlyError("Customer state is required before finalizing.", 409);
+    const companyState = await getCompanyState(tx);
+    const intra = resolveSalesIntraForBilling({ bill, customer: bill.customer, companyState }).intraState;
+    if (intra == null) {
+      throw friendlyError("GST / place of supply is unresolved. Update the customer state or delivery location before finalizing.", 409);
     }
     if (!bill.lines.length) throw friendlyError("Add at least one line item before finalizing.");
     for (const ln of bill.lines) {
@@ -796,8 +829,6 @@ async function finalizeBill(prisma, billId, userId) {
       }
     }
 
-    const companyState = await getCompanyState(tx);
-    const intra = resolveSalesIntraForBilling({ bill, customer: bill.customer, companyState }).intraState;
     const rebuilt = [];
     for (const ln of bill.lines) {
       if (["MULTI_DISPATCH_TRANSPORT_V2", "GST_BUCKET_SPLIT_V3", "GST_COMPONENT_BUCKET_V4"].includes(bill.calculationVersion)) {
@@ -1081,11 +1112,14 @@ async function deleteDraft(prisma, billId) {
 }
 
 async function getSalesBillById(prisma, id) {
-  const bill = await prisma.salesBill.findUnique({ where: { id }, include: billInclude });
-  if (!bill) throw friendlyError("Sales bill not found.", 404);
-  const companyState = await getCompanyState(prisma);
-  const intra = resolveSalesIntraForBilling({ bill, customer: bill.customer, companyState }).intraState;
-  return withSalesBillGstBreakup(bill, { intraState: intra, companyState });
+  return prisma.$transaction(async (tx) => {
+    let bill = await tx.salesBill.findUnique({ where: { id }, include: billInclude });
+    if (!bill) throw friendlyError("Sales bill not found.", 404);
+    const companyState = await getCompanyState(tx);
+    const intra = resolveSalesIntraForBilling({ bill, customer: bill.customer, companyState }).intraState;
+    bill = await refreshDraftTaxClassification(tx, bill, intra);
+    return withSalesBillGstBreakup(bill, { intraState: intra, companyState });
+  });
 }
 
 function formatShipToSummary(shipTo) {
@@ -1265,6 +1299,85 @@ async function patchDraftShipTo(prisma, billId, body, opts = {}) {
   });
 }
 
+/** Refresh a draft's Bill To/Ship To snapshots from current masters. */
+async function refreshDraftCustomerDetails(prisma, billId, opts = {}) {
+  return prisma.$transaction(async (tx) => {
+    const bill = await tx.salesBill.findUnique({ where: { id: billId }, include: billInclude });
+    if (!bill) throw friendlyError("Sales bill not found.", 404);
+    if (bill.status !== "DRAFT") throw friendlyError("Finalized or cancelled Sales Bills are immutable.", 409);
+
+    const customer = await tx.customer.findUnique({
+      where: { id: bill.customerId },
+      include: { stateRef: { select: { stateName: true, stateCode: true } } },
+    });
+    if (!customer) throw friendlyError("Customer not found.", 409);
+    const addr = bill.shipToAddressId
+      ? await tx.customerDeliveryAddress.findFirst({
+          where: { id: bill.shipToAddressId, customerId: bill.customerId, isActive: true },
+          include: { stateRef: { select: { stateName: true, stateCode: true } } },
+        })
+      : null;
+    if (bill.shipToAddressId && !addr) throw friendlyError("Selected delivery location is no longer active.", 409);
+
+    const billTo = {
+      name: customer.name ?? null,
+      address: customer.address ?? null,
+      gstin: customer.gst ?? null,
+      stateName: customer.stateRef?.stateName ?? customer.state ?? null,
+      stateCode: customer.stateRef?.stateCode ?? null,
+    };
+    const shipTo = addr
+      ? {
+          label: addr.label ?? null, address: addr.address ?? null, gstin: addr.gst ?? null,
+          stateName: addr.stateRef?.stateName ?? null, stateCode: addr.stateRef?.stateCode ?? null,
+        }
+      : billTo;
+    const companyState = await getCompanyState(tx);
+    const pos = buildPosFromShipAndBillTo({
+      shipTo,
+      billTo,
+      companyStateCode: companyState?.companyStateRef?.stateCode ?? null,
+    });
+    const snapshots = {
+      customerNameSnapshot: billTo.name,
+      customerStateNameSnapshot: billTo.stateName,
+      customerStateCodeSnapshot: billTo.stateCode,
+      billToAddressSnapshot: billTo.address,
+      billToGstinSnapshot: billTo.gstin,
+      shipToLabelSnapshot: shipTo.label,
+      shipToAddressSnapshot: shipTo.address,
+      shipToGstinSnapshot: shipTo.gstin,
+      shipToStateNameSnapshot: shipTo.stateName,
+      shipToStateCodeSnapshot: shipTo.stateCode,
+      posStateNameSnapshot: pos.stateName ?? null,
+      posStateCodeSnapshot: pos.stateCode ?? null,
+      posSourceSnapshot: pos.source ?? null,
+    };
+    const intra = resolveSalesIntraForBilling({ bill: { ...bill, ...snapshots }, customer, companyState }).intraState;
+    const rebuilt = [];
+    for (const ln of bill.lines || []) {
+      const calc = computeLineTaxSplit(Number(ln.basicAmount ?? 0), Number(ln.gstRate ?? 0), intra);
+      await tx.salesBillLine.update({
+        where: { id: ln.id },
+        data: { cgstAmount: String(calc.cgstAmount), sgstAmount: String(calc.sgstAmount), igstAmount: String(calc.igstAmount), lineTotal: String(calc.lineTotal) },
+      });
+      rebuilt.push(calc);
+    }
+    const totals = sumTotals(rebuilt);
+    const updated = await tx.salesBill.update({
+      where: { id: billId },
+      data: {
+        ...snapshots,
+        totalBasic: String(totals.totalBasic), totalCgst: String(totals.totalCgst), totalSgst: String(totals.totalSgst),
+        totalIgst: String(totals.totalIgst), totalTax: String(totals.totalTax), netAmount: String(totals.netAmount),
+        ...(addr ? { shipToAddressId: addr.id } : {}),
+      },
+      include: billInclude,
+    });
+    return withSalesBillGstBreakup(updated, { intraState: intra, companyState });
+  });
+}
+
 function transportInputFromBill(bill, override = {}) {
   return {
     amount: override.amount ?? bill.transportationAmount ?? 0,
@@ -1422,6 +1535,7 @@ module.exports = {
   getSalesBillById,
   getDraftShipToOptions,
   patchDraftShipTo,
+  refreshDraftCustomerDetails,
   updateSalesBillPaymentTracking,
   addSalesBillReceipt,
   deleteSalesBillReceipt,

@@ -30,6 +30,8 @@ import { SalesBillLinkedDocuments } from "../components/sales/SalesBillLinkedDoc
 import { SalesBillActivityTimeline } from "../components/sales/SalesBillActivityTimeline";
 import { SalesBillDraftActionPanel } from "../components/sales/SalesBillDraftActionPanel";
 import { SalesBillShipToField } from "../components/sales/SalesBillShipToField";
+import { CustomerDetailsRefreshButton } from "../components/sales/CustomerDetailsRefreshButton";
+import { refreshSalesBillCustomerDetails } from "../lib/salesBillCustomerRefresh";
 import {
   buildSalesBillFinalizeChecks,
   canFinalizeSalesBill,
@@ -220,6 +222,8 @@ export function SalesBillEditPage() {
   const [confirmingTallyImport, setConfirmingTallyImport] = React.useState(false);
   const [creatingMasters, setCreatingMasters] = React.useState(false);
   const [refreshingReadiness, setRefreshingReadiness] = React.useState(false);
+  const [refreshingCustomerDetails, setRefreshingCustomerDetails] = React.useState(false);
+  const [customerDetailsFeedback, setCustomerDetailsFeedback] = React.useState<string | null>(null);
   const [deleting, setDeleting] = React.useState(false);
   const [resetting, setResetting] = React.useState(false);
   const [cancelling, setCancelling] = React.useState(false);
@@ -256,6 +260,26 @@ export function SalesBillEditPage() {
       setNextPendingExportHref(null);
     }
   }, []);
+
+  async function refreshCustomerDetails() {
+    if (!bill || bill.status !== "DRAFT" || refreshingCustomerDetails) return;
+    setRefreshingCustomerDetails(true);
+    setFormError(null);
+    setCustomerDetailsFeedback(null);
+    try {
+      const refreshed = await refreshSalesBillCustomerDetails<Bill>(bill.id, apiFetch);
+      setBill(refreshed);
+      setBillNo(refreshed.billNo ?? "");
+      setBillDate(toDateInputValue(refreshed.billDate));
+      setRemarks(refreshed.remarks ?? "");
+      setHeaderBaseline({ billNo: refreshed.billNo ?? "", billDate: toDateInputValue(refreshed.billDate), remarks: refreshed.remarks ?? "" });
+      setCustomerDetailsFeedback("Customer details refreshed. Bill To, Ship To, POS and GST were recalculated.");
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : "Could not refresh customer details.");
+    } finally {
+      setRefreshingCustomerDetails(false);
+    }
+  }
   const [adminRateDlg, setAdminRateDlg] = React.useState<{ lineId: number; password: string } | null>(null);
   const [localRates, setLocalRates] = React.useState<Record<number, string>>({});
   const [applyingRate, setApplyingRate] = React.useState(false);
@@ -801,11 +825,12 @@ export function SalesBillEditPage() {
   const workQueueIndex = workQueue?.currentIndex ?? 0;
   const showWorkQueueNav = workQueue != null && workQueueTotal > 1;
   const gstModeLabel =
-    bill.gstMode === "INTERSTATE" || (bill.gstMode == null && bill.taxIntraState === false)
+    bill.gstMode === "INTERSTATE"
       ? "Interstate"
-      : bill.gstMode === "LOCAL" || (bill.gstMode == null && bill.taxIntraState === true)
+      : bill.gstMode === "LOCAL"
         ? "Local"
-        : "POS Pending";
+        : "GST state required";
+  const gstModeUnresolved = bill.gstMode !== "LOCAL" && bill.gstMode !== "INTERSTATE";
 
   return (
     <PageContainer className="erp-txn-workspace erp-txn-workspace--sticky-submit">
@@ -1047,6 +1072,15 @@ export function SalesBillEditPage() {
           {formError}
         </div>
       ) : null}
+      {customerDetailsFeedback ? (
+        <div
+          className="min-w-0 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm leading-relaxed text-emerald-800"
+          role="status"
+          data-testid="refresh-customer-details-success"
+        >
+          {customerDetailsFeedback}
+        </div>
+      ) : null}
 
       <div className="erp-workspace-2col">
         <div className="flex min-h-0 min-w-0 flex-col gap-2 lg:min-h-[calc(100dvh-12rem)]">
@@ -1260,6 +1294,11 @@ export function SalesBillEditPage() {
                           : ""}
                       </div>
                     </div>
+                    {gstModeUnresolved && isDraftBill ? (
+                      <div className="sm:col-span-3 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900">
+                        GST mode: Unresolved. Update customer state or update delivery location. GST will be recalculated after the state is saved.
+                      </div>
+                    ) : null}
                     <div>
                       <div className="text-[11px] text-slate-500">Order type</div>
                       <div className="font-medium text-slate-900">
@@ -1298,7 +1337,14 @@ export function SalesBillEditPage() {
               data-testid="sales-bill-business-details"
             >
               <CardHeader className="erp-txn-card-header py-2">
-                <CardTitle className="text-sm font-semibold text-slate-900">Business details</CardTitle>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <CardTitle className="text-sm font-semibold text-slate-900">Business details</CardTitle>
+                  <CustomerDetailsRefreshButton
+                    status={bill.status}
+                    refreshing={refreshingCustomerDetails}
+                    onRefresh={() => void refreshCustomerDetails()}
+                  />
+                </div>
               </CardHeader>
               <CardContent className="erp-txn-card-body grid min-w-0 gap-2.5 pt-0">
               <div className="grid gap-2.5 lg:grid-cols-2">

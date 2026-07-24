@@ -93,11 +93,11 @@ function calculateSalesBillSnapshot({ allocationRows, transportation = {}, intra
   for (const [rateText, entries] of buckets) {
     const taxable = entries.reduce((sum, entry) => sum.plus(entry.weight), D(0));
     let bucketCgst = D(0), bucketSgst = D(0), bucketIgst = D(0);
-    if (intraState) {
+    if (intraState === true) {
       const halfRate = D(rateText).div(2);
       bucketCgst = money(taxable.times(halfRate).div(100));
       bucketSgst = money(taxable.times(halfRate).div(100));
-    } else {
+    } else if (intraState === false) {
       bucketIgst = money(taxable.times(D(rateText)).div(100));
     }
     const cgstShares = allocateMoneyByWeight(bucketCgst, entries);

@@ -7,6 +7,7 @@ const { prisma } = require("../utils/prisma");
 const {
   buildPreviewPayload,
   createPreviewSession,
+  rebuildPreviewFromToken,
   applyFromPreviewToken,
   MAX_XML_BYTES,
   IMPORT_BATCH_SIZE,
@@ -267,6 +268,8 @@ tallyMasterImportRouter.post(
         infoNotes: payload.infoNotes ?? [],
         blockingErrors: payload.blockingErrors ?? [],
         blockingErrorCount: payload.blockingErrorCount ?? 0,
+        confirmBlockingErrors: payload.confirmBlockingErrors ?? [],
+        confirmBlockingErrorCount: payload.confirmBlockingErrorCount ?? 0,
         identityBackfillEligible: payload.identityBackfillEligible !== false,
         parsedMasterCounts: payload.parsedMasterCounts ?? null,
         summary: payload.summary,
@@ -276,6 +279,7 @@ tallyMasterImportRouter.post(
         units: payload.units,
         groupMapping: payload.groupMapping ?? [],
         unitMapping: payload.unitMapping ?? [],
+        warningSummary: payload.warningSummary ?? null,
         stockPreview: payload.stockPreview ?? null,
         parseStats: payload.parseStats,
         decode: decodeMeta,
@@ -285,6 +289,65 @@ tallyMasterImportRouter.post(
       });
     } catch (e) {
       if (operationId) endOperation(operationId, "failed", e instanceof Error ? e.message : String(e));
+      if (e instanceof z.ZodError) return next(e);
+      const mapped = formatTallyImportHttpError(e, correlationId);
+      return res.status(mapped.status).json(mapped.body);
+    }
+  },
+);
+
+const recalculateBodySchema = z
+  .object({
+    previewToken: z.string().min(10).max(128),
+    groupTypeOverrides: z.record(z.string().max(256), mappingChoiceSchema).default({}),
+    unitMapOverrides: z.record(z.string().max(128), z.string().max(64).nullable()).default({}),
+  })
+  .strict();
+
+tallyMasterImportRouter.post(
+  "/tally-import/preview/recalculate",
+  requireAuth,
+  requireRole(["ADMIN"], "Only Admin can import Tally masters."),
+  async (req, res, next) => {
+    const correlationId = newCorrelationId();
+    try {
+      const body = recalculateBodySchema.parse(req.body ?? {});
+      const payload = await rebuildPreviewFromToken(
+        prisma,
+        body.previewToken,
+        {
+          groupTypeOverrides: body.groupTypeOverrides,
+          unitMapOverrides: body.unitMapOverrides,
+        },
+        req.user?.id ?? null,
+      );
+      if (!payload.ok) {
+        return res.status(400).json({
+          error: { message: payload.error || "Could not recalculate preview.", code: "XML_PARSE", correlationId },
+        });
+      }
+      return res.json({
+        correlationId,
+        warnings: payload.warnings,
+        infoNotes: payload.infoNotes ?? [],
+        blockingErrors: payload.blockingErrors ?? [],
+        blockingErrorCount: payload.blockingErrorCount ?? 0,
+        confirmBlockingErrors: payload.confirmBlockingErrors ?? [],
+        confirmBlockingErrorCount: payload.confirmBlockingErrorCount ?? 0,
+        parsedMasterCounts: payload.parsedMasterCounts ?? null,
+        summary: payload.summary,
+        customers: payload.customers,
+        suppliers: payload.suppliers,
+        items: payload.items,
+        units: payload.units,
+        groupMapping: payload.groupMapping ?? [],
+        unitMapping: payload.unitMapping ?? [],
+        warningSummary: payload.warningSummary ?? null,
+        stockPreview: payload.stockPreview ?? null,
+        parseStats: payload.parseStats,
+        decode: payload.decode ?? null,
+      });
+    } catch (e) {
       if (e instanceof z.ZodError) return next(e);
       const mapped = formatTallyImportHttpError(e, correlationId);
       return res.status(mapped.status).json(mapped.body);

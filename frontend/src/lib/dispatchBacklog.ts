@@ -3,6 +3,7 @@ import { cn } from "./utils";
 export type DispatchBacklogRow = {
   salesOrderId: number;
   salesOrderNo: string;
+  salesOrderDocNo?: string | null;
   customerName: string;
   itemId: number;
   itemName: string;
@@ -30,6 +31,20 @@ export const ROW_NUM_EPS = 1e-6;
  */
 export function filterActionableDispatchBacklogRows(rows: DispatchBacklogRow[]): DispatchBacklogRow[] {
   return (rows ?? []).filter((r) => Number(r.dispatchableNow ?? 0) > ROW_NUM_EPS);
+}
+
+/** Store Dispatch Ready and Prepare Headroom must be projections of this same canonical queue. */
+export function dispatchReadyRowsFromBacklog(rows: DispatchBacklogRow[]) {
+  return filterActionableDispatchBacklogRows(rows).map((row) => ({
+    key: `dispatch-backlog:${row.salesOrderId}:${row.salesOrderLineId ?? row.itemId}:${row.cycleId ?? 0}`,
+    salesOrderId: row.salesOrderId,
+    salesOrderDocNo: row.salesOrderDocNo ?? row.salesOrderNo,
+    customerName: row.customerName,
+    itemName: row.itemName,
+    orderType: row.orderType,
+    metricQty: Number(row.dispatchableNow ?? 0),
+    href: `/dispatch?source=dashboard&soId=${row.salesOrderId}`,
+  }));
 }
 
 export type DashboardBadgeTone = "critical" | "active" | "success" | "neutral";

@@ -4,6 +4,7 @@
  */
 
 const { normalizeUnitKey } = require("../unitMaster");
+const { findEquivalentUnit, unitFamily } = require("./tallyUnitIdentity");
 
 /** @typedef {"RM" | "FG" | "SFG" | "CONSUMABLE" | "EXCLUDE"} ErpImportItemType */
 /** @typedef {"RM" | "FG" | "SFG" | "CONSUMABLE" | "PACKING" | "SCRAP" | "EXCLUDE"} MappingChoice */
@@ -56,6 +57,12 @@ const UNIT_ALIAS_TO_ERP = {
   ltr: "Ltr",
   litre: "Ltr",
   liters: "Ltr",
+  "sq.ft": "Sq.Ft",
+  "sq. ft.": "Sq.Ft",
+  sqft: "Sq.Ft",
+  "sq.mtr": "Sq.Meter",
+  "sq.meter": "Sq.Meter",
+  sqm: "Sq.Meter",
   "not applicable": null,
   "n/a": null,
 };
@@ -147,17 +154,23 @@ function suggestUnitMapping(tallyUnit) {
 
 /**
  * Build group mapping rows from stock item parent groups.
- * @param {Iterable<{ parentGroup?: string | null; tallyStockGroup?: string | null }>} mappedItems
+ * @param {Iterable<{ parentGroup?: string | null; tallyStockGroup?: string | null; itemName?: string | null }>} mappedItems
  * @param {Record<string, MappingChoice> | null | undefined} overrides groupKey → choice
  */
 function buildGroupMappingTable(mappedItems, overrides) {
-  /** @type {Map<string, { tallyGroup: string; count: number }>} */
+  /** @type {Map<string, { tallyGroup: string; count: number; samples: string[] }>} */
   const counts = new Map();
   for (const it of mappedItems || []) {
     const display = String(it.parentGroup || "").trim() || "(blank)";
     const key = normalizeGroupKey(it.parentGroup) || "(blank)";
-    const cur = counts.get(key) || { tallyGroup: display === "(blank)" ? "" : String(it.parentGroup || "").trim(), count: 0 };
+    const cur = counts.get(key) || {
+      tallyGroup: display === "(blank)" ? "" : String(it.parentGroup || "").trim(),
+      count: 0,
+      samples: [],
+    };
     cur.count += 1;
+    const itemName = String(it.itemName || "").trim();
+    if (itemName && cur.samples.length < 5 && !cur.samples.includes(itemName)) cur.samples.push(itemName);
     if (!cur.tallyGroup && display !== "(blank)") cur.tallyGroup = String(it.parentGroup || "").trim();
     counts.set(key, cur);
   }
@@ -168,6 +181,7 @@ function buildGroupMappingTable(mappedItems, overrides) {
       const override = overrides && typeof overrides === "object" ? overrides[groupKey] : undefined;
       const choice = /** @type {MappingChoice} */ (override || suggestion.suggested);
       const erpType = resolveErpItemType(choice);
+      const boughtOut = /^bought\s*out\s*parts?$/i.test(v.tallyGroup);
       return {
         groupKey,
         tallyGroup: v.tallyGroup || "(blank)",
@@ -177,6 +191,11 @@ function buildGroupMappingTable(mappedItems, overrides) {
         erpItemType: erpType,
         importAction: erpType ? "IMPORT" : "EXCLUDE",
         note: suggestion.note,
+        representativeItems: v.samples,
+        recommendedMapping: boughtOut ? "REVIEW; use RM only for BOM-consumed purchased components" : suggestion.suggested,
+        businessRisk: boughtOut
+          ? "Mixed commercial meaning: RM would affect procurement/BOM consumption; FG would make parts sale/dispatch candidates. Blanket import is unsafe."
+          : suggestion.note,
       };
     })
     .sort((a, b) => b.detectedCount - a.detectedCount || a.tallyGroup.localeCompare(b.tallyGroup));
@@ -189,8 +208,9 @@ function buildGroupMappingTable(mappedItems, overrides) {
  * @param {Iterable<{ baseUnit?: string | null }>} mappedItems
  * @param {Record<string, string | null> | null | undefined} overrides aliasKey → erp unit name or "" to exclude
  * @param {Array<{ id: number; unitName: string; unitCode: string | null }>} erpUnits
+ * @param {Array<{ tallyName: string; proposedAction: string; existingErpId: number | null; mapped: Record<string, unknown> }>} authoritativeUnits
  */
-function buildUnitMappingTable(mappedItems, overrides, erpUnits) {
+function buildUnitMappingTable(mappedItems, overrides, erpUnits, authoritativeUnits = []) {
   /** @type {Map<string, { sourceUnit: string; count: number }>} */
   const counts = new Map();
   for (const it of mappedItems || []) {
@@ -202,21 +222,54 @@ function buildUnitMappingTable(mappedItems, overrides, erpUnits) {
     counts.set(aliasKey, cur);
   }
 
-  const erpByKey = new Map(
-    (erpUnits || []).map((u) => [normalizeUnitKey(u.unitName), u]),
-  );
+  const erpByKey = new Map((erpUnits || []).map((u) => [normalizeUnitKey(u.unitName), u]));
+  const decisionsByExactKey = new Map();
+  const decisionsByFamily = new Map();
+  for (const row of authoritativeUnits || []) {
+    const key = normalizeUnitKey(row.tallyName || row.mapped?.unitName);
+    if (!key || decisionsByExactKey.has(key)) continue;
+    decisionsByExactKey.set(key, row);
+    const family = unitFamily(row.tallyName || row.mapped?.unitName);
+    if (family && !decisionsByFamily.has(family)) decisionsByFamily.set(family, row);
+  }
 
   return [...counts.entries()]
     .map(([aliasKey, v]) => {
+      const authoritative =
+        decisionsByExactKey.get(aliasKey) || decisionsByFamily.get(unitFamily(v.sourceUnit)) || null;
       const suggestion = suggestUnitMapping(v.sourceUnit);
       const override =
         overrides && typeof overrides === "object" && Object.prototype.hasOwnProperty.call(overrides, aliasKey)
           ? overrides[aliasKey]
           : undefined;
+      const authoritativeName =
+        authoritative?.proposedAction === "REUSE"
+          ? authoritative.mapped?.selectedErpUnitName || authoritative.mapped?.unitName
+          : authoritative?.proposedAction === "CREATE"
+            ? authoritative.mapped?.unitName
+            : null;
       const proposedName =
-        override === undefined ? suggestion.suggestedErpUnitName : override === "" || override == null ? null : String(override);
-      const erp = proposedName ? erpByKey.get(normalizeUnitKey(proposedName)) || null : null;
-      const unresolved = !proposedName || !erp;
+        override === undefined
+          ? authoritativeName || suggestion.suggestedErpUnitName
+          : override === "" || override == null
+            ? null
+            : String(override);
+      const erp = proposedName
+        ? findEquivalentUnit(erpUnits, { unitName: proposedName, unitCode: v.sourceUnit }) ||
+          erpByKey.get(normalizeUnitKey(proposedName)) ||
+          null
+        : null;
+      const sourceFamily = unitFamily(v.sourceUnit);
+      const targetFamily = erp ? unitFamily(erp.unitName) || unitFamily(erp.unitCode) : unitFamily(proposedName);
+      const semanticMismatch = Boolean(sourceFamily && targetFamily && sourceFamily !== targetFamily);
+      const decision =
+        override !== undefined
+          ? erp && !semanticMismatch
+            ? "REUSE"
+            : "REVIEW"
+          : authoritative?.proposedAction || (erp ? "REUSE" : "REVIEW");
+      const willCreate = decision === "CREATE" && Boolean(proposedName);
+      const unresolved = semanticMismatch || decision === "REVIEW" || !proposedName || (!erp && !willCreate);
       return {
         aliasKey,
         sourceUnit: v.sourceUnit || "(blank)",
@@ -224,8 +277,11 @@ function buildUnitMappingTable(mappedItems, overrides, erpUnits) {
         suggestedErpUnitName: suggestion.suggestedErpUnitName,
         proposedErpUnitName: proposedName,
         proposedErpUnitId: erp ? erp.id : null,
+        decision,
+        willCreate,
+        semanticMismatch,
         unresolved,
-        importAction: unresolved ? "EXCLUDE_OR_MAP" : "MAP",
+        importAction: unresolved ? "EXCLUDE_OR_MAP" : willCreate ? "CREATE" : "MAP",
       };
     })
     .sort((a, b) => b.detectedCount - a.detectedCount || a.sourceUnit.localeCompare(b.sourceUnit));

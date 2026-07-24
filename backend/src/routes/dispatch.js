@@ -1414,6 +1414,23 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
     }
 
     const allNoQtyFromRows = rows.filter((so) => so.orderType === "NO_QTY");
+    // An UNLOCKED dispatch row is the reservation for its draft.  Keep the
+    // physical FG balance separate from those reservations so the UI can show
+    // both global free stock and the capacity available to the draft being
+    // edited (which must not deduct that draft's own reservation).
+    const activeDraftReservedByItemId = new Map();
+    const activeDraftReservedBySoItemKey = new Map();
+    for (const so of rows) {
+      for (const d of so.dispatch || []) {
+        if (d.reversalOfId != null || d.workflowStatus !== "UNLOCKED") continue;
+        const qty = Math.max(0, Number(d.dispatchedQty) || 0);
+        if (!(qty > 0)) continue;
+        const itemId = Number(d.itemId);
+        activeDraftReservedByItemId.set(itemId, (activeDraftReservedByItemId.get(itemId) || 0) + qty);
+        const key = `${so.id}:${itemId}`;
+        activeDraftReservedBySoItemKey.set(key, (activeDraftReservedBySoItemKey.get(key) || 0) + qty);
+      }
+    }
     const noQtySoIds = allNoQtyFromRows.map((so) => so.id);
     const noQtyBatchPendingBySo =
       noQtySoIds.length > 0 ? await loadNoQtyCycleIdsWithBatchQcPendingBySalesOrderIds(prisma, noQtySoIds) : new Map();
@@ -1645,6 +1662,13 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
         const remaining = getSoLineOrderQtyMinusAttributedDispatch(fifoCommitment, attrOp);
         const pendingDispatchQty = getSoLineDispatchPendingQty(fifoCommitment, dispatched);
         const onHand = onHandByItemId.get(line.itemId) ?? 0;
+        const draftReservationKey = `${so.id}:${Number(line.itemId)}`;
+        const draftReservedQty = activeDraftReservedBySoItemKey.get(draftReservationKey) ?? 0;
+        const otherDraftReservedQty = Math.max(
+          0,
+          (activeDraftReservedByItemId.get(Number(line.itemId)) ?? 0) - draftReservedQty,
+        );
+        const availableToDraftQty = Math.max(0, onHand - otherDraftReservedQty);
         const qcHoldQty = qcHoldByItemId.get(line.itemId) ?? 0;
         const qcPendingQty = qcPendingByItemId.get(line.itemId) ?? 0;
         const reworkQty = reworkByItemId.get(line.itemId) ?? 0;
@@ -1675,6 +1699,11 @@ dispatchRouter.get("/sales-orders", requireAuth, requireRole(DISPATCH_READ_ROLES
           dispatchable,
           operationalRemaining: remaining,
           totalStock: onHand,
+          /** Global active-draft reservation (UNLOCKED rows), for audit/UI. */
+          draftReservedQty,
+          otherDraftReservedQty,
+          /** Capacity for this SO draft: physical USABLE FG minus other drafts only. */
+          availableToDraftQty,
           qcHoldQty,
           qcPendingQty,
           reworkQty,
@@ -2879,6 +2908,28 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
           },
           orderBy: { id: "desc" },
         });
+        const physicalUsableQty = await getItemStockQty(body.itemId, tx, {
+          stockBucket: "USABLE",
+          allLocations: true,
+        });
+        const reservation = resolveDispatchDraftReservation({
+          dispatchId: existingDraft?.id ?? null,
+          itemId: body.itemId,
+          requestedQty: body.dispatchedQty,
+          physicalUsableQty,
+          dispatchRows: await tx.dispatch.findMany({
+            where: { itemId: body.itemId, workflowStatus: "UNLOCKED", reversalOfId: null },
+            select: { id: true, itemId: true, dispatchedQty: true, workflowStatus: true, reversalOfId: true },
+          }),
+        });
+        if (!reservation.allowed) {
+          const err = new Error(
+            `Insufficient usable stock for dispatch. Available to this draft: ${reservation.availableToThisDraftQty}, required: ${body.dispatchedQty}.`,
+          );
+          err.statusCode = 400;
+          err.code = "DISPATCH_DRAFT_RESERVATION_SHORTAGE";
+          throw err;
+        }
         const lineInputs = mapSoLinesToDispatchFifoInputs(so.lines, so.orderType);
         const competingDispatches = (so.dispatch || []).filter(
           (row) => Number(row.id) !== Number(existingDraft?.id),
@@ -3150,7 +3201,10 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
           itemId: existing.itemId,
           requestedQty: qty,
           physicalUsableQty,
-          dispatchRows: so.dispatch || [],
+          dispatchRows: await tx.dispatch.findMany({
+            where: { itemId: existing.itemId, workflowStatus: "UNLOCKED", reversalOfId: null },
+            select: { id: true, itemId: true, dispatchedQty: true, workflowStatus: true, reversalOfId: true },
+          }),
         });
         if (!reservation.allowed) {
           const err = new Error(
@@ -3447,7 +3501,10 @@ dispatchRouter.post(
             itemId: existing.itemId,
             requestedQty: qty,
             physicalUsableQty,
-            dispatchRows: so.dispatch || [],
+            dispatchRows: await tx.dispatch.findMany({
+              where: { itemId: existing.itemId, workflowStatus: "UNLOCKED", reversalOfId: null },
+              select: { id: true, itemId: true, dispatchedQty: true, workflowStatus: true, reversalOfId: true },
+            }),
           });
           if (!reservation.allowed) {
             const err = new Error(

@@ -303,7 +303,14 @@ async function assertDispatchAllowedForSoItem(tx, params, opts = {}) {
         err.statusCode = 400;
         throw err;
       }
-      await assertSufficientStockForQtyOut(tx, itemId, requestQty, "Insufficient stock for dispatch.");
+      // NORMAL_SO FG stock is held in the FG store (and may be split across
+      // valid stock locations).  The QC/dispatch cap above already uses the
+      // all-location USABLE balance; keep the physical-ledger check on that
+      // same scope.  The old default scope was RM Store, so a valid FG draft
+      // could see `Available: 0` even though 10,005 Nos were ready to ship.
+      await assertSufficientStockForQtyOut(tx, itemId, requestQty, "Insufficient stock for dispatch.", {
+        allLocations: true,
+      });
       return;
     }
 

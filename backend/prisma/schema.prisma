@@ -897,6 +897,8 @@ model Unit {
   unitCode  String?  @db.VarChar(16)
   /// Exact Tally UNIT NAME when imported.
   tallyName String?  @db.VarChar(64)
+  /// Exact Tally unit symbol before ERP code normalization/shortening.
+  tallyUnitSymbol String? @db.VarChar(64)
   /// Tally GUID / Master ID when present on import.
   tallyGuid String?  @db.VarChar(64)
   tallyImportedAt DateTime?

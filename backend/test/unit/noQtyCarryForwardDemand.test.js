@@ -60,6 +60,18 @@ describe("resolveNoQtyCarryForwardDemandQty", () => {
     assert.equal(dummyPlug, 300);
     assert.equal(squareBox, 0);
   });
+
+  test("does not double-count RS operator shortfall when recovery pool already holds the qty", () => {
+    assert.equal(
+      resolveNoQtyCarryForwardDemandQty({
+        cfPendingQty: 28,
+        operatorShortfall: 28,
+        executionCompleted: true,
+        hadCarryForwardResolution: true,
+      }),
+      28,
+    );
+  });
 });
 
 describe("loadPendingCarryForwardQtyByItem", () => {

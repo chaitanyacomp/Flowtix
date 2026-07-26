@@ -375,6 +375,28 @@ describe("productionExecutionService", () => {
     assert.equal(auditRows[0].resolutionReason, "CAPACITY_CONSTRAINT");
   });
 
+  test("NO_QTY finish CARRY_FORWARD recovery qty is exact WO planned − finalized production", async () => {
+    const { tx, carryForwardRows, getWoStatus } = createFinishMockTx({
+      plannedQty: 2000,
+      producedQty: 1972,
+    });
+    const result = await finishProductionExecution(
+      tx,
+      280,
+      { shortfallOutcome: "CARRY_FORWARD" },
+      { actorUserId: null, actorRole: null },
+    );
+    assert.equal(result.outcome, "CARRY_FORWARD");
+    assert.equal(getWoStatus(), "COMPLETED");
+    assert.equal(carryForwardRows.length, 1);
+    assert.equal(Number(carryForwardRows[0].sourceQty), 28);
+    assert.equal(Number(carryForwardRows[0].remainingQty), 28);
+    assert.equal(carryForwardRows[0].sourceRequirementSheetId, 7);
+    assert.equal(carryForwardRows[0].salesOrderId, 42);
+    assert.equal(carryForwardRows[0].itemId, 501);
+    assert.equal(carryForwardRows[0].recoveryType, "PRODUCTION_SHORTFALL");
+  });
+
   test("finishProductionExecution requires confirmed Production Report", async () => {
     const { tx } = createFinishMockTx({ reportConfirmed: false });
     await assert.rejects(

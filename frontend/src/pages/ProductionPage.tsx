@@ -65,10 +65,13 @@ import {
   shouldIgnoreClearedExecutionSummaryDuringReportTransition,
 } from "../lib/productionReportTransition";
 import {
+  computeReviewFinalizeShortageQty,
   isReviewFinalizeDispositionReady,
   REVIEW_FINALIZE_REMAINING_OPTIONS,
   reviewFinalizePrimaryButtonLabel,
+  reviewFinalizeShortagePanelCopy,
   type ReviewFinalizeDisposition,
+  type ReviewFinalizeFlowKind,
 } from "../lib/productionReviewFinalizeDisposition";
 import { buildProductionScopedHref } from "../lib/productionNavigation";
 import {
@@ -246,9 +249,11 @@ type WoLine = {
   id: number;
   fgItemId: number;
   qty: string;
+  /** Authoritative WO plan when present (else `qty`). */
+  plannedQty?: string | number | null;
   /** Sum of APPROVED production batches on this line (draft excluded). */
   approvedProducedQty?: number;
-  /** max(0, WO line qty − approved produced); lines with 0 are omitted when pendingOnly=1. */
+  /** max(0, WO planned − approved produced); lines with 0 are omitted when pendingOnly=1. */
   remainingQty?: number;
   qcPendingQty?: number;
   fgItem: { itemName: string; unit?: string };
@@ -490,11 +495,16 @@ function safeProdNum(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function linePlannedQty(l: Pick<FlatLine, "qty" | "plannedQty">): number {
+  const planned = Number(l.plannedQty ?? l.qty);
+  return Number.isFinite(planned) ? planned : 0;
+}
+
 function lineRemaining(l: FlatLine): number {
   const approved = l.approvedProducedQty ?? 0;
   return l.remainingQty != null && Number.isFinite(l.remainingQty)
     ? l.remainingQty
-    : Math.max(0, Number(l.qty) - approved);
+    : Math.max(0, linePlannedQty(l) - approved);
 }
 
 function formatNoQtyProductionWoLabel(
@@ -4010,12 +4020,12 @@ export function ProductionPage() {
     if (!row) return null;
     const lineId = Number(row.workOrderLine?.id ?? 0);
     const line = flatLines.find((l) => Number(l.id) === lineId);
-    const planned = Number(line?.qty ?? 0);
+    const planned = line ? linePlannedQty(line) : 0;
     const previouslyFinalized = entries
       .filter((e) => e.id !== id && isApproved(e) && Number(e.workOrderLine?.id ?? 0) === lineId)
       .reduce((sum, e) => sum + Number(e.producedQty ?? 0), 0);
     const currentDraft = Number(row.producedQty ?? 0);
-    const remaining = Math.max(0, planned - previouslyFinalized - currentDraft);
+    const remaining = computeReviewFinalizeShortageQty(planned, previouslyFinalized, currentDraft);
     return { row, planned, previouslyFinalized, currentDraft, totalAfter: previouslyFinalized + currentDraft, remaining };
   }
 
@@ -7437,24 +7447,38 @@ export function ProductionPage() {
           </label>
         ) : null}
         {!isRegularFlow && reviewFinalize.remaining > 1e-6 && reviewDisposition === "END_WITH_SHORTAGE" ? (
-          <div className="space-y-2 rounded-lg border-2 border-red-300 bg-red-50 p-3 text-sm text-red-950">
-            <p className="font-semibold">
-              Permanently closing leaves exactly {fmtProdQty(reviewFinalize.remaining)} unproduced.
-            </p>
-            <p>
-              This WO cannot be continued normally and this shortage will not carry forward. Choose Continue Later
-              if production may resume.
-            </p>
-            <label className="flex items-start gap-2 font-medium">
-              <input
-                type="checkbox"
-                className="mt-1"
-                checked={reviewPermanentClosureAcknowledged}
-                onChange={(event) => setReviewPermanentClosureAcknowledged(event.target.checked)}
-              />
-              <span>I understand this WO will close permanently.</span>
-            </label>
-          </div>
+          (() => {
+            const shortageFlow: ReviewFinalizeFlowKind =
+              productionFlowMode === "NO_QTY"
+                ? "NO_QTY"
+                : productionFlowMode === "GREEN_LEVEL"
+                  ? "GREEN_LEVEL"
+                  : "OTHER";
+            const shortageCopy = reviewFinalizeShortagePanelCopy({
+              flow: shortageFlow,
+              shortageQty: reviewFinalize.remaining,
+              formatQty: fmtProdQty,
+              unit: reviewFinalize.row.workOrderLine?.fgItem?.unit || "Nos",
+            });
+            return (
+              <div
+                className="space-y-2 rounded-lg border-2 border-red-300 bg-red-50 p-3 text-sm text-red-950"
+                data-testid={shortageCopy.testId}
+              >
+                <p className="font-semibold">{shortageCopy.heading}</p>
+                <p>{shortageCopy.body}</p>
+                <label className="flex items-start gap-2 font-medium">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={reviewPermanentClosureAcknowledged}
+                    onChange={(event) => setReviewPermanentClosureAcknowledged(event.target.checked)}
+                  />
+                  <span>{shortageCopy.checkbox}</span>
+                </label>
+              </div>
+            );
+          })()
         ) : null}
         <label className="block text-sm font-medium text-slate-700">
           {!isRegularFlow && reviewDisposition === "END_WITH_SHORTAGE" ? "Closure reason (required)" : "Remarks (optional)"}
@@ -7510,7 +7534,17 @@ export function ProductionPage() {
             }
           }}>
             {!isRegularFlow && reviewDisposition === "END_WITH_SHORTAGE"
-              ? "Permanently Close WO with Shortage"
+              ? reviewFinalizeShortagePanelCopy({
+                  flow:
+                    productionFlowMode === "NO_QTY"
+                      ? "NO_QTY"
+                      : productionFlowMode === "GREEN_LEVEL"
+                        ? "GREEN_LEVEL"
+                        : "OTHER",
+                  shortageQty: reviewFinalize.remaining,
+                  formatQty: fmtProdQty,
+                  unit: reviewFinalize.row.workOrderLine?.fgItem?.unit || "Nos",
+                }).button
               : reviewFinalizePrimaryButtonLabel({
                   remainingAfterEntry: reviewFinalize.remaining,
                   disposition: reviewDisposition,

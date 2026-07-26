@@ -259,6 +259,39 @@ describe("noQtyRecoveryService — create sources", () => {
     assert.equal(db._sources.length, 1);
   });
 
+  it("records exact WO planned − finalized production shortage on RS-1 (idempotent retries)", async () => {
+    const db = makeDb();
+    const planned = 2000;
+    const finalized = 1972;
+    const shortage = Math.max(0, planned - finalized);
+    assert.equal(shortage, 28);
+    const args = {
+      workOrder: {
+        id: 71,
+        salesOrderId: 42,
+        requirementSheetId: 1,
+        cycleId: 3,
+      },
+      workOrderLine: { fgItemId: 501 },
+      remainderQty: shortage,
+      resolutionReason: "CAPACITY_CONSTRAINT",
+      productionShortfallResolutionId: 901,
+      actorUserId: 1,
+    };
+    const first = await createProductionShortRecovery(db, args);
+    const retry = await createProductionShortRecovery(db, args);
+    assert.ok(first);
+    assert.equal(first.id, retry.id);
+    assert.equal(Number(first.sourceQty), 28);
+    assert.equal(Number(first.remainingQty), 28);
+    assert.equal(first.sourceRequirementSheetId, 1);
+    assert.equal(first.salesOrderId, 42);
+    assert.equal(first.itemId, 501);
+    assert.equal(first.recoveryType, "PRODUCTION_SHORTFALL");
+    assert.equal(first.recoveryStatus, "OPEN");
+    assert.equal(db._sources.length, 1);
+  });
+
   it("creates QC final rejection recovery (first-pass SCRAP uses same producer via append)", async () => {
     const db = makeDb();
     const row = await createFinalQcRejectedRecovery(db, {
@@ -287,6 +320,33 @@ describe("noQtyRecoveryService — create sources", () => {
     assert.equal(a.id, b.id);
     assert.equal(db._sources.length, 1);
     assert.equal(Number(b.sourceQty), 8);
+  });
+
+  it("does not create QC_FINAL_REJECTION for WO surplus scrap (plan already accepted)", async () => {
+    const db = makeDb();
+    db.workOrderLine = {
+      findFirst: async () => ({
+        qty: 2000,
+        plannedQty: 2000,
+        productions: [
+          {
+            producedQty: 2005,
+            qcEntries: [{ acceptedQty: 2000, rejectedQty: 5 }],
+          },
+        ],
+      }),
+    };
+    const row = await appendTerminalQcScrapRecovery(db, {
+      disposition: {
+        id: 90,
+        itemId: 501,
+        workOrderId: 7,
+        workOrder: { id: 7, salesOrderId: 42, cycleId: 3 },
+      },
+      scrapQty: 5,
+    });
+    assert.equal(row, null);
+    assert.equal(db._sources.length, 0);
   });
 
   it("duplicate QC create is idempotent under unique race", async () => {

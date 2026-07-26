@@ -36,6 +36,8 @@ export type RequirementSheetWorkbenchActionContext = {
   noQtyFinalizeDisabled: boolean;
   draftUi: boolean;
   noQtyDraftCanFinalize: boolean;
+  /** NO_QTY: Finalize blocked while WO excess that offsets recovery is pending QC. */
+  producedExcessPendingQcFinalizeMessage?: string | null;
   /** Zero-demand recovery cycle: all KEEP/WAIVE done — Finalize allowed. */
   decisionOnlyRecoveryReady?: boolean;
   busy: boolean;
@@ -164,7 +166,9 @@ export function resolveRequirementSheetWorkbenchActions(
       disabled: ctx.noQtyFinalizeDisabled,
       loading: ctx.busy,
     };
-    if (ctx.draftUi && !ctx.noQtyDraftCanFinalize) {
+    if (ctx.draftUi && ctx.producedExcessPendingQcFinalizeMessage) {
+      hint = ctx.producedExcessPendingQcFinalizeMessage;
+    } else if (ctx.draftUi && !ctx.noQtyDraftCanFinalize) {
       hint = "Enter requirement qty.";
     } else if (ctx.draftUi && ctx.decisionOnlyRecoveryReady) {
       hint = "Recovery decisions completed — finalize this cycle.";

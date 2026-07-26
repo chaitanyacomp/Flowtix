@@ -145,6 +145,9 @@ const {
   appendTerminalQcScrapRecovery,
   cancelUnallocatedRecoverySource,
 } = require("../services/noQtyRecoveryService");
+const {
+  resolveProductionReportConfirmCloseAction,
+} = require("../services/productionReportConfirmClosePolicy");
 
 /**
  * NO_QTY only: allow QC on approved batches for the work order's own cycle when that cycle still has a LOCKED RS.
@@ -1308,20 +1311,24 @@ productionRouter.post(
           { userId: req.user?.userId, role: req.user?.role },
           { includeReport: false },
         );
-        const orderType = String(confirmed.salesOrderOrderType ?? "").toUpperCase();
-        const executionStatus = String(confirmed.executionStatus ?? "").toUpperCase();
         const woMeta = await tx.workOrder.findUnique({
           where: { id },
           select: { sourceType: true },
         });
         const isGreenLevel = isGreenLevelReplenishmentWorkOrder(woMeta);
+        const closePlan = resolveProductionReportConfirmCloseAction({
+          salesOrderOrderType: confirmed.salesOrderOrderType,
+          isGreenLevel,
+          closeWorkOrder: body.closeWorkOrder === true,
+          executionStatus: confirmed.executionStatus,
+          remainderQty: confirmed.remainderQty,
+        });
         let executionClose = null;
-        if (body.closeWorkOrder && executionStatus !== "COMPLETED" && (orderType === "NO_QTY" || isGreenLevel)) {
-          const remainderQty = Number(confirmed.remainderQty ?? 0);
+        if (closePlan.action === "FINISH_PRODUCTION_EXECUTION") {
           executionClose = await finishProductionExecution(
             tx,
             id,
-            remainderQty > REPORT_QUEUE_EPS ? { shortfallOutcome: "CARRY_FORWARD" } : {},
+            closePlan.shortfallOutcome ? { shortfallOutcome: closePlan.shortfallOutcome } : {},
             { actorUserId: req.user?.userId, actorRole: req.user?.role },
           );
           await reconcileWorkOrderStatusFromProduction(tx, id, {
@@ -1329,7 +1336,7 @@ productionRouter.post(
             actorRole: req.user?.role,
             source: "PRODUCTION_REPORT_EXECUTION_CLOSE",
           });
-        } else if (orderType !== "NO_QTY" && !isGreenLevel) {
+        } else if (closePlan.action === "REGULAR_REPORT_CLOSE") {
           const closureReason = regularShortageClosureReasonFromPendingExecution(
             executionGuard?.productionExecution,
           );

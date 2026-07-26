@@ -82,6 +82,12 @@ const {
   previewRequirementSheetRmForProposedQty,
 } = require("../services/requirementSheetExecutionService");
 const { loadNoQtyAcceptedSurplusForCycle } = require("../services/noQtyAcceptedSurplusService");
+const {
+  loadNoQtyProducedExcessByItemForPriorCycles,
+  composeNoQtyRecoveryExcessView,
+  effectiveRecoveryAfterAcceptedWoExcessOffset,
+  assertNoProducedExcessPendingQcForRecoveryOrThrow,
+} = require("../services/noQtyProductionExcessRecoveryService");
 
 const requirementSheetsRouter = express.Router();
 
@@ -900,19 +906,46 @@ async function mapSheetDetail(sheet) {
     salesOrderId: sheet.salesOrderId,
     currentCycleId: effCycleIdForPost,
   });
+  const producedExcessByItem =
+    sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
+      ? await loadNoQtyProducedExcessByItemForPriorCycles(prisma, {
+          salesOrderId: sheet.salesOrderId,
+          targetCycleId: Number(effCycleIdForPost),
+        })
+      : new Map();
+
+  // Phase 2B: read-only recovery summary + Keep/Waive decisions (no auto-allocation).
+  const recoverySummary =
+    sheet?.salesOrder?.orderType === "NO_QTY"
+      ? await getRecoverySummary(prisma, sheet.salesOrderId)
+      : null;
+
+  const recoveryDecisions =
+    sheet?.salesOrder?.orderType === "NO_QTY"
+      ? await getRecoveryDecisionsForSheet(prisma, sheet.id)
+      : null;
+  const recoveryDecisionByItem = new Map(
+    (recoveryDecisions?.items || []).map((d) => [Number(d.itemId), d]),
+  );
+
+  // Gross for Prior Accepted Excess allocation uses recovery after accepted WO-excess offset
+  // (pending excess is never treated as Prior Accepted Excess).
   const grossRequirementByItem = new Map(
-    (sheet.lines || []).map((ln) => [
-      Number(ln.itemId),
-      round3(
-        n(
-          ln.totalRsQty ??
-            n(ln.baseDemandQty ?? ln.requirementQty) +
-              n(ln.productionShortfallQty) +
-              n(ln.qcRejectionRecoveryQty) +
-              n(ln.approvedManualAdjustmentQty),
-        ),
-      ),
-    ]),
+    (sheet.lines || []).map((ln) => {
+      const itemId = Number(ln.itemId);
+      const base = n(ln.baseDemandQty ?? ln.requirementQty);
+      const adj = n(ln.approvedManualAdjustmentQty);
+      const ps = n(ln.productionShortfallQty);
+      const qc = n(ln.qcRejectionRecoveryQty);
+      const acceptedWoExcess = n(producedExcessByItem.get(itemId)?.acceptedWoExcessQty);
+      const { effectiveRecoveryQty } = effectiveRecoveryAfterAcceptedWoExcessOffset({
+        productionShortfallQty: ps,
+        qcRejectionRecoveryQty: qc,
+        rejectedWoExcessQty: n(producedExcessByItem.get(itemId)?.rejectedWoExcessQty),
+        acceptedWoExcessQty: acceptedWoExcess,
+      });
+      return [itemId, round3(base + effectiveRecoveryQty + adj)];
+    }),
   );
   const acceptedSurplusByItem =
     sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
@@ -938,17 +971,6 @@ async function mapSheetDetail(sheet) {
     sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
       ? await loadNoQtyPriorCycleUndispatchedAcceptedByItem(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
       : new Map();
-
-  // Phase 2B: read-only recovery summary + Keep/Waive decisions (no auto-allocation).
-  const recoverySummary =
-    sheet?.salesOrder?.orderType === "NO_QTY"
-      ? await getRecoverySummary(prisma, sheet.salesOrderId)
-      : null;
-
-  const recoveryDecisions =
-    sheet?.salesOrder?.orderType === "NO_QTY"
-      ? await getRecoveryDecisionsForSheet(prisma, sheet.id)
-      : null;
 
   const availableQcRecovery =
     sheet?.salesOrder?.orderType === "NO_QTY"
@@ -990,6 +1012,8 @@ async function mapSheetDetail(sheet) {
       sheet?.salesOrder?.orderType === "NO_QTY" ? round3(n(undispatchedPriorByItem.get(ln.itemId) ?? 0)) : 0;
     const acceptedSurplus = acceptedSurplusByItem.get(Number(ln.itemId)) ?? null;
     const priorAcceptedExcessQty = round3(n(acceptedSurplus?.allocatedAcceptedSurplusQty ?? 0));
+    const decisionForItem = recoveryDecisionByItem.get(Number(ln.itemId)) ?? null;
+    const producedExcessRow = producedExcessByItem.get(Number(ln.itemId)) ?? null;
 
     if (sheet.status === "LOCKED" && sheet?.salesOrder?.orderType === "NO_QTY") {
       const rawSnapStock = ln.availableStockQtySnapshot != null ? n(ln.availableStockQtySnapshot) : 0;
@@ -1143,14 +1167,32 @@ async function mapSheetDetail(sheet) {
     }
     if (zone === "EXCESS" && sheet?.salesOrder?.orderType !== "NO_QTY") suggestedNetWoQty = 0;
 
+    const lineProductionShortfallQty = round3(n(ln.productionShortfallQty ?? shortfallQty ?? 0));
+    const lineQcRejectionRecoveryQty = round3(n(ln.qcRejectionRecoveryQty ?? 0));
+    const recoveryExcessView =
+      sheet?.salesOrder?.orderType === "NO_QTY"
+        ? composeNoQtyRecoveryExcessView({
+            grossProductionShortageQty: round3(
+              n(decisionForItem?.productionShortfallQty ?? lineProductionShortfallQty),
+            ),
+            keptFinalQcRejectionQty: round3(
+              n(decisionForItem?.qcFinalRejectionQty ?? lineQcRejectionRecoveryQty),
+            ),
+            rejectedWoExcessQty: round3(n(producedExcessRow?.rejectedWoExcessQty)),
+            producedExcessPendingQcQty: round3(n(producedExcessRow?.producedExcessPendingQcQty)),
+            acceptedWoExcessQty: round3(n(producedExcessRow?.acceptedWoExcessQty)),
+            unit: item?.unit || "Nos",
+          })
+        : null;
+
     return {
       id: ln.id,
       itemId: ln.itemId,
       itemName: item?.itemName ?? `Item #${ln.itemId}`,
       unit: item?.unit ?? null,
       shortfallQty,
-      productionShortfallQty: round3(n(ln.productionShortfallQty ?? shortfallQty ?? 0)),
-      qcRejectionRecoveryQty: round3(n(ln.qcRejectionRecoveryQty ?? 0)),
+      productionShortfallQty: lineProductionShortfallQty,
+      qcRejectionRecoveryQty: lineQcRejectionRecoveryQty,
       baseDemandQty: round3(n(ln.baseDemandQty ?? newWoQty)),
       approvedManualAdjustmentQty: round3(n(ln.approvedManualAdjustmentQty ?? 0)),
       totalRsQty: round3(
@@ -1158,8 +1200,8 @@ async function mapSheetDetail(sheet) {
           ln.totalRsQty ??
             round3(
               n(ln.baseDemandQty ?? newWoQty) +
-                n(ln.productionShortfallQty ?? shortfallQty ?? 0) +
-                n(ln.qcRejectionRecoveryQty ?? 0) +
+                lineProductionShortfallQty +
+                lineQcRejectionRecoveryQty +
                 n(ln.approvedManualAdjustmentQty ?? 0),
             ),
         ),
@@ -1176,6 +1218,16 @@ async function mapSheetDetail(sheet) {
             unusedAcceptedExcessQty: round3(n(acceptedSurplus?.unusedAcceptedSurplusQty ?? 0)),
             availableAcceptedSurplusQty: round3(n(acceptedSurplus?.availableAcceptedSurplusQty ?? 0)),
             netProductionRequirementQty: round3(n(productionRequiredQty ?? 0)),
+            producedExcessPendingQcQty: round3(n(recoveryExcessView?.producedExcessPendingQcQty)),
+            acceptedWoExcessQty: round3(n(recoveryExcessView?.acceptedWoExcessQty)),
+            rejectedWoExcessQty: round3(n(recoveryExcessView?.rejectedWoExcessQty)),
+            demandBackedQcRejectionQty: round3(n(recoveryExcessView?.demandBackedQcRejectionQty)),
+            provisionalNetRecoveryQty: round3(n(recoveryExcessView?.provisionalNetRecoveryQty)),
+            confirmedNetRecoveryQty: round3(n(recoveryExcessView?.confirmedNetRecoveryQty)),
+            provisionalNetRecoverySubjectToQc: Boolean(recoveryExcessView?.subjectToQc),
+            provisionalNetRecoveryExplanation: recoveryExcessView?.provisionalNetRecoveryExplanation ?? null,
+            producedExcessPendingQcBlocksFinalize: Boolean(recoveryExcessView?.finalizeBlocked),
+            producedExcessPendingQcFinalizeMessage: recoveryExcessView?.finalizeBlockMessage ?? null,
             acceptedExcessExplanation:
               priorAcceptedExcessQty > EPS
                 ? `${priorAcceptedExcessQty.toLocaleString("en-US", { maximumFractionDigits: 3 })} ${item?.unit || "qty"} accepted in previous cycles have been applied to this cycle.`
@@ -2113,8 +2165,46 @@ requirementSheetsRouter.post(
           actorUserId: req.user?.userId ?? null,
         });
 
+        // Block Finalize while WO excess that offsets recovery is still pending QC.
+        if (existing.salesOrder?.orderType === "NO_QTY" && activeCycleId) {
+          const recoveryByItem = new Map(
+            (recoveryLines || []).map((ln) => [
+              Number(ln.itemId),
+              {
+                productionShortfallQty: n(ln.productionShortfallQty),
+                qcFinalRejectionQty: n(ln.qcRejectionRecoveryQty),
+                unit: (existing.lines || []).find((x) => x.id === ln.id)?.item?.unit || "Nos",
+              },
+            ]),
+          );
+          await assertNoProducedExcessPendingQcForRecoveryOrThrow(tx, {
+            salesOrderId: existing.salesOrderId,
+            targetCycleId: activeCycleId,
+            recoveryByItem,
+          });
+        }
+
+        const producedExcessByItemLock =
+          existing.salesOrder?.orderType === "NO_QTY" && activeCycleId
+            ? await loadNoQtyProducedExcessByItemForPriorCycles(tx, {
+                salesOrderId: existing.salesOrderId,
+                targetCycleId: activeCycleId,
+              })
+            : new Map();
+
         const grossRequirementByItem = new Map(
-          (recoveryLines || []).map((ln) => [Number(ln.itemId), round3(n(ln.totalRsQty))]),
+          (recoveryLines || []).map((ln) => {
+            const itemId = Number(ln.itemId);
+            const base = n(ln.baseDemandQty ?? ln.requirementQty);
+            const adj = n(ln.approvedManualAdjustmentQty);
+            const { effectiveRecoveryQty } = effectiveRecoveryAfterAcceptedWoExcessOffset({
+              productionShortfallQty: n(ln.productionShortfallQty),
+              qcRejectionRecoveryQty: n(ln.qcRejectionRecoveryQty),
+              rejectedWoExcessQty: n(producedExcessByItemLock.get(itemId)?.rejectedWoExcessQty),
+              acceptedWoExcessQty: n(producedExcessByItemLock.get(itemId)?.acceptedWoExcessQty),
+            });
+            return [itemId, round3(base + effectiveRecoveryQty + adj)];
+          }),
         );
         // Atomic freshness: lock always reconstructs accepted surplus from current QC/dispatch history.
         const acceptedSurplusByItem = await loadNoQtyAcceptedSurplusForCycle(tx, {

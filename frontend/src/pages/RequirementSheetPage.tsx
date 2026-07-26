@@ -222,6 +222,14 @@ type SheetLine = {
   productionQcPendingQty?: number | null;
   /** NO_QTY: QC-accepted (+ recheck/post) from prior cycle still not operationally dispatched — informational for dispatch context. */
   previousCycleUndispatchedAcceptedQty?: number | null;
+  /** NO_QTY: WO over-production still awaiting QC (not Prior Accepted Excess). */
+  producedExcessPendingQcQty?: number | null;
+  acceptedWoExcessQty?: number | null;
+  provisionalNetRecoveryQty?: number | null;
+  provisionalNetRecoverySubjectToQc?: boolean | null;
+  provisionalNetRecoveryExplanation?: string | null;
+  producedExcessPendingQcBlocksFinalize?: boolean | null;
+  producedExcessPendingQcFinalizeMessage?: string | null;
   gapPercent?: number | null;
   suggestedWoQty?: number | null;
   /** Cycle production need (gross fulfillment − usable stock); drives WO / dispatch cap. */
@@ -1020,6 +1028,10 @@ export function RequirementSheetPage() {
       setError("Recalculate or Save draft before finalize — displayed quantities may be stale.");
       return;
     }
+    if (producedExcessPendingQcFinalizeBlock) {
+      setError(producedExcessPendingQcFinalizeBlock);
+      return;
+    }
     if (
       isNoQty &&
       sheet.status === "DRAFT" &&
@@ -1444,12 +1456,31 @@ export function RequirementSheetPage() {
     });
   }, [isNoQty, sheet?.status, safeLines, decisionOnlyRecoveryReady]);
 
+  const producedExcessPendingQcFinalizeBlock = React.useMemo(() => {
+    if (!isNoQty || sheet?.status !== "DRAFT") return null;
+    for (const l of safeLines) {
+      if (l.producedExcessPendingQcBlocksFinalize && l.producedExcessPendingQcFinalizeMessage) {
+        return String(l.producedExcessPendingQcFinalizeMessage);
+      }
+      const pendingExcess = safeNum(l.producedExcessPendingQcQty);
+      const ps = safeNum(l.productionShortfallQty ?? l.shortfallQty);
+      const qc = safeNum(l.qcRejectionRecoveryQty);
+      if (pendingExcess > PLAN_EPS && ps + qc > PLAN_EPS) {
+        return `Final recovery cannot be confirmed until QC decides ${pendingExcess.toLocaleString("en-US", {
+          maximumFractionDigits: 3,
+        })} ${(l.unit || "Nos").trim()} excess production.`;
+      }
+    }
+    return null;
+  }, [isNoQty, sheet?.status, safeLines]);
+
   const noQtyFinalizeDisabled =
     !sheet ||
     editingDisabled ||
     busy ||
     needsRecalc ||
-    (isNoQty && draftUi && !noQtyDraftCanFinalize);
+    (isNoQty && draftUi && !noQtyDraftCanFinalize) ||
+    Boolean(producedExcessPendingQcFinalizeBlock);
 
   const [rsCycleSummaries, setRsCycleSummaries] = React.useState<NoQtyRsCycleSummaryEntry[]>([]);
   const [rsCycleSummaryLoading, setRsCycleSummaryLoading] = React.useState(false);
@@ -1515,6 +1546,7 @@ export function RequirementSheetPage() {
         noQtyFinalizeDisabled,
         draftUi,
         noQtyDraftCanFinalize,
+        producedExcessPendingQcFinalizeMessage: producedExcessPendingQcFinalizeBlock,
         decisionOnlyRecoveryReady,
         busy,
         noSheetsUi,
@@ -1545,6 +1577,7 @@ export function RequirementSheetPage() {
       noQtyFinalizeDisabled,
       draftUi,
       noQtyDraftCanFinalize,
+      producedExcessPendingQcFinalizeBlock,
       decisionOnlyRecoveryReady,
       busy,
       noSheetsUi,

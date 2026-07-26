@@ -36,6 +36,14 @@ describe("REGULAR_SO acceptance UI isolation", () => {
     expect(productionSource).toContain('data-testid="regular-review-finalize-next-decision"');
   });
 
+  it("keeps Regular no-carry-forward language only on the Regular path", () => {
+    expect(productionSource).toContain("will not carry forward");
+    expect(productionSource).toContain("reviewFinalizeShortagePanelCopy");
+    expect(productionSource).toContain('productionFlowMode === "NO_QTY"');
+    expect(productionSource).not.toContain("Permanently closing leaves exactly");
+    expect(regularDecisionSource).toContain("Permanently Close WO with Shortage");
+  });
+
   it("requires reason and explicit acknowledgement and displays the exact shortage", () => {
     expect(productionSource).toContain("regularSoCoverage?.soShortageQty");
     expect(productionSource).toContain("Enter the closure reason");

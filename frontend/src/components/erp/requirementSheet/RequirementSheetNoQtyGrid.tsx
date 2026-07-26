@@ -5,6 +5,7 @@ import { WorkbenchGrid, WorkbenchGridTable } from "../workbench";
 import {
   allCyclesQtyForItem,
   computeLiveNetProductionRequirement,
+  computeProvisionalNetRecovery,
   fmtPlan,
   PLAN_EPS,
   previousCyclesQtyForItem,
@@ -37,6 +38,14 @@ export type RequirementSheetNoQtyGridLine = {
   pendingQcDispositionQty?: number | null;
   productionQcPendingQty?: number | null;
   previousCycleUndispatchedAcceptedQty?: number | null;
+  producedExcessPendingQcQty?: number | null;
+  acceptedWoExcessQty?: number | null;
+  rejectedWoExcessQty?: number | null;
+  provisionalNetRecoveryQty?: number | null;
+  provisionalNetRecoverySubjectToQc?: boolean | null;
+  provisionalNetRecoveryExplanation?: string | null;
+  producedExcessPendingQcBlocksFinalize?: boolean | null;
+  producedExcessPendingQcFinalizeMessage?: string | null;
   qcStockNote?: string | null;
 };
 
@@ -110,7 +119,7 @@ function DetailMetric({
   );
 }
 
-const COL_COUNT = 11;
+const COL_COUNT = 13;
 
 export function RequirementSheetNoQtyGrid({
   lines,
@@ -150,17 +159,19 @@ export function RequirementSheetNoQtyGrid({
     <WorkbenchGrid id="rs-items" aria-label="Requirement sheet line items" compact>
       <WorkbenchGridTable className="table-fixed w-full min-w-[64rem]">
         <colgroup>
-          <col className="w-[12%]" />
-          <col className="w-[9%]" />
+          <col className="w-[11%]" />
           <col className="w-[8%]" />
-          <col className="w-[8%]" />
-          <col className="w-[8%]" />
-          <col className="w-[10%]" />
-          <col className="w-[9%]" />
-          <col className="w-[12%]" />
           <col className="w-[7%]" />
-          <col className="w-[9%]" />
+          <col className="w-[7%]" />
+          <col className="w-[7%]" />
           <col className="w-[8%]" />
+          <col className="w-[8%]" />
+          <col className="w-[8%]" />
+          <col className="w-[8%]" />
+          <col className="w-[9%]" />
+          <col className="w-[6%]" />
+          <col className="w-[7%]" />
+          <col className="w-[6%]" />
         </colgroup>
         <thead>
           <tr>
@@ -170,7 +181,7 @@ export function RequirementSheetNoQtyGrid({
             <th scope="col" className="text-right" title="Customer / current-cycle demand entered on this sheet">
               Customer Demand
             </th>
-            <th scope="col" className="text-right" title="Available PRODUCTION_SHORTFALL until Keep">
+            <th scope="col" className="text-right" title="Gross WO-level PRODUCTION_SHORTFALL until Keep (before excess offset)">
               Production Shortage
             </th>
             <th scope="col" className="text-right" title="Available QC_FINAL_REJECTION until Keep">
@@ -178,6 +189,20 @@ export function RequirementSheetNoQtyGrid({
             </th>
             <th scope="col" className="text-right" title="Pending recovery = Shortage + QC rejection">
               Pending Recovery
+            </th>
+            <th
+              scope="col"
+              className="text-right"
+              title="WO over-production still awaiting first-pass QC — not Prior Accepted Excess"
+            >
+              Produced Excess Pending QC
+            </th>
+            <th
+              scope="col"
+              className="text-right"
+              title="Gross shortage + QC rejection − pending/accepted WO excess (subject to QC while pending)"
+            >
+              Provisional Net Recovery
             </th>
             <th scope="col" className="text-right" title="QC-accepted excess FG from prior cycles allocated here">
               Prior Accepted Excess
@@ -188,7 +213,7 @@ export function RequirementSheetNoQtyGrid({
             <th
               scope="col"
               className="text-right"
-              title="Executable production qty = Demand + kept recovery − prior accepted excess"
+              title="Executable production qty = Demand + kept recovery after accepted WO excess − prior accepted excess"
             >
               Net Production Requirement
             </th>
@@ -236,6 +261,24 @@ export function RequirementSheetNoQtyGrid({
             const productionQcPending = safeNum(l.productionQcPendingQty);
             const postCycle = safeNum(l.postCycleApprovalQty);
             const undispatchedPrior = safeNum(l.previousCycleUndispatchedAcceptedQty);
+            const producedExcessPendingQc = safeNum(l.producedExcessPendingQcQty);
+            const acceptedWoExcess = safeNum(l.acceptedWoExcessQty);
+            const rejectedWoExcess = safeNum(l.rejectedWoExcessQty);
+            const provisional = computeProvisionalNetRecovery({
+              grossProductionShortageQty: psQty,
+              keptFinalQcRejectionQty: qcQty,
+              rejectedWoExcessQty: rejectedWoExcess,
+              producedExcessPendingQcQty: producedExcessPendingQc,
+              acceptedWoExcessQty: acceptedWoExcess,
+            });
+            const provisionalNetRecovery =
+              l.provisionalNetRecoveryQty != null && Number.isFinite(Number(l.provisionalNetRecoveryQty))
+                ? safeNum(l.provisionalNetRecoveryQty)
+                : provisional.provisionalNetRecoveryQty;
+            const provisionalSubjectToQc =
+              l.provisionalNetRecoverySubjectToQc != null
+                ? Boolean(l.provisionalNetRecoverySubjectToQc)
+                : provisional.subjectToQc;
 
             // Live net: always recompute from current demand + server excess pool so edits refresh immediately.
             const live = computeLiveNetProductionRequirement({
@@ -243,6 +286,7 @@ export function RequirementSheetNoQtyGrid({
               keptProductionShortageQty: keptPs,
               keptQcRejectionQty: keptQc,
               approvedManualAdjustmentQty: safeNum(l.approvedManualAdjustmentQty),
+              acceptedWoExcessQty: acceptedWoExcess,
               priorAcceptedExcessQty: safeNum(l.priorAcceptedExcessQty),
               unusedAcceptedExcessQty: safeNum(l.unusedAcceptedExcessQty),
               availableAcceptedSurplusQty: l.availableAcceptedSurplusQty,
@@ -299,6 +343,32 @@ export function RequirementSheetNoQtyGrid({
                   </td>
                   <td className="erp-table-num text-right align-top font-semibold text-slate-950">
                     {pendingRecovery > PLAN_EPS ? fmtPlan(pendingRecovery, unit) : "—"}
+                  </td>
+                  <td
+                    className="erp-table-num text-right align-top font-semibold text-amber-900"
+                    data-testid={`rs-produced-excess-pending-qc-${l.itemId}`}
+                  >
+                    {producedExcessPendingQc > PLAN_EPS ? fmtPlan(producedExcessPendingQc, unit) : "—"}
+                  </td>
+                  <td
+                    className="erp-table-num text-right align-top font-semibold text-slate-950"
+                    data-testid={`rs-provisional-net-recovery-${l.itemId}`}
+                  >
+                    {provisionalNetRecovery > PLAN_EPS || psQty > PLAN_EPS || qcQty > PLAN_EPS ? (
+                      <div>
+                        {fmtPlan(provisionalNetRecovery, unit)}
+                        {provisionalSubjectToQc ? (
+                          <div className="mt-0.5 text-[10px] font-medium leading-snug text-amber-800">
+                            Subject to QC
+                            {producedExcessPendingQc > PLAN_EPS
+                              ? ` (${fmtPlan(producedExcessPendingQc, unit)} excess pending)`
+                              : ""}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td className="erp-table-num text-right align-top font-semibold text-emerald-800">
                     <div data-testid={`rs-prior-excess-${l.itemId}`}>
@@ -431,6 +501,16 @@ export function RequirementSheetNoQtyGrid({
                           emphasize={qcQty > PLAN_EPS}
                         />
                         <DetailMetric label="Pending Recovery" value={fmtPlan(pendingRecovery, unit)} emphasize />
+                        <DetailMetric
+                          label="Produced Excess Pending QC"
+                          value={producedExcessPendingQc > PLAN_EPS ? fmtPlan(producedExcessPendingQc, unit) : "—"}
+                          emphasize={producedExcessPendingQc > PLAN_EPS}
+                        />
+                        <DetailMetric
+                          label="Provisional Net Recovery"
+                          value={fmtPlan(provisionalNetRecovery, unit)}
+                          emphasize
+                        />
                         <DetailMetric
                           label="Prior Accepted Excess FG"
                           value={priorAcceptedExcess > PLAN_EPS ? fmtPlan(priorAcceptedExcess, unit) : "—"}

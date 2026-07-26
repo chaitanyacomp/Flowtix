@@ -7,6 +7,8 @@
  */
 
 const { Prisma } = require("../prismaClientPackage");
+const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
+const { splitTerminalScrapAgainstWoPlan } = require("./noQtyProductionExcessRecoveryService");
 
 const EPS = 1e-6;
 const ACTIVE_ALLOC_STATUSES = Object.freeze(["RESERVED", "COMMITTED"]);
@@ -841,6 +843,59 @@ async function appendTerminalQcScrapRecovery(
   if (!Number.isFinite(dispositionId) || dispositionId <= 0) return null;
   if (!Number.isFinite(soId) || soId <= 0 || !Number.isFinite(itemId) || itemId <= 0) return null;
 
+  // NO_QTY: only demand-backed (within WO plan) scrap creates QC_FINAL_REJECTION.
+  // Surplus scrap cancels provisional excess offset only — never becomes kept QC recovery.
+  let recoverableDelta = delta;
+  const so = await tx.salesOrder.findUnique({
+    where: { id: soId },
+    select: { orderType: true },
+  });
+  if (so?.orderType === "NO_QTY") {
+    const woId = Number(disposition.workOrderId ?? disposition.workOrder?.id);
+    if (Number.isFinite(woId) && woId > 0 && typeof tx.workOrderLine?.findFirst === "function") {
+      const line = await tx.workOrderLine.findFirst({
+        where: { workOrderId: woId, fgItemId: itemId },
+        select: {
+          qty: true,
+          plannedQty: true,
+          productions: {
+            where: { workflowStatus: "APPROVED" },
+            select: {
+              producedQty: true,
+              qcEntries: {
+                where: QC_ENTRY_ACTIVE_WHERE,
+                select: { acceptedQty: true, rejectedQty: true },
+              },
+            },
+          },
+        },
+      });
+      if (line) {
+        let produced = 0;
+        let accepted = 0;
+        let rejected = 0;
+        for (const pe of line.productions || []) {
+          produced = round3(produced + n(pe.producedQty));
+          for (const qc of pe.qcEntries || []) {
+            accepted = round3(accepted + n(qc.acceptedQty));
+            rejected = round3(rejected + n(qc.rejectedQty));
+          }
+        }
+        // QC entry usually already includes this scrap in rejectedQty.
+        const rejectedBefore = Math.max(0, round3(rejected - delta));
+        const split = splitTerminalScrapAgainstWoPlan({
+          plannedQty: n(line.plannedQty ?? line.qty),
+          producedQty: produced,
+          acceptedQty: accepted,
+          rejectedQtyBeforeScrap: rejectedBefore,
+          scrapQty: delta,
+        });
+        recoverableDelta = round3(split.demandBackedScrapQty);
+        if (recoverableDelta <= EPS) return null;
+      }
+    }
+  }
+
   const existing = await findExistingByProvenance(tx, {
     recoveryType: "QC_FINAL_REJECTION",
     sourceDocumentType: "QC_REJECTED_DISPOSITION",
@@ -851,7 +906,7 @@ async function appendTerminalQcScrapRecovery(
     existing && String(existing.recoveryStatus) !== "CANCELLED"
       ? round3(n(existing.sourceQty))
       : 0;
-  const nextQty = round3(prior + delta);
+  const nextQty = round3(prior + recoverableDelta);
 
   const created = await createFinalQcRejectedRecovery(tx, {
     salesOrderId: soId,
@@ -866,7 +921,6 @@ async function appendTerminalQcScrapRecovery(
     remarks: remarks ?? disposition.remarks ?? null,
     actorUserId,
   });
-
   // Phase 2B: seed PENDING Keep/Waive on an eligible draft RS (discovery only — no allocate).
   if (created) {
     try {

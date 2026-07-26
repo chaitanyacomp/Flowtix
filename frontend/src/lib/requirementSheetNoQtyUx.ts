@@ -82,13 +82,18 @@ export function computeDraftProductionRequired(line: DraftProductionLine, isNoQt
  * (`allocated + unused` from the last authoritative server response).
  *
  * Net Production Requirement =
- *   max(Customer Demand + Kept Recovery − Prior Accepted Excess allocated, 0)
+ *   max(Customer Demand + kept recovery after accepted WO-excess offset − Prior Accepted Excess, 0)
+ *
+ * Produced Excess Pending QC is NOT subtracted here (finalize is blocked until QC); it only
+ * affects Provisional Net Recovery display.
  */
 export function computeLiveNetProductionRequirement(input: {
   customerDemandQty: number;
   keptProductionShortageQty?: number;
   keptQcRejectionQty?: number;
   approvedManualAdjustmentQty?: number;
+  /** QC-accepted WO-level excess that offsets kept recovery (not Prior Accepted Excess). */
+  acceptedWoExcessQty?: number;
   /** Allocated excess from last server response. */
   priorAcceptedExcessQty?: number;
   /** Unused remainder from last server response. */
@@ -101,12 +106,16 @@ export function computeLiveNetProductionRequirement(input: {
   allocatedAcceptedSurplusQty: number;
   unusedAcceptedSurplusQty: number;
   netProductionRequirementQty: number;
+  effectiveRecoveryQty: number;
 } {
   const demand = Math.max(0, round3(safeNum(input.customerDemandQty)));
   const ps = Math.max(0, round3(safeNum(input.keptProductionShortageQty)));
   const qc = Math.max(0, round3(safeNum(input.keptQcRejectionQty)));
   const adj = Math.max(0, round3(safeNum(input.approvedManualAdjustmentQty)));
-  const gross = Math.max(0, round3(demand + ps + qc + adj));
+  const acceptedWoExcess = Math.max(0, round3(safeNum(input.acceptedWoExcessQty)));
+  const grossRecovery = Math.max(0, round3(ps + qc));
+  const effectiveRecoveryQty = Math.max(0, round3(grossRecovery - Math.min(acceptedWoExcess, grossRecovery)));
+  const gross = Math.max(0, round3(demand + effectiveRecoveryQty + adj));
 
   const availableExplicit =
     input.availableAcceptedSurplusQty != null && Number.isFinite(Number(input.availableAcceptedSurplusQty))
@@ -126,5 +135,40 @@ export function computeLiveNetProductionRequirement(input: {
     allocatedAcceptedSurplusQty: allocated,
     unusedAcceptedSurplusQty: Math.max(0, round3(available - allocated)),
     netProductionRequirementQty: Math.max(0, round3(gross - allocated)),
+    effectiveRecoveryQty,
+  };
+}
+
+/** Pure display helper — mirrors backend provisional net recovery (subject to QC). */
+export function computeProvisionalNetRecovery(input: {
+  grossProductionShortageQty: number;
+  keptFinalQcRejectionQty?: number;
+  /** WO surplus rejection — cancels provisional offset only; never adds to recovery. */
+  rejectedWoExcessQty?: number;
+  producedExcessPendingQcQty?: number;
+  acceptedWoExcessQty?: number;
+}): {
+  provisionalNetRecoveryQty: number;
+  confirmedNetRecoveryQty: number;
+  demandBackedQcRejectionQty: number;
+  subjectToQc: boolean;
+  finalizeBlocked: boolean;
+} {
+  const grossShortage = Math.max(0, round3(safeNum(input.grossProductionShortageQty)));
+  const rawQcRejection = Math.max(0, round3(safeNum(input.keptFinalQcRejectionQty)));
+  const rejectedExcess = Math.max(0, round3(safeNum(input.rejectedWoExcessQty)));
+  const demandBackedQcRejectionQty = Math.max(0, round3(rawQcRejection - rejectedExcess));
+  const pendingExcess = Math.max(0, round3(safeNum(input.producedExcessPendingQcQty)));
+  const acceptedExcess = Math.max(0, round3(safeNum(input.acceptedWoExcessQty)));
+  const grossRecovery = Math.max(0, round3(grossShortage + demandBackedQcRejectionQty));
+  const acceptedOffset = Math.max(0, round3(Math.min(acceptedExcess, grossRecovery)));
+  const afterAccepted = Math.max(0, round3(grossRecovery - acceptedOffset));
+  const pendingOffset = Math.max(0, round3(Math.min(pendingExcess, afterAccepted)));
+  return {
+    provisionalNetRecoveryQty: Math.max(0, round3(afterAccepted - pendingOffset)),
+    confirmedNetRecoveryQty: Math.max(0, round3(grossRecovery - acceptedOffset)),
+    demandBackedQcRejectionQty,
+    subjectToQc: pendingExcess > PLAN_EPS,
+    finalizeBlocked: pendingOffset > PLAN_EPS && grossRecovery > PLAN_EPS,
   };
 }

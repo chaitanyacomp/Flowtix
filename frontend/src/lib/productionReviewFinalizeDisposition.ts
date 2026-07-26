@@ -58,3 +58,65 @@ export function reviewFinalizeOptionsIncludeContinue(
     (o) => o.id === "CONTINUE" || /continue production/i.test(String(o.title ?? "")),
   );
 }
+
+/** WO planned − previously finalized − current draft (matches backend remainder intent). */
+export function computeReviewFinalizeShortageQty(
+  plannedQty: number,
+  previouslyFinalized: number,
+  currentDraft: number,
+): number {
+  const planned = Number(plannedQty);
+  const prev = Number(previouslyFinalized);
+  const draft = Number(currentDraft);
+  const p = Number.isFinite(planned) ? planned : 0;
+  const a = Number.isFinite(prev) ? prev : 0;
+  const d = Number.isFinite(draft) ? draft : 0;
+  return Math.max(0, p - a - d);
+}
+
+export type ReviewFinalizeFlowKind = "NO_QTY" | "GREEN_LEVEL" | "REGULAR" | "OTHER";
+
+/**
+ * Shortage panel copy for End Production with Shortage.
+ * NO_QTY must never claim the shortage is lost (REGULAR permanent-close language).
+ */
+export function reviewFinalizeShortagePanelCopy(input: {
+  flow: ReviewFinalizeFlowKind;
+  shortageQty: number;
+  formatQty: (n: number) => string;
+  unit?: string | null;
+}): {
+  heading: string;
+  body: string;
+  checkbox: string;
+  button: string;
+  testId: string;
+} {
+  const qtyLabel = `${input.formatQty(input.shortageQty)}${input.unit?.trim() ? ` ${input.unit.trim()}` : ""}`;
+  if (input.flow === "NO_QTY") {
+    return {
+      heading: `Closing this WO leaves exactly ${qtyLabel} unproduced.`,
+      body: `This WO will close permanently. The ${qtyLabel} shortage will be transferred to RS-1 recovery for Keep/Waive decision and can be planned in the next cycle/new WO.`,
+      checkbox: `I understand this WO will close permanently and the ${qtyLabel} shortage transfers to RS-1 recovery (Keep/Waive).`,
+      button: "End Production — Transfer Shortage",
+      testId: "noqty-review-finalize-shortage-recovery",
+    };
+  }
+  if (input.flow === "GREEN_LEVEL") {
+    return {
+      heading: `Closing this WO leaves exactly ${qtyLabel} unproduced.`,
+      body: "This WO will close permanently. Remaining Green Level quantity returns to replenishment planning — it is not discarded.",
+      checkbox: "I understand this WO will close permanently and remaining qty returns to Green Level planning.",
+      button: "End Production with Shortage",
+      testId: "green-level-review-finalize-shortage",
+    };
+  }
+  // Fallback for non-REGULAR hardened flows — never claim shortage is lost without recovery.
+  return {
+    heading: `Closing this WO leaves exactly ${qtyLabel} unproduced.`,
+    body: "This WO will close permanently. Remaining quantity follows the applicable planning recovery path.",
+    checkbox: "I understand this WO will close permanently.",
+    button: "End Production with Shortage",
+    testId: "review-finalize-shortage-generic",
+  };
+}

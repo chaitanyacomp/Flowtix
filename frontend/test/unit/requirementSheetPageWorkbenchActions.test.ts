@@ -41,6 +41,8 @@ describe("RequirementSheetNoQtyGrid headings", () => {
     expect(gridSource).toContain("Production Shortage");
     expect(gridSource).toContain("Final QC Rejection");
     expect(gridSource).toContain("Pending Recovery");
+    expect(gridSource).toContain("Produced Excess Pending QC");
+    expect(gridSource).toContain("Provisional Net Recovery");
     expect(gridSource).toContain("Prior Accepted Excess");
     expect(gridSource).toContain("Net Production Requirement");
     expect(gridSource).toContain("Pending QC");

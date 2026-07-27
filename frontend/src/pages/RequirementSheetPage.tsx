@@ -189,6 +189,8 @@ type SheetLine = {
   id?: number;
   itemId: number;
   itemName: string;
+  /** Item UOM from Requirement Sheet API (`item.unit`); same field used by RequirementSheetNoQtyGrid. */
+  unit?: string | null;
   // Backend still returns requirementQty for compatibility (treated as New requirement Qty).
   requirementQty: string;
   // New fields for NO_QTY shortfall workflow.
@@ -230,6 +232,8 @@ type SheetLine = {
   provisionalNetRecoveryExplanation?: string | null;
   producedExcessPendingQcBlocksFinalize?: boolean | null;
   producedExcessPendingQcFinalizeMessage?: string | null;
+  carriedQcAcceptedExcessCreditQty?: number | null;
+  unappliedQcAcceptedExcessCreditQty?: number | null;
   gapPercent?: number | null;
   suggestedWoQty?: number | null;
   /** Cycle production need (gross fulfillment − usable stock); drives WO / dispatch cap. */
@@ -1028,10 +1032,6 @@ export function RequirementSheetPage() {
       setError("Recalculate or Save draft before finalize — displayed quantities may be stale.");
       return;
     }
-    if (producedExcessPendingQcFinalizeBlock) {
-      setError(producedExcessPendingQcFinalizeBlock);
-      return;
-    }
     if (
       isNoQty &&
       sheet.status === "DRAFT" &&
@@ -1456,19 +1456,26 @@ export function RequirementSheetPage() {
     });
   }, [isNoQty, sheet?.status, safeLines, decisionOnlyRecoveryReady]);
 
-  const producedExcessPendingQcFinalizeBlock = React.useMemo(() => {
+  /** Informational only — Pending QC excess never disables Finalize. */
+  const producedExcessPendingQcHint = React.useMemo(() => {
     if (!isNoQty || sheet?.status !== "DRAFT") return null;
     for (const l of safeLines) {
-      if (l.producedExcessPendingQcBlocksFinalize && l.producedExcessPendingQcFinalizeMessage) {
-        return String(l.producedExcessPendingQcFinalizeMessage);
-      }
+      const unitLabel = String(l.unit ?? "").trim() || "Nos";
       const pendingExcess = safeNum(l.producedExcessPendingQcQty);
-      const ps = safeNum(l.productionShortfallQty ?? l.shortfallQty);
-      const qc = safeNum(l.qcRejectionRecoveryQty);
-      if (pendingExcess > PLAN_EPS && ps + qc > PLAN_EPS) {
-        return `Final recovery cannot be confirmed until QC decides ${pendingExcess.toLocaleString("en-US", {
+      if (pendingExcess > PLAN_EPS) {
+        return `Pending QC: ${pendingExcess.toLocaleString("en-US", {
           maximumFractionDigits: 3,
-        })} ${(l.unit || "Nos").trim()} excess production.`;
+        })} ${unitLabel} produced excess (provisional). Finalize uses confirmed quantities; later QC adjusts the active cycle.`;
+      }
+      if (safeNum(l.unappliedQcAcceptedExcessCreditQty) > PLAN_EPS) {
+        return `Carried QC adjustment waiting for the next active cycle: ${safeNum(
+          l.unappliedQcAcceptedExcessCreditQty,
+        ).toLocaleString("en-US", { maximumFractionDigits: 3 })} ${unitLabel}.`;
+      }
+      if (safeNum(l.carriedQcAcceptedExcessCreditQty) > PLAN_EPS) {
+        return `Carried QC accepted-excess credit on this cycle: ${safeNum(
+          l.carriedQcAcceptedExcessCreditQty,
+        ).toLocaleString("en-US", { maximumFractionDigits: 3 })} ${unitLabel}.`;
       }
     }
     return null;
@@ -1479,8 +1486,7 @@ export function RequirementSheetPage() {
     editingDisabled ||
     busy ||
     needsRecalc ||
-    (isNoQty && draftUi && !noQtyDraftCanFinalize) ||
-    Boolean(producedExcessPendingQcFinalizeBlock);
+    (isNoQty && draftUi && !noQtyDraftCanFinalize);
 
   const [rsCycleSummaries, setRsCycleSummaries] = React.useState<NoQtyRsCycleSummaryEntry[]>([]);
   const [rsCycleSummaryLoading, setRsCycleSummaryLoading] = React.useState(false);
@@ -1546,7 +1552,7 @@ export function RequirementSheetPage() {
         noQtyFinalizeDisabled,
         draftUi,
         noQtyDraftCanFinalize,
-        producedExcessPendingQcFinalizeMessage: producedExcessPendingQcFinalizeBlock,
+        producedExcessPendingQcFinalizeMessage: producedExcessPendingQcHint,
         decisionOnlyRecoveryReady,
         busy,
         noSheetsUi,
@@ -1577,7 +1583,7 @@ export function RequirementSheetPage() {
       noQtyFinalizeDisabled,
       draftUi,
       noQtyDraftCanFinalize,
-      producedExcessPendingQcFinalizeBlock,
+      producedExcessPendingQcHint,
       decisionOnlyRecoveryReady,
       busy,
       noSheetsUi,

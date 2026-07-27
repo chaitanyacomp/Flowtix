@@ -1,6 +1,5 @@
 const { prisma } = require("../utils/prisma");
-const { DocType } = require("../prismaClientPackage");
-const { allocateDocNo } = require("./docNoService");
+const { allocateWorkOrderDocNo, WORK_ORDER_FLOW } = require("./docNoService");
 const { aggregateRmDemandForFgLines, loadApprovedBomWithLines } = require("./bomExplosionService");
 const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
 
@@ -319,7 +318,7 @@ async function createGreenLevelWorkOrdersFromPlan(tx, input = {}, deps = {}) {
         requirementSheetId: null,
         cycleId: null,
         status: "PENDING",
-        docNo: await allocateDocNo(tx, { docType: DocType.WORK_ORDER, date: new Date() }),
+        docNo: await allocateWorkOrderDocNo(tx, { flow: WORK_ORDER_FLOW.GREEN_LEVEL, date: new Date() }),
         lines: {
           create: [
             {

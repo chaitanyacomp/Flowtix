@@ -78,6 +78,14 @@ import {
   resolveNoQtyPostQcActionHref,
   resolveRegularPostQcDispatchHref,
 } from "../lib/qcWorkspaceReadinessUx";
+import {
+  QC_REJECTION_REASON_OPTIONS,
+  QC_REJECTION_REASON_OTHER_CODE,
+  isQcRejectionReasonComplete,
+  qcRejectionReasonValidationMessage,
+  resolveQcRejectionReasonDescription,
+  type QcRejectionReasonCode,
+} from "../lib/qcRejectionReason";
 
 type ReworkQcQueueRow = {
   itemId: number;
@@ -538,7 +546,8 @@ export function QcEntryPage() {
     setCheckedQtyStr("10");
     setRejectedQty(0);
   }, [demo.enabled, qcDemoHl, productionId, setCheckedQtyStr]);
-  const [reason, setReason] = React.useState("");
+  const [rejectionReasonCode, setRejectionReasonCode] = React.useState<"" | QcRejectionReasonCode>("");
+  const [rejectionReasonOther, setRejectionReasonOther] = React.useState("");
   const [scrapReusable, setScrapReusable] = React.useState(false);
   const [, setRejectedStockBucket] = React.useState<RejectedStockBucket | null>(null);
   const [rejSplitRework, setRejSplitRework] = React.useState<NumberDraft>("");
@@ -568,7 +577,8 @@ export function QcEntryPage() {
     isDirty:
       Boolean(String(checkedQtyStr).trim()) ||
       Boolean(String(rejectedQty).trim()) ||
-      Boolean(reason.trim()) ||
+      Boolean(rejectionReasonCode) ||
+      Boolean(rejectionReasonOther.trim()) ||
       reverseQcModal != null,
     message: "QC entry has unsaved values. Leave and discard them?",
   });
@@ -1363,10 +1373,14 @@ export function QcEntryPage() {
     if (!sel) {
       resetCheckedQty();
       setRejectedQty("");
+      setRejectionReasonCode("");
+      setRejectionReasonOther("");
       setRejectedStockBucket(null);
       return;
     }
     setRejectedQty("");
+    setRejectionReasonCode("");
+    setRejectionReasonOther("");
     setRejectedStockBucket(null);
     const roll = safeQcRollupsForRow(sel);
     if (roll.pending > 1e-6) setCheckedQtyStr(fmtQcQtyForInput(roll.pending));
@@ -1411,7 +1425,12 @@ export function QcEntryPage() {
     // Derived invariant (defensive): accepted+rejected must equal inspectingNow.
     if (Math.abs((acceptedNow + rejectedNow) - inspectingNow) > 1e-6) return "Accepted + Rejected must equal Inspecting now.";
     if (rejectedNow > 1e-6) {
-      if (!reason.trim()) return "Rejection reason is required.";
+      const reasonMsg = qcRejectionReasonValidationMessage({
+        rejectedQty: rejectedNow,
+        rejectionReasonCode,
+        rejectionReasonOther,
+      });
+      if (reasonMsg) return reasonMsg;
       const rw = Number(rejSplitRework);
       const hd = Number(rejSplitHold);
       const sc = Number(rejSplitScrap);
@@ -1430,11 +1449,18 @@ export function QcEntryPage() {
     checkedQtyValid,
     checkedParsed,
     rejectedNumForForm,
-    reason,
+    rejectionReasonCode,
+    rejectionReasonOther,
     rejSplitRework,
     rejSplitHold,
     rejSplitScrap,
   ]);
+
+  const rejectionReasonComplete = isQcRejectionReasonComplete({
+    rejectedQty: rejectedNumForForm,
+    rejectionReasonCode,
+    rejectionReasonOther,
+  });
 
   const qcFormCanSubmit = Boolean(
     productionId > 0 &&
@@ -1447,7 +1473,7 @@ export function QcEntryPage() {
       rejectedNumForForm <= checkedParsed + 1e-6 &&
       draftAcceptedQty >= -1e-6 &&
       checkedParsed <= selectedRollups.pending + 1e-6 &&
-      (rejectedNumForForm <= 1e-6 || (reason.trim().length > 0 && qcInlineValidationMsg == null)),
+      (rejectedNumForForm <= 1e-6 || (rejectionReasonComplete && qcInlineValidationMsg == null)),
   );
 
   const qcSaveInspectionStatus = React.useMemo(
@@ -1459,7 +1485,7 @@ export function QcEntryPage() {
         inspectingQty: checkedQtyValid && checkedParsed != null ? checkedParsed : null,
         checkedQtyValid,
         rejectedQty: rejectedNumForForm,
-        reasonTrimmed: reason.trim(),
+        rejectionReasonComplete,
         inlineValidationMsg: qcInlineValidationMsg,
         readyQtyLabel:
           checkedQtyValid && checkedParsed != null
@@ -1473,7 +1499,7 @@ export function QcEntryPage() {
       checkedQtyValid,
       checkedParsed,
       rejectedNumForForm,
-      reason,
+      rejectionReasonComplete,
       qcInlineValidationMsg,
       selected,
     ],
@@ -1587,8 +1613,13 @@ export function QcEntryPage() {
       return;
     }
     if (rejectedNum > 1e-6) {
-      if (!reason.trim()) {
-        setError("Rejection reason is required.");
+      const reasonMsg = qcRejectionReasonValidationMessage({
+        rejectedQty: rejectedNum,
+        rejectionReasonCode,
+        rejectionReasonOther,
+      });
+      if (reasonMsg) {
+        setError(reasonMsg);
         return;
       }
       const rw = rejSplitRework === "" ? 0 : Number(rejSplitRework);
@@ -1613,6 +1644,13 @@ export function QcEntryPage() {
     const splitRework = rejectedNum > 1e-6 ? Number(rejSplitRework || 0) : 0;
     const splitHold = rejectedNum > 1e-6 ? Number(rejSplitHold || 0) : 0;
     const splitScrap = rejectedNum > 1e-6 ? Number(rejSplitScrap || 0) : 0;
+    const reasonDescription =
+      rejectedNum > 1e-6
+        ? resolveQcRejectionReasonDescription({
+            rejectionReasonCode,
+            rejectionReasonOther,
+          })
+        : null;
     setSaving(true);
     try {
       await apiFetch("/api/production/qc-entries", {
@@ -1628,9 +1666,13 @@ export function QcEntryPage() {
                   holdQty: splitHold,
                   scrapQty: splitScrap,
                 },
+                rejectionReasonCode,
+                ...(rejectionReasonCode === QC_REJECTION_REASON_OTHER_CODE
+                  ? { rejectionReasonOther: rejectionReasonOther.trim() }
+                  : {}),
+                reason: reasonDescription || undefined,
               }
             : {}),
-          reason: reason.trim() || undefined,
           scrapReusable,
         }),
       });
@@ -1644,7 +1686,8 @@ export function QcEntryPage() {
           scrapQty: Math.max(0, splitScrap),
         });
       }
-      setReason("");
+      setRejectionReasonCode("");
+      setRejectionReasonOther("");
       setRejectedStockBucket(null);
       setRejSplitRework("");
       setRejSplitHold("");
@@ -3230,7 +3273,14 @@ export function QcEntryPage() {
                             )}
                             placeholder=""
                             value={rejectedQty}
-                            onChange={(e) => setRejectedQty(toNumberDraft(sanitizeQtyInputDraft(e.target.value)))}
+                            onChange={(e) => {
+                              const next = toNumberDraft(sanitizeQtyInputDraft(e.target.value));
+                              setRejectedQty(next);
+                              if (next === "" || (typeof next === "number" && !(next > 1e-6))) {
+                                setRejectionReasonCode("");
+                                setRejectionReasonOther("");
+                              }
+                            }}
                             onKeyDown={blockDecimalSpinnerKeys}
                             onWheel={blockDecimalWheel}
                             disabled={!productionId}
@@ -3262,6 +3312,8 @@ export function QcEntryPage() {
                             if (!selectedRollups) return;
                             setCheckedQtyStr(fmtQcQtyForInput(selectedRollups.pending));
                             setRejectedQty(0);
+                            setRejectionReasonCode("");
+                            setRejectionReasonOther("");
                             setRejectedStockBucket(null);
                           }}
                         >
@@ -3286,16 +3338,46 @@ export function QcEntryPage() {
                           data-testid="qc-rejection-details"
                         >
                           <div className="erp-form-field min-w-0">
-                            <span className="text-[13px] font-semibold text-slate-700">Rejection reason</span>
-                            <Input
-                              className={cn("mt-1 h-10 text-[14px]", operatorInputClass)}
-                              value={reason}
-                              onChange={(e) => setReason(e.target.value)}
-                              placeholder="Required"
+                            <span className="text-[13px] font-semibold text-slate-700">
+                              Rejection Reason <span className="text-red-600">*</span>
+                            </span>
+                            <select
+                              className={cn("erp-select mt-1 h-10 w-full text-[14px]", operatorInputClass)}
+                              value={rejectionReasonCode}
+                              onChange={(e) => {
+                                const next = e.target.value as "" | QcRejectionReasonCode;
+                                setRejectionReasonCode(next);
+                                if (next !== QC_REJECTION_REASON_OTHER_CODE) setRejectionReasonOther("");
+                              }}
                               disabled={!productionId}
+                              required
                               data-testid="qc-rejection-reason"
-                            />
+                              aria-label="Rejection Reason"
+                            >
+                              <option value="">Select reason…</option>
+                              {QC_REJECTION_REASON_OPTIONS.map((opt) => (
+                                <option key={opt.code} value={opt.code}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
                           </div>
+                          {rejectionReasonCode === QC_REJECTION_REASON_OTHER_CODE ? (
+                            <div className="erp-form-field min-w-0">
+                              <span className="text-[13px] font-semibold text-slate-700">
+                                Specify Other Reason <span className="text-red-600">*</span>
+                              </span>
+                              <Input
+                                className={cn("mt-1 h-10 text-[14px]", operatorInputClass)}
+                                value={rejectionReasonOther}
+                                onChange={(e) => setRejectionReasonOther(e.target.value)}
+                                placeholder="Describe the rejection reason"
+                                disabled={!productionId}
+                                required
+                                data-testid="qc-rejection-reason-other"
+                              />
+                            </div>
+                          ) : null}
                           <div className="space-y-1">
                             <div className="flex flex-wrap items-baseline justify-between gap-1">
                               <span className="text-[13px] font-medium text-slate-700">Disposition (Rework / Hold / Scrap)</span>

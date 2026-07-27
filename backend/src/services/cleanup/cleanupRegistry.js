@@ -114,8 +114,16 @@ const CLEANUP_REGISTRY = Object.freeze([
     parentDeps: ["SalesBill", "SalesBillLine", "Dispatch"],
     notes: "Restrict → Dispatch; must delete before Dispatch (Cascade from SalesBill alone is not enough).",
   },
-  { prismaModel: "SalesBill", clientKey: "salesBill", kind: "TRANSACTIONAL", phase: 30, parentDeps: ["Dispatch", "SalesOrder"] },
+  { prismaModel: "SalesBill", clientKey: "salesBill", kind: "TRANSACTIONAL", phase: 30, parentDeps: ["Dispatch", "SalesOrder", "Supplier"], notes: "Optional Restrict → Supplier (transporterId); wipe SalesBill before Supplier." },
   { prismaModel: "CustomerReturn", clientKey: "customerReturn", kind: "TRANSACTIONAL", phase: 40, parentDeps: ["SalesOrder"] },
+  {
+    prismaModel: "DispatchFgTraceAllocation",
+    clientKey: "dispatchFgTraceAllocation",
+    kind: "TRANSACTIONAL",
+    phase: 45,
+    parentDeps: ["Dispatch", "Item", "WorkOrder", "ProductionEntry", "QcEntry"],
+    notes: "NO_QTY WO/QC FIFO trace children; Cascade from Dispatch, Restrict on Item — delete before Dispatch/Item wipe.",
+  },
   { prismaModel: "Dispatch", clientKey: "dispatch", kind: "TRANSACTIONAL", phase: 50, parentDeps: ["SalesOrder", "WorkOrder", "Item"] },
 
   // —— QC / Production ——
@@ -213,6 +221,14 @@ const CLEANUP_REGISTRY = Object.freeze([
     notes: "Restrict → SalesOrder; required before SO delete",
   },
   {
+    prismaModel: "NoQtyQcExcessCycleAdjustment",
+    clientKey: "noQtyQcExcessCycleAdjustment",
+    kind: "TRANSACTIONAL",
+    phase: 205,
+    parentDeps: ["SalesOrder", "Item", "SalesOrderCycle"],
+    notes: "NO_QTY QC excess → next-cycle overlay; Restrict → Item",
+  },
+  {
     prismaModel: "CarryForwardPending",
     clientKey: "carryForwardPending",
     kind: "TRANSACTIONAL",
@@ -302,6 +318,14 @@ const CLEANUP_REGISTRY = Object.freeze([
     kind: "TRANSACTIONAL",
     phase: 390,
     parentDeps: ["RegularSoPlanningSnapshot", "Item"],
+  },
+  {
+    prismaModel: "RegularSoBufferApprovalRequest",
+    clientKey: "regularSoBufferApprovalRequest",
+    kind: "TRANSACTIONAL",
+    phase: 395,
+    parentDeps: ["SalesOrder", "Item"],
+    notes: "REGULAR_SO Prepare WO buffer approval. Delete before SalesOrder/User wipe (Restrict on requester).",
   },
   {
     prismaModel: "RegularSoPlanningSnapshot",

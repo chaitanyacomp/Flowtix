@@ -65,7 +65,7 @@ describe("computeLiveNetProductionRequirement", () => {
 });
 
 describe("computeProvisionalNetRecovery", () => {
-  it("example: gross shortage 67, excess pending QC 10 → provisional 57 subject to QC", () => {
+  it("example: gross shortage 67, excess pending QC 10 → provisional 57; finalize not blocked", () => {
     const r = computeProvisionalNetRecovery({
       grossProductionShortageQty: 67,
       producedExcessPendingQcQty: 10,
@@ -73,7 +73,7 @@ describe("computeProvisionalNetRecovery", () => {
     expect(r.provisionalNetRecoveryQty).toBe(57);
     expect(r.confirmedNetRecoveryQty).toBe(67);
     expect(r.subjectToQc).toBe(true);
-    expect(r.finalizeBlocked).toBe(true);
+    expect(r.finalizeBlocked).toBe(false);
   });
 
   it("final recovery is exactly 57 / 61 / 67 with no surplus-reject double count", () => {

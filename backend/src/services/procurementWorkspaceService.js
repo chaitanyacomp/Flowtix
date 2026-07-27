@@ -38,7 +38,16 @@ const {
   loadRegularSoProcurementDemandState,
   reconcileRegularSoResidualMaterialRequirements,
 } = require("./regularSoProcurementDemandService");
+const { isNoQtyOrderType } = require("./rmProcurementStageSignals");
 
+function isNoQtyLinkedMaterialRequirement(mr) {
+  return isNoQtyOrderType(mr?.salesOrder?.orderType ?? mr?.orderType);
+}
+
+/** NO_QTY may only enter Purchase Create-PR via Monthly Plan (MPRS) MRs — never Regular SO sources. */
+function isNoQtyEligiblePurchaseMrSource(sourceType) {
+  return String(sourceType ?? "").trim().toUpperCase() === "MONTHLY_PLAN";
+}
 function isApprovedPlanDocument(plan) {
   return String(plan?.status ?? "") === "APPROVED";
 }
@@ -425,8 +434,16 @@ async function summarizeMaterialRequirement(mr, pendingByMr, db = prisma) {
   }
 
   const primaryPoId = linkage.poIds.length ? linkage.poIds[0] : null;
+  // Authoritative SO flow — never default missing orderType to NORMAL (that leaks NO_QTY into Regular).
+  const orderType =
+    mr.salesOrder?.orderType != null && String(mr.salesOrder.orderType).trim() !== ""
+      ? String(mr.salesOrder.orderType).trim()
+      : mr.orderType != null && String(mr.orderType).trim() !== ""
+        ? String(mr.orderType).trim()
+        : null;
+  const noQtyFlow = isNoQtyOrderType(orderType);
   const regularSoDemand =
-    mr.salesOrderId && isRegularSoWorkspaceSourceType(mr.sourceType)
+    mr.salesOrderId && isRegularSoWorkspaceSourceType(mr.sourceType) && !noQtyFlow
       ? await loadRegularSoProcurementDemandState(db, mr.salesOrderId)
       : null;
   const fulfilledWithExternalProcurement =
@@ -438,8 +455,7 @@ async function summarizeMaterialRequirement(mr, pendingByMr, db = prisma) {
   let productionBufferPercent = null;
   let plannedProductionQty = null;
   let rmPlanningQty = null;
-  const orderType = mr.salesOrder?.orderType ?? "NORMAL";
-  if (mr.salesOrderId && mr.salesOrder && orderType !== "NO_QTY") {
+  if (mr.salesOrderId && mr.salesOrder && !noQtyFlow) {
     try {
       const { fgLines } = await computeFgGapLinesForSalesOrder(mr.salesOrder, db);
       const primary =
@@ -481,6 +497,14 @@ async function summarizeMaterialRequirement(mr, pendingByMr, db = prisma) {
     materialRequirementId: mr.id,
     docNo: mr.docNo,
     sourceType: mr.sourceType,
+    orderType,
+    salesOrderOrderType: orderType,
+    procurementDemandPool: noQtyFlow
+      ? isNoQtyEligiblePurchaseMrSource(mr.sourceType)
+        ? PROCUREMENT_DEMAND_POOL.MPRS
+        : null
+      : resolveDemandPoolForSourceType(mr.sourceType) ||
+        (isRegularSoWorkspaceSourceType(mr.sourceType) ? PROCUREMENT_DEMAND_POOL.REGULAR_SO : null),
     source: mrSourceDescriptor(mr),
     sourceRef: sourceRefForMr(mr),
     fgItemId: mr.fgItemId ?? null,
@@ -518,7 +542,8 @@ async function summarizeMaterialRequirement(mr, pendingByMr, db = prisma) {
     lines,
     canCreatePurchaseRequest:
       !fulfilledWithExternalProcurement &&
-      RM_REQUISITION_PURCHASE_REQUEST_ALLOWED_STATUSES.includes(String(mr.status || "")),
+      RM_REQUISITION_PURCHASE_REQUEST_ALLOWED_STATUSES.includes(String(mr.status || "")) &&
+      (!noQtyFlow || isNoQtyEligiblePurchaseMrSource(mr.sourceType)),
     nextActionKey:
       fulfilledWithExternalProcurement
         ? "REVIEW_EXCESS_PROCUREMENT"
@@ -528,7 +553,8 @@ async function summarizeMaterialRequirement(mr, pendingByMr, db = prisma) {
           ? "OPEN_GRN"
           : op.key === "SUPPLIER_PENDING"
             ? "OPEN_PO"
-            : RM_REQUISITION_PURCHASE_REQUEST_ALLOWED_STATUSES.includes(String(mr.status || ""))
+            : RM_REQUISITION_PURCHASE_REQUEST_ALLOWED_STATUSES.includes(String(mr.status || "")) &&
+                (!noQtyFlow || isNoQtyEligiblePurchaseMrSource(mr.sourceType))
               ? "CREATE_PR"
               : "TRACK_IN_RM_CONTROL",
   };
@@ -630,6 +656,11 @@ async function buildProcurementPendingQueue(db = prisma, opts = {}) {
   for (const group of grouped) {
     const mr = group.canonical;
     if (!mr) continue;
+    // Flow isolation: NO_QTY SO/RS MRs never enter Regular SO purchase queue.
+    // Only Monthly Plan (MPRS) MRs for NO_QTY may appear for Create PR.
+    if (isNoQtyLinkedMaterialRequirement(mr) && !isNoQtyEligiblePurchaseMrSource(mr.sourceType)) {
+      continue;
+    }
     const hasShortage = (mr.lines || []).some((l) => qtyToNumber(l.shortageQty) > QUEUE_EPS);
     if (!hasShortage) continue;
     const summary = await summarizeMaterialRequirement(mr, pendingByMr, db);
@@ -999,4 +1030,6 @@ module.exports = {
   filterPendingMrsByDemandPool,
   DEMAND_POOL_QUEUE_KEYS,
   PROCUREMENT_QUEUE_SOURCE_TYPES,
+  isNoQtyLinkedMaterialRequirement,
+  isNoQtyEligiblePurchaseMrSource,
 };

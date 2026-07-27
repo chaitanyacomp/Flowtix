@@ -179,6 +179,8 @@ function createApp(options = {}) {
   app.use("/api/production-material-requests", pmrRouter);
   const { rmAllowanceApprovalRouter } = require("./routes/rmAllowanceApprovals");
   app.use("/api/rm-allowance-approvals", rmAllowanceApprovalRouter);
+  const { regularSoBufferApprovalRouter } = require("./routes/regularSoBufferApprovals");
+  app.use("/api/regular-so-buffer-approvals", regularSoBufferApprovalRouter);
   const { productionMaterialReturnRouter } = require("./routes/productionMaterialReturns");
   app.use("/api/production-material-returns", productionMaterialReturnRouter);
   app.use("/api/no-qty", noQtyNextActionRouter);

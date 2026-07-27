@@ -60,6 +60,7 @@ const supplierBodySchema = z.object({
   state: z.string().optional().nullable(),
   stateId: z.number().int().positive().optional().nullable(),
   isActive: z.boolean().optional(),
+  isTransporter: z.boolean().optional(),
   locations: z.array(locationSchema).optional(),
 });
 
@@ -119,8 +120,20 @@ async function buildSupplierWritePayload(data, supplierIdForExclude, opts = {}) 
 
 supplierRouter.get("/", requireAuth, supplierReadRoles, async (req, res, next) => {
   try {
+    const isTransporterOnly =
+      req.query.isTransporter === "1" ||
+      req.query.isTransporter === "true" ||
+      String(req.query.role || "").toLowerCase() === "transporter";
+    const activeOnly =
+      req.query.isActive === "1" || req.query.isActive === "true" || req.query.active === "1";
+    /** @type {Record<string, unknown>} */
+    const where = {};
+    if (isTransporterOnly) where.isTransporter = true;
+    if (activeOnly) where.isActive = true;
+
     const rows = await prisma.supplier.findMany({
-      orderBy: { id: "desc" },
+      where,
+      orderBy: [{ name: "asc" }, { id: "desc" }],
       include: {
         stateRef: { select: { id: true, stateName: true, stateCode: true } },
         locations: {
@@ -194,6 +207,7 @@ supplierRouter.post("/", requireAuth, requireRole(["ADMIN", "STORE"]), async (re
             stateCode,
             stateId,
             isActive: data.isActive !== false,
+            isTransporter: data.isTransporter === true,
           },
         });
         if (locations.length) {
@@ -273,6 +287,7 @@ supplierRouter.put("/:id", requireAuth, requireRole(["ADMIN", "STORE"]), async (
               ? { stateId, state: stateText, stateName: stateText, stateCode }
               : {}),
             ...(data.isActive !== undefined ? { isActive: data.isActive !== false } : {}),
+            ...(data.isTransporter !== undefined ? { isTransporter: data.isTransporter === true } : {}),
           },
         });
         if (data.locations !== undefined) {

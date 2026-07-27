@@ -69,7 +69,12 @@ function expectedDocNoPatternRegex(prefix) {
 function matchesExpectedDocNoPattern(prefix, docNo) {
   const s = docNo != null ? String(docNo).trim() : "";
   if (!s) return false;
-  return expectedDocNoPatternRegex(prefix).test(s);
+  if (expectedDocNoPatternRegex(prefix).test(s)) return true;
+  // Work Order: accept legacy WO-YY-#### and flow-wise WO-R|NQ|GL-YY-#### (never renumber).
+  if (prefix === "WO") {
+    return /^WO-(?:R|NQ|GL)-\d{2}-\d{4}$/i.test(s) || /^WO-\d{2}-\d{4}$/i.test(s);
+  }
+  return false;
 }
 
 /**

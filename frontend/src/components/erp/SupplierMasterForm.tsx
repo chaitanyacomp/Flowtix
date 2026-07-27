@@ -52,9 +52,11 @@ type Props = {
   editingId?: number | null;
   /** Field-level dirty via baseline — not merely that the modal is open. */
   onDirtyChange?: (dirty: boolean) => void;
+  /** Prefill / force transporter classification (Sales Bill “Add Transporter”). */
+  defaultIsTransporter?: boolean;
 };
 
-export function SupplierMasterForm({ states, onCancel, onSaved, editingId, onDirtyChange }: Props) {
+export function SupplierMasterForm({ states, onCancel, onSaved, editingId, onDirtyChange, defaultIsTransporter = false }: Props) {
   const [loading, setLoading] = React.useState(Boolean(editingId));
   const [name, setName] = React.useState("");
   const [contact, setContact] = React.useState("");
@@ -63,6 +65,7 @@ export function SupplierMasterForm({ states, onCancel, onSaved, editingId, onDir
   const [stateId, setStateId] = React.useState<number | "">("");
   const [address, setAddress] = React.useState("");
   const [isActive, setIsActive] = React.useState(true);
+  const [isTransporter, setIsTransporter] = React.useState(defaultIsTransporter);
   const [locations, setLocations] = React.useState<SupplierLocationDraft[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
@@ -72,8 +75,11 @@ export function SupplierMasterForm({ states, onCancel, onSaved, editingId, onDir
 
   const formSnapshot = React.useMemo(
     () =>
-      snapshotPartyMasterForm({ name, contact, email, gstin, stateId, address, isActive }, locations),
-    [name, contact, email, gstin, stateId, address, isActive, locations],
+      snapshotPartyMasterForm(
+        { name, contact, email, gstin, stateId, address, isActive, isTransporter },
+        locations,
+      ),
+    [name, contact, email, gstin, stateId, address, isActive, isTransporter, locations],
   );
 
   React.useEffect(() => {
@@ -119,6 +125,7 @@ export function SupplierMasterForm({ states, onCancel, onSaved, editingId, onDir
       stateId?: number | null;
       address?: string | null;
       isActive?: boolean;
+      isTransporter?: boolean;
       locations?: Array<{
         id: number;
         label: string;
@@ -144,6 +151,7 @@ export function SupplierMasterForm({ states, onCancel, onSaved, editingId, onDir
         setStateId(nextStateId);
         setAddress(row.address ?? "");
         setIsActive(row.isActive !== false);
+        setIsTransporter(row.isTransporter === true || defaultIsTransporter);
         setLocations(
           (row.locations ?? []).map((a) =>
             newSupplierLocationDraft({
@@ -164,7 +172,7 @@ export function SupplierMasterForm({ states, onCancel, onSaved, editingId, onDir
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Could not load supplier."))
       .finally(() => setLoading(false));
-  }, [editingId, states]);
+  }, [editingId, states, defaultIsTransporter]);
 
   React.useEffect(() => {
     const g = normalizeGstinInput(gstin);
@@ -238,6 +246,7 @@ export function SupplierMasterForm({ states, onCancel, onSaved, editingId, onDir
       stateId: stateId === "" ? null : Number(stateId),
       address: address.trim() || null,
       isActive,
+      isTransporter,
       locations: locations.map((row) => ({
         ...(row.id ? { id: row.id } : {}),
         label: row.label.trim(),
@@ -313,6 +322,12 @@ export function SupplierMasterForm({ states, onCancel, onSaved, editingId, onDir
             label="Active supplier"
             checked={isActive}
             onChange={setIsActive}
+            className="sm:col-span-2"
+          />
+          <PartyMasterActiveCheckbox
+            label="Classified as Transporter (selectable on Sales Bills)"
+            checked={isTransporter}
+            onChange={setIsTransporter}
             className="sm:col-span-2"
           />
         </div>

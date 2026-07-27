@@ -204,6 +204,21 @@ export function formatFgQuantity(
   return formatQuantityWithUnit(value, { ...options, unit, category: "fg" });
 }
 
+/** FG/production qty for editable inputs — number only, no locale grouping or unit suffix. */
+export function formatFgQuantityForInput(
+  value: number | null | undefined,
+  unit?: string | null,
+  options?: Omit<FormatQuantityWithUnitOptions, "unit" | "category" | "locale" | "includeUnit">,
+): string {
+  return formatQuantityWithUnit(value, {
+    ...options,
+    unit,
+    category: "fg",
+    locale: false,
+    includeUnit: false,
+  });
+}
+
 export function formatStockQuantity(
   value: number | null | undefined,
   unit?: string | null,

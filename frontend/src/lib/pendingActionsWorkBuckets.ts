@@ -185,6 +185,10 @@ export function pendingActionWorkspaceListHref(href: string): string {
     if (path.includes("/requirement-sheets")) {
       preserveKeys.push("sheetId", "requirementSheetId", "cycleId", "salesOrderId");
     }
+    // Monthly Planning deep-link from Pending Actions: keep SO + RS + cycle filters.
+    if (path === "/monthly-planning" || path.startsWith("/monthly-planning")) {
+      preserveKeys.push("salesOrderId", "cycleId", "sheetId", "requirementSheetId");
+    }
     // Regular Prepare WO: keep SO identity for refresh-safe deep links.
     if (path.includes("/work-orders/prepare") || path.includes("/rm-check")) {
       preserveKeys.push("salesOrderId", "soId", "itemId", "fgItemId");

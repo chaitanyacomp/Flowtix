@@ -47,10 +47,14 @@ const REGULAR_SO_BUFFER_HARD_MAX = 10;
 
 /**
  * Validate production buffer % for REGULAR SO planning snapshot.
- * 0–5%: ok · >5–10%: Admin + reason · >10%: blocked.
+ * 0–5%: ok · >5–10%: Admin + reason, or Store with matching APPROVED request · >10%: blocked.
+ * Hard-max check uses 2-decimal normalization so exactly 10% is never treated as blocked.
  * @returns {{ ok: true, bufferPercent: number } | { ok: false, statusCode: number, code: string, message: string }}
  */
-function assertRegularSoBufferPercentForPersist(bufferPercent, { role = null, bufferReason = null } = {}) {
+function assertRegularSoBufferPercentForPersist(
+  bufferPercent,
+  { role = null, bufferReason = null, hasMatchingApprovedRequest = false } = {},
+) {
   const raw = n(bufferPercent);
   if (!Number.isFinite(raw) || raw < 0) {
     return {
@@ -60,7 +64,9 @@ function assertRegularSoBufferPercentForPersist(bufferPercent, { role = null, bu
       message: "Production buffer % must be a non-negative number.",
     };
   }
-  if (raw > REGULAR_SO_BUFFER_HARD_MAX + 1e-9) {
+  // 2-decimal round first so exactly 10% (and float noise that rounds to 10) stays valid.
+  const rounded = Math.round((raw + Number.EPSILON) * 100) / 100;
+  if (rounded > REGULAR_SO_BUFFER_HARD_MAX + 1e-9) {
     return {
       ok: false,
       statusCode: 400,
@@ -71,20 +77,22 @@ function assertRegularSoBufferPercentForPersist(bufferPercent, { role = null, bu
   const normalized = clampBufferPercent(raw);
   if (normalized > REGULAR_SO_BUFFER_SOFT_MAX + 1e-9) {
     const r = String(role ?? "").trim().toUpperCase();
-    if (r !== "ADMIN") {
+    const reasonOk = Boolean(String(bufferReason ?? "").trim());
+    if (r === "ADMIN" || hasMatchingApprovedRequest) {
+      if (!reasonOk) {
+        return {
+          ok: false,
+          statusCode: 400,
+          code: "BUFFER_PERCENT_REASON_REQUIRED",
+          message: "A reason is required when Production buffer is above 5%.",
+        };
+      }
+    } else {
       return {
         ok: false,
         statusCode: 403,
         code: "BUFFER_PERCENT_ADMIN_REQUIRED",
         message: "Buffer above 5% requires Admin approval.",
-      };
-    }
-    if (!String(bufferReason ?? "").trim()) {
-      return {
-        ok: false,
-        statusCode: 400,
-        code: "BUFFER_PERCENT_REASON_REQUIRED",
-        message: "A reason is required when Production buffer is above 5%.",
       };
     }
   }
@@ -226,7 +234,14 @@ async function buildRegularSoPlanningSnapshotView(salesOrderId, db = prisma) {
 }
 
 async function upsertRegularSoPlanningSnapshot(
-  { salesOrderId, bufferPercent = 0, createdByUserId = null, actorRole = null, bufferReason = null },
+  {
+    salesOrderId,
+    bufferPercent = 0,
+    createdByUserId = null,
+    actorRole = null,
+    bufferReason = null,
+    skipBufferApprovalSupersede = false,
+  },
   db = prisma,
 ) {
   const soId = Number(salesOrderId);
@@ -260,9 +275,22 @@ async function upsertRegularSoPlanningSnapshot(
     throw err;
   }
 
+  // Lazy require avoids circular load with regularSoBufferApprovalService (approve → upsert).
+  const {
+    hasMatchingApprovedRegularSoBufferRequest,
+    supersedeRegularSoBufferApprovalsForSalesOrder,
+  } = require("./regularSoBufferApprovalService");
+
+  const hasMatchingApprovedRequest = await hasMatchingApprovedRegularSoBufferRequest(
+    soId,
+    { bufferPercent, bufferReason },
+    db,
+  );
+
   const bufferGate = assertRegularSoBufferPercentForPersist(bufferPercent, {
     role: actorRole,
     bufferReason,
+    hasMatchingApprovedRequest,
   });
   if (!bufferGate.ok) {
     const err = new Error(bufferGate.message);
@@ -283,7 +311,9 @@ async function upsertRegularSoPlanningSnapshot(
   );
   const fgStockByLineId = new Map(fgStockRows.map((row) => [row.salesOrderLineId, row.fgStock]));
 
-  return db.$transaction(async (tx) => {
+  // Root Prisma client starts a transaction; when already inside a tx (interactive client),
+  // reuse it — do not call nested `$transaction` (tx.$transaction is undefined).
+  const run = async (tx) => {
     const existing = await tx.regularSoPlanningSnapshot.findUnique({
       where: { salesOrderId: soId },
       select: { id: true, createdByUserId: true },
@@ -333,6 +363,19 @@ async function upsertRegularSoPlanningSnapshot(
 
     await tx.regularSoPlanningSnapshotLine.createMany({ data: rows });
 
+    if (!skipBufferApprovalSupersede) {
+      const roleUpper = String(actorRole ?? "").trim().toUpperCase();
+      // Admin direct apply or buffer drop to ≤5% invalidates outstanding Store approval requests.
+      // Store persist of a matching APPROVED fingerprint keeps that approval intact.
+      const shouldSupersede =
+        roleUpper === "ADMIN" ||
+        normalizedBufferPercent <= REGULAR_SO_BUFFER_SOFT_MAX + 1e-9 ||
+        !hasMatchingApprovedRequest;
+      if (shouldSupersede) {
+        await supersedeRegularSoBufferApprovalsForSalesOrder(soId, tx);
+      }
+    }
+
     return tx.regularSoPlanningSnapshot.findUnique({
       where: { salesOrderId: soId },
       include: {
@@ -353,7 +396,9 @@ async function upsertRegularSoPlanningSnapshot(
         },
       },
     });
-  });
+  };
+
+  return typeof db.$transaction === "function" ? db.$transaction(run) : run(db);
 }
 
 /**

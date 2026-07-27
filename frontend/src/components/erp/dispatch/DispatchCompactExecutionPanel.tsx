@@ -10,6 +10,9 @@ import { cn } from "../../../lib/utils";
 import {
   formatDispatchCompactQty,
   buildDispatchSoCompleteMessage,
+  DISPATCH_WORKSPACE_QUEUE_FIRST_SPLIT_CLASS,
+  DISPATCH_WORKSPACE_QUEUE_PANE_CLASS,
+  DISPATCH_WORKSPACE_QUEUE_ROW_SELECTED_EMERALD_CLASS,
   type DispatchCompactQueueRow,
 } from "../../../lib/dispatchWorkspaceUx";
 
@@ -138,9 +141,10 @@ export function DispatchCompactExecutionPanel({
       ) : (
         <OperatorMainSplit
           balancedWorkbench
-          lgGridClassName="lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.25fr)]"
+          lgGridClassName={DISPATCH_WORKSPACE_QUEUE_FIRST_SPLIT_CLASS}
           className="lg:max-h-[min(calc(100dvh-8.5rem),30rem)] lg:min-h-0"
-          panelClassName="!p-2 min-h-0 h-full"
+          panelClassName="!order-1 !p-2 min-h-0 h-full xl:!order-2"
+          queueClassName={cn(DISPATCH_WORKSPACE_QUEUE_PANE_CLASS, "!order-2 xl:!order-1")}
           queue={
             <div
               className="flex min-h-0 flex-col gap-1 lg:h-full lg:min-h-0"
@@ -176,11 +180,12 @@ export function DispatchCompactExecutionPanel({
                             "cursor-pointer border-t border-slate-100 transition-colors",
                             operatorTableRowCompactClass,
                             selected
-                              ? "bg-emerald-50/90 ring-1 ring-inset ring-emerald-300/80"
+                              ? DISPATCH_WORKSPACE_QUEUE_ROW_SELECTED_EMERALD_CLASS
                               : "hover:bg-slate-50/80",
                           )}
                           onClick={() => onSelectItem(row.itemId)}
                           data-testid={`dispatch-compact-queue-row-${row.itemId}`}
+                          data-selected={selected ? "true" : "false"}
                         >
                           <td className="truncate px-2 py-1 font-medium text-slate-900" title={row.itemName}>
                             {row.itemName}

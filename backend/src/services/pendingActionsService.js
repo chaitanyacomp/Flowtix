@@ -59,6 +59,7 @@ const {
   resolveProcurementDemandPool,
   isCreatePurchaseRequestAction,
   isRegularSoProcurementStage,
+  isNoQtyOrderType,
   createPurchaseRequestActionLabel,
 } = require("./rmProcurementStageSignals");
 const { displaySalesOrderNo } = require("../utils/docNoLabels");
@@ -492,6 +493,8 @@ function friendlyActionForNormalizedRow(row, role = "STORE") {
       netShortageAfterIncomingQty: meta.netShortageAfterIncomingQty,
       recommendedAction: row?.nextAction,
     }, role);
+    if (resolved?.excludeFromPendingActions) return null;
+    if (!resolved?.action) return null;
     if (resolved.action === "Create PO") return PREPARE_RM_PO;
     if (resolved.action === "GRN Pending" || resolved.action === "Create GRN" || resolved.action === GRN_PENDING_ACTION) {
       return GRN_PENDING_ACTION;
@@ -529,6 +532,14 @@ function mapNormalizedRowToPendingAction(row, role = "STORE") {
   const meta = row?.metadata && typeof row.metadata === "object" ? row.metadata : {};
   const enriched = row?.rowKey ? row : attachRowIdentity(row);
   const actionLabel = friendlyActionForNormalizedRow(enriched, role);
+  if (!actionLabel) return null;
+  // Defense in depth: never queue Regular/generic Create PR for NO_QTY SO/RS flow.
+  if (
+    isCreatePurchaseRequestAction(actionLabel) &&
+    isNoQtyOrderType(meta.orderType ?? enriched.orderType)
+  ) {
+    return null;
+  }
   let currentStatus = enriched.currentStatus ?? null;
   if (String(enriched.rowType ?? "") === ROW_TYPES.RM_RISK) {
     if (actionLabel === GRN_PENDING_ACTION || actionLabel === GRN_PENDING_ACTION_LEGACY) {
@@ -813,12 +824,20 @@ function mapProcurementQueueRowToPurchasePendingAction(row) {
   }
 
   if (nextKey === "CREATE_PR" || opKey === "PROCUREMENT_PENDING") {
+    const orderType = row.orderType ?? row.salesOrderOrderType;
+    const sourceType = row.sourceType;
+    // Authoritative SO flow: NO_QTY never enters Regular SO Create PR.
+    // MPRS Create PR remains valid only for MONTHLY_PLAN source MRs.
+    if (isNoQtyOrderType(orderType) && String(sourceType ?? "").trim().toUpperCase() !== "MONTHLY_PLAN") {
+      return null;
+    }
     const actionLabel = createPurchaseRequestActionLabel({
       procurementDemandPool: demandPool,
-      sourceType: row.sourceType,
+      sourceType,
+      orderType,
     });
     const documentNo =
-      demandPool === "REGULAR_SO"
+      demandPool === "REGULAR_SO" && !isNoQtyOrderType(orderType)
         ? formatRegularSoCreatePrDocumentNo(
             {
               salesOrderId: row.salesOrderId,
@@ -839,6 +858,12 @@ function mapProcurementQueueRowToPurchasePendingAction(row) {
       documentNo,
       href: planningHref,
       currentStatus: "PROCUREMENT_PENDING",
+      metadata: {
+        orderType: orderType ?? null,
+        salesOrderId: row.salesOrderId ?? null,
+        sourceType: sourceType ?? null,
+        procurementDemandPool: demandPool,
+      },
     };
   }
 
@@ -1237,6 +1262,57 @@ async function fetchAdminRmAllowanceApprovalPendingActions(db = prisma) {
 }
 
 /**
+ * Admin Pending Actions — REGULAR_SO Prepare WO production buffer approvals (above 5% through 10%).
+ * Isolated from NO_QTY and from RM allowance approvals.
+ */
+async function fetchAdminRegularSoBufferApprovalPendingActions(db = prisma) {
+  if (!db.regularSoBufferApprovalRequest?.findMany) return [];
+  const rows = await db.regularSoBufferApprovalRequest.findMany({
+    where: { status: "PENDING_APPROVAL" },
+    include: {
+      salesOrder: { select: { id: true, docNo: true, orderType: true } },
+      fgItem: { select: { id: true, itemName: true, unit: true } },
+      requestedBy: { select: { id: true, name: true } },
+    },
+    orderBy: [{ requestedAt: "asc" }, { id: "asc" }],
+    take: 100,
+  });
+  return rows
+    .filter((row) => (row.salesOrder?.orderType ?? "NORMAL") !== "NO_QTY")
+    .map((row) => {
+      const soNo = row.salesOrder?.docNo ?? `SO-${row.salesOrderId}`;
+      const fgName = row.fgItem?.itemName ?? (row.fgItemId ? `Item #${row.fgItemId}` : "FG");
+      return {
+        id: `regular-so-buffer-approval:${row.id}`,
+        type: "REGULAR_SO_BUFFER_APPROVAL_PENDING",
+        priority: PENDING_PRIORITY.HIGH,
+        action: "Production Buffer Approval",
+        documentNo: `${soNo} · ${fgName} · ${Number(row.bufferPercent)}%`,
+        ownerRole: "ADMIN",
+        ageHours: ageHoursFromTimestamp(row.requestedAt),
+        href: `/pending-actions?focus=regular-so-buffer-approval&bufferApprovalId=${row.id}`,
+        sourceModule: "WORK_ORDER",
+        currentStatus: "PENDING_APPROVAL",
+        salesOrderId: row.salesOrderId,
+        itemId: row.fgItemId ?? null,
+        quantity: Number(row.plannedProductionQty),
+        unit: row.fgItem?.unit ?? null,
+        metadata: {
+          bufferApprovalId: row.id,
+          salesOrderId: row.salesOrderId,
+          bufferPercent: Number(row.bufferPercent),
+          plannedProductionQty: Number(row.plannedProductionQty),
+          storeReason: row.storeReason,
+          requestedByName: row.requestedBy?.name ?? null,
+          requestedAt: row.requestedAt,
+          prepareWoHref: `/rm-check?soId=${row.salesOrderId}`,
+          approverRoles: ["ADMIN"],
+        },
+      };
+    });
+}
+
+/**
  * P8F-A19 — Hide old-cycle NO_QTY RM handoff from Store pending actions once a later-cycle RS exists.
  * Execution remains visible in Production / WO / RM CC; this is pending-action presentation only.
  *
@@ -1536,6 +1612,7 @@ async function loadStoreNoQtySupplementalContext(db = prisma) {
               where: { salesOrderId: { in: soIds }, status: "LOCKED", cycleId: { not: null } },
               select: {
                 id: true,
+                docNo: true,
                 salesOrderId: true,
                 cycleId: true,
                 periodKey: true,
@@ -1728,22 +1805,78 @@ async function fetchStoreAdditionalMonthlyPlanPendingActions(db = prisma) {
 }
 
 /**
- * After Cycle 1 RS lock (no WO yet): emit initial Monthly Planning when FG shortage
- * remains (Estimated Net RM / per-FG PROCUREMENT_REQUIRED). Fully stock-covered RS
+ * After Cycle 1 RS lock: emit Prepare Monthly Planning when FG shortage remains
+ * (Estimated Net RM / per-FG PROCUREMENT_REQUIRED). Fully stock-covered RS
  * skips via skipMonthlyPlanning. Mixed RS emits BOTH Monthly Planning (shortage FG)
- * and Place WO (ready FG) — do not suppress INITIAL when readyToPlaceWo is true.
+ * and Place WO (ready FG). A prior stock-ready WO on the cycle must not suppress
+ * Monthly Planning for remaining RS demand.
  */
+const PREPARE_MONTHLY_PLANNING_NO_QTY_ACTION = "Prepare Monthly Planning — NO_QTY";
+
+function formatQtyForPendingDoc(qty) {
+  const n = Number(qty);
+  if (!Number.isFinite(n)) return "0";
+  return n.toLocaleString("en-US", { maximumFractionDigits: 3 });
+}
+
+function buildPrepareMonthlyPlanningNoQtyDocumentNo({
+  soDocNo,
+  rsDocNo,
+  cycleNo,
+  fgName,
+  remainingQty,
+  unit,
+}) {
+  const parts = [];
+  const so = String(soDocNo ?? "").trim();
+  if (so) parts.push(so);
+  const rs = String(rsDocNo ?? "").trim();
+  if (rs) parts.push(rs);
+  const cyc = Number(cycleNo);
+  if (Number.isFinite(cyc) && cyc > 0) parts.push(`Cycle ${Math.trunc(cyc)}`);
+  const fg = String(fgName ?? "").trim();
+  if (fg) parts.push(fg);
+  const rem = Number(remainingQty);
+  if (Number.isFinite(rem) && rem > 0) {
+    const uom = String(unit ?? "").trim();
+    parts.push(`rem. ${formatQtyForPendingDoc(rem)}${uom ? ` ${uom}` : ""}`);
+  }
+  return parts.length ? parts.join(" · ") : null;
+}
+
+function buildPrepareMonthlyPlanningNoQtyHref({
+  periodKey,
+  salesOrderId,
+  cycleId,
+  requirementSheetId,
+}) {
+  const params = new URLSearchParams();
+  const pk = String(periodKey ?? "").trim();
+  if (pk) params.set("period", pk);
+  const soId = Number(salesOrderId);
+  if (Number.isFinite(soId) && soId > 0) params.set("salesOrderId", String(soId));
+  const cyc = Number(cycleId);
+  if (Number.isFinite(cyc) && cyc > 0) params.set("cycleId", String(cyc));
+  const rsId = Number(requirementSheetId);
+  if (Number.isFinite(rsId) && rsId > 0) {
+    params.set("requirementSheetId", String(rsId));
+    params.set("sheetId", String(rsId));
+  }
+  params.set("from", "pending-actions");
+  return `/monthly-planning?${params.toString()}`;
+}
+
 async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
   if (!isMonthlyPlanningEnabled()) return [];
 
-  const { openSoRows, lockedRsBySo, woOnCycleKeys } = await loadStoreNoQtySupplementalContext(db);
+  const { openSoRows, lockedRsBySo } = await loadStoreNoQtySupplementalContext(db);
   const placementPairs = [];
   for (const so of openSoRows) {
     const soId = Number(so.id);
     const lockedRs = lockedRsBySo.get(soId);
     if (!lockedRs?.cycleId) continue;
     const rsCycleId = Number(lockedRs.cycleId);
-    if (woOnCycleKeys.has(`${soId}:${rsCycleId}`)) continue;
+    // Do not skip when a stock-ready WO already exists — remaining RS demand may still need planning.
     placementPairs.push({ salesOrderId: soId, cycleId: rsCycleId, so, lockedRs });
   }
 
@@ -1755,32 +1888,83 @@ async function fetchStoreNoQtyMonthlyPlanningPendingActions(db = prisma) {
     const placement = await assessNoQtyPlacementStageForCycle(db, { salesOrderId: soId, cycleId: rsCycleId });
     // All FG stock-covered → PROCUREMENT_NOT_REQUIRED; Place WO path only.
     if (placement?.skipMonthlyPlanning) continue;
+    const remainingQty = Number(placement?.rsBalanceQty ?? 0);
+    if (!(remainingQty > EPS)) continue;
 
-    const periodKey = String(lockedRs.periodKey ?? "").trim();
+    const periodKey = String(lockedRs.periodKey ?? placement?.periodKey ?? "").trim();
     const planningGate = periodKey ? await assessNoQtyMonthlyPlanningGate(db, periodKey) : null;
-    // Additional Plan is emitted period-wide; this SO-scoped path is initial planning only.
-    if (planningGate?.gate !== NO_QTY_MONTHLY_PLANNING_GATE.INITIAL_PLAN_REQUIRED) {
+    const gate = planningGate?.gate ?? null;
+    // Period-wide Additional Plan PA owns ADDITIONAL_PLAN_REQUIRED — do not duplicate here.
+    if (gate === NO_QTY_MONTHLY_PLANNING_GATE.ADDITIONAL_PLAN_REQUIRED) {
+      continue;
+    }
+    const readiness = String(placement?.readinessStatus ?? "").toUpperCase();
+    const needsSoScopedMonthlyPlanning =
+      gate === NO_QTY_MONTHLY_PLANNING_GATE.INITIAL_PLAN_REQUIRED ||
+      !gate ||
+      // Remaining RS demand after stock-ready WO: do not leave only "View Planning Status".
+      ((gate === NO_QTY_MONTHLY_PLANNING_GATE.READY_FOR_EXECUTION ||
+        gate === NO_QTY_MONTHLY_PLANNING_GATE.RELEASE_PENDING ||
+        gate === NO_QTY_MONTHLY_PLANNING_GATE.PLAN_IN_PROGRESS) &&
+        (readiness === "AWAITING_PROCUREMENT" || readiness === "PARTIALLY_READY"));
+    if (!needsSoScopedMonthlyPlanning) {
       continue;
     }
 
-    const href = periodKey
-      ? `/monthly-planning?period=${encodeURIComponent(periodKey)}&from=pending-actions`
-      : "/monthly-planning?from=pending-actions";
+    let fgName = null;
+    let unit = null;
+    const sheetId = Number(placement?.requirementSheetId ?? lockedRs.id ?? 0);
+    if (sheetId > 0 && typeof db.requirementSheetLine?.findFirst === "function") {
+      const line = await db.requirementSheetLine.findFirst({
+        where: { sheetId },
+        orderBy: { id: "asc" },
+        select: { item: { select: { itemName: true, unit: true } } },
+      });
+      fgName = line?.item?.itemName ?? null;
+      unit = line?.item?.unit ?? null;
+    }
+
+    const href = buildPrepareMonthlyPlanningNoQtyHref({
+      periodKey,
+      salesOrderId: soId,
+      cycleId: rsCycleId,
+      requirementSheetId: sheetId,
+    });
 
     actions.push({
       id: `no-qty-monthly-plan:${soId}:${rsCycleId}:${periodKey || "no-period"}`,
+      type: "NO_QTY_MONTHLY_PLANNING_REQUIRED",
       priority: PENDING_PRIORITY.MEDIUM,
-      action: planningGate?.action ?? "Monthly Planning Pending",
-      documentNo: so.docNo ?? null,
+      action: PREPARE_MONTHLY_PLANNING_NO_QTY_ACTION,
+      documentNo: buildPrepareMonthlyPlanningNoQtyDocumentNo({
+        soDocNo: so.docNo,
+        rsDocNo: lockedRs.docNo ?? placement?.requirementSheetDocNo,
+        cycleNo: lockedRs.cycle?.cycleNo,
+        fgName,
+        remainingQty,
+        unit,
+      }),
       ownerRole: "STORE",
       ageHours: ageHoursFromTimestamp(lockedRs.updatedAt ?? so.updatedAt),
       href,
       sourceModule: "MONTHLY_PLANNING",
       currentStatus: "MONTHLY_PLANNING_PENDING",
       metadata: {
+        salesOrderId: soId,
+        salesOrderDocNo: so.docNo ?? null,
+        orderType: "NO_QTY",
+        requirementSheetId: sheetId > 0 ? sheetId : null,
+        requirementSheetDocNo: lockedRs.docNo ?? placement?.requirementSheetDocNo ?? null,
+        cycleId: rsCycleId,
+        cycleNo: lockedRs.cycle?.cycleNo ?? null,
+        periodKey: periodKey || null,
+        remainingRequirement: remainingQty,
+        fgItemName: fgName,
+        unit,
+        readinessStatus: placement?.readinessStatus ?? null,
+        planningGate: gate,
         mixedFgReadiness: Boolean(placement?.readyToPlaceWo && !placement?.skipMonthlyPlanning),
         readyToPlaceWo: Boolean(placement?.readyToPlaceWo),
-        readinessStatus: placement?.readinessStatus ?? null,
       },
     });
   }
@@ -2569,6 +2753,7 @@ async function getStorePendingActions(ctx) {
   const dedupedNormalized = dedupeRoleQueueRows(roleFilteredNormalized, role);
   const normalizedActions = dedupedNormalized
     .map((row) => mapNormalizedRowToPendingAction(row, role))
+    .filter(Boolean)
     .filter((action) => action.action !== STORE_RELEASE_TO_PRODUCTION_ACTION);
 
   // Authoritative: if Create Cycle N is already emitted for an SO, drop recovery shortfall/QC CTAs.
@@ -2755,7 +2940,9 @@ async function getPendingActions(opts = {}) {
 
   const roleFilteredNormalized = filterNormalizedRowsByOwner(mergedRows, role);
   const dedupedNormalized = dedupeRoleQueueRows(roleFilteredNormalized, role);
-  const normalizedActions = dedupedNormalized.map((row) => mapNormalizedRowToPendingAction(row, role));
+  const normalizedActions = dedupedNormalized
+    .map((row) => mapNormalizedRowToPendingAction(row, role))
+    .filter(Boolean);
 
   const supplemental = [...monthlyPlanActions.filter((a) => String(a.ownerRole).toUpperCase() === role)];
 
@@ -2775,6 +2962,9 @@ async function getPendingActions(opts = {}) {
     const rmAllowanceApprovals = await fetchAdminRmAllowanceApprovalPendingActions(db);
     supplemental.push(...rmAllowanceApprovals);
     bucketCounts.inventory += rmAllowanceApprovals.length;
+    const bufferApprovals = await fetchAdminRegularSoBufferApprovalPendingActions(db);
+    supplemental.push(...bufferApprovals);
+    bucketCounts.inventory += bufferApprovals.length;
   }
   if (role === "PURCHASE") {
     const purchaseChunk = await fetchPurchaseProcurementPendingActions(db);
@@ -2882,6 +3072,9 @@ async function getPendingActions(opts = {}) {
 
 module.exports = {
   PENDING_PRIORITY,
+  PREPARE_MONTHLY_PLANNING_NO_QTY_ACTION,
+  buildPrepareMonthlyPlanningNoQtyDocumentNo,
+  buildPrepareMonthlyPlanningNoQtyHref,
   getPendingActions,
   mapNormalizedRowToPendingAction,
   friendlyActionForNormalizedRow,
@@ -2895,6 +3088,7 @@ module.exports = {
   fetchProductionRmReturnInformationalStatuses,
   fetchStoreProductionRmReturnPendingActions,
   fetchAdminRmAllowanceApprovalPendingActions,
+  fetchAdminRegularSoBufferApprovalPendingActions,
   fetchStoreRmAllowanceQueuePendingActions,
   fetchStoreIssuePendingActions,
   fetchStoreNoQtyMonthlyPlanningPendingActions,

@@ -8,6 +8,7 @@ import { ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../compone
 import { ErpRefreshingBadge } from "../components/erp/foundation/ErpRefreshingBadge";
 import { PendingActionBucketSkeleton } from "../components/erp/pending/PendingActionBucketSkeleton";
 import { RmAllowanceApprovalDetailModal } from "../components/erp/RmAllowanceApprovalDetailModal";
+import { RegularSoBufferApprovalDetailModal } from "../components/erp/RegularSoBufferApprovalDetailModal";
 import { useAuth } from "../hooks/useAuth";
 import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 import { useUrlQueryState } from "../hooks/useUrlQueryState";
@@ -32,12 +33,21 @@ import {
   RM_ALLOWANCE_APPROVAL_ACTION,
   resolveAllowanceApprovalIdFromAction,
 } from "../lib/rmAllowanceApprovalApi";
+import {
+  REGULAR_SO_BUFFER_APPROVAL_ACTION,
+  REGULAR_SO_BUFFER_APPROVAL_FOCUS,
+  resolveBufferApprovalIdFromAction,
+} from "../lib/regularSoBufferApprovalApi";
 import { cn } from "../lib/utils";
 
 const RM_ALLOWANCE_APPROVAL_FOCUS = "rm-allowance-approval";
 
 function isRmAllowanceApprovalBucket(bucket: PendingActionWorkBucket): boolean {
   return bucket.actionType === RM_ALLOWANCE_APPROVAL_ACTION;
+}
+
+function isRegularSoBufferApprovalBucket(bucket: PendingActionWorkBucket): boolean {
+  return bucket.actionType === REGULAR_SO_BUFFER_APPROVAL_ACTION;
 }
 
 type SortMode = "priority" | "age";
@@ -95,16 +105,30 @@ export function PendingActionsPage() {
 
   const focusParam = read.string("focus");
   const allowanceApprovalIdParam = read.int("allowanceApprovalId", 0);
+  const bufferApprovalIdParam = read.int("bufferApprovalId", 0);
   const activeAllowanceApprovalId =
     isAdmin && focusParam === RM_ALLOWANCE_APPROVAL_FOCUS && allowanceApprovalIdParam > 0
       ? allowanceApprovalIdParam
+      : null;
+  const activeBufferApprovalId =
+    isAdmin && focusParam === REGULAR_SO_BUFFER_APPROVAL_FOCUS && bufferApprovalIdParam > 0
+      ? bufferApprovalIdParam
       : null;
 
   const openAllowanceApproval = React.useCallback(
     (item: PendingAction) => {
       const id = resolveAllowanceApprovalIdFromAction(item);
       if (!id) return;
-      patch({ focus: RM_ALLOWANCE_APPROVAL_FOCUS, allowanceApprovalId: String(id) });
+      patch({ focus: RM_ALLOWANCE_APPROVAL_FOCUS, allowanceApprovalId: String(id), bufferApprovalId: null });
+    },
+    [patch],
+  );
+
+  const openBufferApproval = React.useCallback(
+    (item: PendingAction) => {
+      const id = resolveBufferApprovalIdFromAction(item);
+      if (!id) return;
+      patch({ focus: REGULAR_SO_BUFFER_APPROVAL_FOCUS, bufferApprovalId: String(id), allowanceApprovalId: null });
     },
     [patch],
   );
@@ -113,7 +137,15 @@ export function PendingActionsPage() {
     patch({ focus: null, allowanceApprovalId: null });
   }, [patch]);
 
+  const closeBufferApprovalModal = React.useCallback(() => {
+    patch({ focus: null, bufferApprovalId: null });
+  }, [patch]);
+
   const handleAllowanceApprovalDecided = React.useCallback(() => {
+    bumpErpRefresh("pending-actions");
+  }, []);
+
+  const handleBufferApprovalDecided = React.useCallback(() => {
     bumpErpRefresh("pending-actions");
   }, []);
 
@@ -208,6 +240,8 @@ export function PendingActionsPage() {
         <div className="space-y-3" data-testid="pending-actions-buckets">
           {buckets.map((bucket) => {
             const isAllowanceBucket = isAdmin && isRmAllowanceApprovalBucket(bucket);
+            const isBufferBucket = isAdmin && isRegularSoBufferApprovalBucket(bucket);
+            const isInlineApprovalBucket = isAllowanceBucket || isBufferBucket;
             return (
             <div
               key={bucket.key}
@@ -226,12 +260,16 @@ export function PendingActionsPage() {
                   </div>
                   <ul className="mt-2 space-y-1 text-sm text-slate-800">
                     {bucket.previewLines.map((line, idx) =>
-                      isAllowanceBucket && bucket.items[idx] ? (
+                      isInlineApprovalBucket && bucket.items[idx] ? (
                         <li key={`${bucket.key}-${line.documentNo}-${idx}`} className="tabular-nums">
                           <button
                             type="button"
                             className="text-left font-medium text-slate-900 underline-offset-2 hover:underline"
-                            onClick={() => openAllowanceApproval(bucket.items[idx])}
+                            onClick={() =>
+                              isBufferBucket
+                                ? openBufferApproval(bucket.items[idx])
+                                : openAllowanceApproval(bucket.items[idx])
+                            }
                           >
                             {line.documentNo}
                           </button>
@@ -260,6 +298,10 @@ export function PendingActionsPage() {
                     variant="outline"
                     className="h-8 gap-1"
                     onClick={() => {
+                      if (isBufferBucket && bucket.items[0]) {
+                        openBufferApproval(bucket.items[0]);
+                        return;
+                      }
                       if (isAllowanceBucket && bucket.items[0]) {
                         openAllowanceApproval(bucket.items[0]);
                         return;
@@ -281,12 +323,20 @@ export function PendingActionsPage() {
       ) : null}
 
       {isAdmin ? (
-        <RmAllowanceApprovalDetailModal
-          open={activeAllowanceApprovalId != null}
-          allowanceApprovalId={activeAllowanceApprovalId}
-          onClose={closeAllowanceApprovalModal}
-          onDecided={handleAllowanceApprovalDecided}
-        />
+        <>
+          <RmAllowanceApprovalDetailModal
+            open={activeAllowanceApprovalId != null}
+            allowanceApprovalId={activeAllowanceApprovalId}
+            onClose={closeAllowanceApprovalModal}
+            onDecided={handleAllowanceApprovalDecided}
+          />
+          <RegularSoBufferApprovalDetailModal
+            open={activeBufferApprovalId != null}
+            bufferApprovalId={activeBufferApprovalId}
+            onClose={closeBufferApprovalModal}
+            onDecided={handleBufferApprovalDecided}
+          />
+        </>
       ) : null}
     </PageContainer>
   );

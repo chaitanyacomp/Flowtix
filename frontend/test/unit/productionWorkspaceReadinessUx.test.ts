@@ -60,6 +60,17 @@ describe("productionWorkspaceReadinessUx", () => {
         rmReadyForProduction: false,
       }),
     ).toBe("WAITING RM");
+    expect(
+      deriveConciseRmLabelFromQueueRow({
+        ...baseRow,
+        requiredQty: 22,
+        producedQty: 22,
+        balanceQty: 0,
+        rmReadinessGate: "READY_FOR_PRODUCTION",
+        rmReadyForProduction: true,
+        rmProductionAllowedNowQty: 0,
+      }),
+    ).toBe("COMPLETE");
   });
 
   it("builds RM strip seed from queue row without re-deriving gate", () => {

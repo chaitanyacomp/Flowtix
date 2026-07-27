@@ -289,9 +289,14 @@ salesBillsRouter.get("/sales-orders/:soId/eligible-dispatches", requireAuth, req
 
 const allocationInput = z.object({ dispatchId: z.number().int().positive(), billNowQty: z.number().positive() });
 const transportationInput = z.object({
-  amount: z.number().nonnegative().default(0),
+  /** Validated strictly in salesBillTransporterValidation (0+, max 2 decimals). */
+  amount: z.union([z.number(), z.string()]).optional().default(0),
   chargedBy: z.enum(["OUR_COMPANY", "TRANSPORTER_DIRECTLY"]).default("OUR_COMPANY"),
-  transporterName: z.string().max(256).optional().nullable(), referenceNo: z.string().max(128).optional().nullable(),
+  transporterId: z.number().int().positive().optional().nullable(),
+  /** Snapshot / legacy only — create/update resolve name from transporterId when present. */
+  transporterName: z.string().max(256).optional().nullable(),
+  referenceNo: z.string().max(64).optional().nullable(),
+  vehicleNumber: z.string().max(32).optional().nullable(),
   remarks: z.string().max(4000).optional().nullable(),
 }).default({ amount: 0, chargedBy: "OUR_COMPANY" });
 

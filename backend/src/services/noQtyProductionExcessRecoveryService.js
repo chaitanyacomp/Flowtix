@@ -5,7 +5,9 @@
  * Produced Excess Pending QC (e.g. 10) is WO over-production still awaiting first-pass QC.
  * That excess must NOT appear as Prior Accepted Excess until QC-accepted.
  * Provisional Net Recovery = max(0, gross shortage + QC rejection − pending excess − accepted WO excess).
- * Finalize is blocked while excess relevant to recovery is still pending QC.
+ *
+ * Finalize uses confirmed quantities only (accepted offset applied; pending QC is display-only).
+ * QC must not lock RS cycles — later QC decisions adjust the active cycle via the excess ledger.
  */
 
 const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
@@ -106,6 +108,7 @@ function splitTerminalScrapAgainstWoPlan({
  * - Accepted WO excess offsets recovery once.
  * - Rejected WO excess only cancels provisional offset — it is NOT kept QC-rejection recovery.
  * - keptFinalQcRejectionQty is clamped by rejectedWoExcessQty so leaked surplus scrap cannot create 67+10=77.
+ * - Pending QC never blocks finalize; it only drives provisional display.
  */
 function computeProductionShortageRecoveryOffset({
   grossProductionShortageQty = 0,
@@ -128,12 +131,6 @@ function computeProductionShortageRecoveryOffset({
   const pendingOffset = Math.max(0, round3(Math.min(pendingExcess, afterAccepted)));
   const provisionalNetRecoveryQty = Math.max(0, round3(afterAccepted - pendingOffset));
   const confirmedNetRecoveryQty = Math.max(0, round3(grossRecovery - acceptedOffset));
-  const finalizeBlocked = pendingOffset > EPS && grossRecovery > EPS;
-  const finalizeBlockMessage = finalizeBlocked
-    ? `Final recovery cannot be confirmed until QC decides ${pendingExcess.toLocaleString("en-US", {
-        maximumFractionDigits: 3,
-      })} Nos excess production.`
-    : null;
   return {
     grossProductionShortageQty: grossShortage,
     keptFinalQcRejectionQty: rawQcRejection,
@@ -146,8 +143,9 @@ function computeProductionShortageRecoveryOffset({
     remainingAcceptedExcessQty,
     provisionalNetRecoveryQty,
     confirmedNetRecoveryQty,
-    finalizeBlocked,
-    finalizeBlockMessage,
+    /** @deprecated Always false — QC must not lock RS finalize. Kept for API compatibility. */
+    finalizeBlocked: false,
+    finalizeBlockMessage: null,
     subjectToQc: pendingExcess > EPS,
   };
 }
@@ -256,7 +254,8 @@ async function loadNoQtyProducedExcessByItemForPriorCycles(db, { salesOrderId, t
 }
 
 /**
- * Compose recovery offset display + finalize gate inputs for one FG on a draft/locked RS.
+ * Compose recovery offset display for one FG on a draft/locked RS.
+ * Pending QC is provisional information only — never a finalize lock.
  */
 function composeNoQtyRecoveryExcessView({
   grossProductionShortageQty = 0,
@@ -279,67 +278,31 @@ function composeNoQtyRecoveryExcessView({
   });
   return {
     ...offset,
-    finalizeBlockMessage: offset.finalizeBlocked
-      ? `Final recovery cannot be confirmed until QC decides ${pendingLabel} ${unitLabel} excess production.`
-      : null,
+    finalizeBlockMessage: null,
     provisionalNetRecoveryExplanation: offset.subjectToQc
       ? `Provisional net recovery ${offset.provisionalNetRecoveryQty.toLocaleString("en-US", {
           maximumFractionDigits: 3,
-        })} ${unitLabel} (subject to QC on ${pendingLabel} ${unitLabel} produced excess).`
+        })} ${unitLabel} (Pending QC on ${pendingLabel} ${unitLabel} produced excess — finalize uses confirmed ${offset.confirmedNetRecoveryQty.toLocaleString(
+          "en-US",
+          { maximumFractionDigits: 3 },
+        )} ${unitLabel}; later QC adjusts the active cycle).`
       : null,
   };
 }
 
 /**
- * Block Finalize/lock when WO excess that offsets recovery is still pending QC.
+ * @deprecated No-op kept for call-site compatibility. QC pending excess must not block RS finalize.
  */
 async function assertNoProducedExcessPendingQcForRecoveryOrThrow(
-  tx,
-  { salesOrderId, targetCycleId, recoveryByItem },
+  _tx,
+  _opts,
 ) {
-  const excessByItem = await loadNoQtyProducedExcessByItemForPriorCycles(tx, {
-    salesOrderId,
-    targetCycleId,
-  });
-  /** @type {Array<{ itemId: number; producedExcessPendingQcQty: number; grossRecoveryQty: number; message: string }>} */
-  const blockers = [];
-  const items = recoveryByItem instanceof Map ? recoveryByItem : new Map(Object.entries(recoveryByItem || {}));
-  for (const [itemIdRaw, recovery] of items) {
-    const itemId = Number(itemIdRaw);
-    const excess = excessByItem.get(itemId) || {
-      producedExcessPendingQcQty: 0,
-      acceptedWoExcessQty: 0,
-      rejectedWoExcessQty: 0,
-    };
-    const view = composeNoQtyRecoveryExcessView({
-      grossProductionShortageQty: recovery?.grossProductionShortageQty ?? recovery?.productionShortfallQty ?? 0,
-      keptFinalQcRejectionQty: recovery?.keptFinalQcRejectionQty ?? recovery?.qcFinalRejectionQty ?? 0,
-      rejectedWoExcessQty: excess.rejectedWoExcessQty,
-      producedExcessPendingQcQty: excess.producedExcessPendingQcQty,
-      acceptedWoExcessQty: excess.acceptedWoExcessQty,
-      unit: recovery?.unit || "Nos",
-    });
-    if (view.finalizeBlocked) {
-      blockers.push({
-        itemId,
-        producedExcessPendingQcQty: view.producedExcessPendingQcQty,
-        grossRecoveryQty: view.grossRecoveryQty,
-        message: view.finalizeBlockMessage,
-      });
-    }
-  }
-  if (!blockers.length) return { ok: true, blockers: [] };
-  const primary = blockers[0];
-  const err = new Error(primary.message);
-  err.statusCode = 409;
-  err.code = "PRODUCED_EXCESS_PENDING_QC";
-  err.details = { blockers };
-  throw err;
+  return { ok: true, blockers: [] };
 }
 
 /**
  * Effective recovery qty after accepted WO excess offset (for Net Production Requirement).
- * Pending excess is NOT subtracted here — finalize is blocked until QC resolves it.
+ * Pending excess is NOT subtracted — finalize uses confirmed quantities only.
  */
 function effectiveRecoveryAfterAcceptedWoExcessOffset({
   productionShortfallQty = 0,

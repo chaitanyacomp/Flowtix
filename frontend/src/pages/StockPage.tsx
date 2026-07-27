@@ -34,6 +34,11 @@ import {
   ReportPrintMeta,
   downloadReportCsv,
 } from "../components/erp/ReportPrintExport";
+import {
+  STOCK_SUMMARY_USABLE_QTY_TOOLTIP,
+  resolveStockSummaryUsableQty,
+  sumStockSummaryUsableQty,
+} from "../lib/stockSummaryUsableQty";
 
 const STOCK_PRIMARY_BTN = "h-8 px-3 text-[12px] font-bold shadow-sm";
 const STOCK_SECONDARY_BTN = "h-8 px-3 text-[12px]";
@@ -314,28 +319,6 @@ export function StockPage() {
     return n;
   }, [itemThresholdsById]);
 
-  const operationalKpis = React.useMemo(() => {
-    let totalRmStock = 0;
-    for (const r of rows) {
-      const usable = Number(r.usableQty) || 0;
-      if (r.item.itemType === "RM") totalRmStock += usable;
-    }
-    const rmAlertCounts = countRmInventoryHealthAlerts(rows, itemThresholdsById);
-    let productionLocationStock = 0;
-    for (const loc of byLocationGrouped) {
-      const t = String(loc.locationType || locationMetaById.get(loc.locationId ?? -1)?.locationType || "").toUpperCase();
-      if (t === "PRODUCTION" || t === "WIP") {
-        productionLocationStock += loc.items.reduce((s, it) => s + Number(it.qty || 0), 0);
-      }
-    }
-    return {
-      totalRmStock,
-      productionLocationStock,
-      rmAlertCounts,
-      lowStockItems: rmAlertCounts.total,
-    };
-  }, [rows, itemThresholdsById, byLocationGrouped, locationMetaById]);
-
   function openMovementHistory(itemId: number, locationId?: number | null) {
     const params = new URLSearchParams();
     params.set("itemId", String(itemId));
@@ -365,6 +348,37 @@ export function StockPage() {
     [godown],
   );
 
+  const operationalKpis = React.useMemo(() => {
+    // Prefer godown Available / FG Store when loaded — matches Usable Qty column.
+    const usableRmFromGodown = sumStockSummaryUsableQty(godownRmRows);
+    const usableFgFromGodown = sumStockSummaryUsableQty(godownFgRows);
+    let usableRmFallback = 0;
+    let usableFgFallback = 0;
+    for (const r of rows) {
+      const usable = Number(r.usableQty) || 0;
+      if (r.item.itemType === "RM") usableRmFallback += usable;
+      if (r.item.itemType === "FG") usableFgFallback += usable;
+    }
+    const usableRmStock = godownLoaded ? usableRmFromGodown : usableRmFallback;
+    const usableFgStock = godownLoaded ? usableFgFromGodown : usableFgFallback;
+    const rmAlertCounts = countRmInventoryHealthAlerts(rows, itemThresholdsById);
+    let productionLocationStock = 0;
+    for (const loc of byLocationGrouped) {
+      const t = String(loc.locationType || locationMetaById.get(loc.locationId ?? -1)?.locationType || "").toUpperCase();
+      if (t === "PRODUCTION" || t === "WIP") {
+        productionLocationStock += loc.items.reduce((s, it) => s + Number(it.qty || 0), 0);
+      }
+    }
+    return {
+      usableRmStock,
+      usableFgStock,
+      totalRmStock: usableRmStock,
+      productionLocationStock,
+      rmAlertCounts,
+      lowStockItems: rmAlertCounts.total,
+    };
+  }, [rows, itemThresholdsById, byLocationGrouped, locationMetaById, godownRmRows, godownFgRows, godownLoaded]);
+
   function sumGodownSection(rows: GodownRow[]): GodownRow {
     const t: GodownRow = {
       itemId: 0,
@@ -392,6 +406,8 @@ export function StockPage() {
 
   const godownRmTotals = React.useMemo(() => sumGodownSection(godownRmRows), [godownRmRows]);
   const godownFgTotals = React.useMemo(() => sumGodownSection(godownFgRows), [godownFgRows]);
+  const godownRmUsableTotal = React.useMemo(() => sumStockSummaryUsableQty(godownRmRows), [godownRmRows]);
+  const godownFgUsableTotal = React.useMemo(() => sumStockSummaryUsableQty(godownFgRows), [godownFgRows]);
 
   const overviewExportRows = React.useMemo(() => {
     const list =
@@ -404,7 +420,7 @@ export function StockPage() {
       r.itemName,
       r.itemType,
       r.unit,
-      fmtQtyStock(r.total),
+      fmtQtyStock(resolveStockSummaryUsableQty(r)),
       fmtQtyStock(r.rmStore),
       fmtQtyStock(r.reservedStock),
       fmtQtyStock(r.freeStock),
@@ -413,6 +429,7 @@ export function StockPage() {
       fmtQtyStock(r.fgStore),
       fmtQtyStock(r.qcHold),
       fmtQtyStock(r.scrap),
+      fmtQtyStock(r.total),
     ]);
   }, [godownRmRows, godownFgRows, itemTypeFilterVal]);
 
@@ -429,7 +446,7 @@ export function StockPage() {
     "Item",
     "Type",
     "Unit",
-    "Total",
+    "Usable Qty",
     "Physical",
     "Committed",
     "Available",
@@ -438,13 +455,19 @@ export function StockPage() {
     "FG Store",
     "Under QC",
     "Scrap",
+    "Total Accounted",
   ];
 
   React.useEffect(() => {
     if (viewMode === "godown") void loadGodown();
   }, [itemTypeFilterVal, qDraft, liveTick, viewMode]);
 
-  function renderGodownTable(sectionRows: GodownRow[], totals: GodownRow | null, title: string) {
+  function renderGodownTable(
+    sectionRows: GodownRow[],
+    totals: GodownRow | null,
+    usableSectionTotal: number,
+    title: string,
+  ) {
     if (!sectionRows.length) return null;
     return (
       <div className="space-y-1">
@@ -453,8 +476,14 @@ export function StockPage() {
           <table className="w-full table-fixed text-[12px]">
             <thead className="border-b border-slate-200 bg-slate-50 text-[11px] text-slate-600">
               <tr>
-                <th className="w-[28%] px-2 py-1.5 text-left font-medium">Item</th>
-                <th className="w-[10%] px-1 py-1.5 text-right font-medium">Total</th>
+                <th className="w-[24%] px-2 py-1.5 text-left font-medium">Item</th>
+                <th
+                  className="w-[11%] px-1 py-1.5 text-right font-semibold text-emerald-900"
+                  title={STOCK_SUMMARY_USABLE_QTY_TOOLTIP}
+                >
+                  <span className="hidden sm:inline">Usable Qty</span>
+                  <span className="sm:hidden">Usable</span>
+                </th>
                 {GODOWN_COLS.map((c) => (
                   <th
                     key={c.key}
@@ -465,10 +494,19 @@ export function StockPage() {
                     <span className="sm:hidden">{c.short}</span>
                   </th>
                 ))}
+                <th
+                  className="w-[11%] px-1 py-1.5 text-right font-medium text-slate-500"
+                  title="Sum of stock across all applicable locations for reconciliation (includes scrap, QC, WIP)."
+                >
+                  <span className="hidden sm:inline">Total Accounted</span>
+                  <span className="sm:hidden">Acct.</span>
+                </th>
               </tr>
             </thead>
             <tbody>
-              {sectionRows.map((r) => (
+              {sectionRows.map((r) => {
+                const usableQty = resolveStockSummaryUsableQty(r);
+                return (
                 <tr
                   key={r.itemId}
                   className={cn(
@@ -488,25 +526,37 @@ export function StockPage() {
                   <td className="truncate px-2 py-1.5 font-medium text-slate-900" title={r.itemName}>
                     {r.itemName}
                   </td>
-                  <td className="px-1 py-1.5 text-right tabular-nums font-bold text-slate-900">
-                    {fmtQtyStock(r.total)}
+                  <td
+                    className="bg-emerald-50/70 px-1 py-1.5 text-right tabular-nums font-bold text-emerald-950"
+                    title={STOCK_SUMMARY_USABLE_QTY_TOOLTIP}
+                  >
+                    {usableQty > 0 ? fmtQtyStock(usableQty) : <span className="font-medium text-slate-400">—</span>}
                   </td>
                   {GODOWN_COLS.map((c) => (
                     <td key={c.key} className="px-1 py-1.5 text-right tabular-nums text-slate-800">
                       {r[c.key] > 0 ? fmtQtyStock(r[c.key]) : <span className="text-slate-300">—</span>}
                     </td>
                   ))}
+                  <td className="px-1 py-1.5 text-right tabular-nums text-slate-600">
+                    {fmtQtyStock(r.total)}
+                  </td>
                 </tr>
-              ))}
+                );
+              })}
               {totals ? (
                 <tr className="border-t-2 border-slate-200 bg-slate-50/90 font-semibold">
                   <td className="px-2 py-1.5 text-slate-700">Total</td>
-                  <td className="px-1 py-1.5 text-right tabular-nums">{fmtQtyStock(totals.total)}</td>
+                  <td className="bg-emerald-50/80 px-1 py-1.5 text-right tabular-nums text-emerald-950">
+                    {usableSectionTotal > 0 ? fmtQtyStock(usableSectionTotal) : "—"}
+                  </td>
                   {GODOWN_COLS.map((c) => (
                     <td key={c.key} className="px-1 py-1.5 text-right tabular-nums">
                       {totals[c.key] > 0 ? fmtQtyStock(totals[c.key]) : "—"}
                     </td>
                   ))}
+                  <td className="px-1 py-1.5 text-right tabular-nums text-slate-600">
+                    {fmtQtyStock(totals.total)}
+                  </td>
                 </tr>
               ) : null}
             </tbody>
@@ -521,7 +571,8 @@ export function StockPage() {
       <div className="min-w-0 flex-1">
         <OperatorPageTitle>Stock Summary</OperatorPageTitle>
         <p className="mt-1 max-w-2xl text-[13px] leading-snug text-slate-600">
-          See where stock sits by godown — store, production, QC, and scrap. Click an item for movement detail.
+          Usable Qty is what you can put on new work or dispatch. Total Accounted reconciles stock across all locations,
+          including scrap and QC.
         </p>
       </div>
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
@@ -603,11 +654,19 @@ export function StockPage() {
             </div>
           ) : null}
 
-          {summaryLoaded ? (
+          {summaryLoaded || godownLoaded ? (
             <ErpKpiStrip className={erpKpi.stripCompact} role="region" aria-label="Stock operational metrics">
-              <ErpKpiSegment as="div">
-                <ErpKpiLabel>Total RM stock</ErpKpiLabel>
-                <ErpKpiValue className="tabular-nums">{fmtQtyStock(operationalKpis.totalRmStock)}</ErpKpiValue>
+              <ErpKpiSegment as="div" title={STOCK_SUMMARY_USABLE_QTY_TOOLTIP}>
+                <ErpKpiLabel>Usable RM</ErpKpiLabel>
+                <ErpKpiValue className="tabular-nums text-emerald-900">
+                  {fmtQtyStock(operationalKpis.usableRmStock)}
+                </ErpKpiValue>
+              </ErpKpiSegment>
+              <ErpKpiSegment as="div" title={STOCK_SUMMARY_USABLE_QTY_TOOLTIP}>
+                <ErpKpiLabel>Usable FG</ErpKpiLabel>
+                <ErpKpiValue className="tabular-nums text-emerald-900">
+                  {fmtQtyStock(operationalKpis.usableFgStock)}
+                </ErpKpiValue>
               </ErpKpiSegment>
               <ErpKpiSegment as="div">
                 <ErpKpiLabel>Production location stock</ErpKpiLabel>
@@ -761,16 +820,27 @@ export function StockPage() {
                   <>
                     {itemTypeFilterVal !== "FG" ? (
                       <div className="space-y-1">
-                        {renderGodownTable(godownRmRows, godownRmTotals, "Raw materials")}
+                        {renderGodownTable(godownRmRows, godownRmTotals, godownRmUsableTotal, "Raw materials")}
                         <p className="text-[11px] leading-snug text-slate-600">
+                          <span className="font-semibold text-slate-700">Usable Qty</span> — Available stock free for new
+                          work (excludes committed).{" "}
                           <span className="font-semibold text-slate-700">Physical</span> — stock in RM store.{" "}
                           <span className="font-semibold text-slate-700">Committed</span> — already linked to active work
-                          orders. <span className="font-semibold text-slate-700">Available</span> — free to allocate on new
-                          work.
+                          orders. <span className="font-semibold text-slate-700">Total Accounted</span> — all locations for
+                          reconciliation.
                         </p>
                       </div>
                     ) : null}
-                    {itemTypeFilterVal !== "RM" ? renderGodownTable(godownFgRows, godownFgTotals, "Finished goods") : null}
+                    {itemTypeFilterVal !== "RM" ? (
+                      <div className="space-y-1">
+                        {renderGodownTable(godownFgRows, godownFgTotals, godownFgUsableTotal, "Finished goods")}
+                        <p className="text-[11px] leading-snug text-slate-600">
+                          <span className="font-semibold text-slate-700">Usable Qty</span> — FG Store stock available to
+                          dispatch (excludes scrap, under QC, and WIP).{" "}
+                          <span className="font-semibold text-slate-700">Total Accounted</span> — includes all locations.
+                        </p>
+                      </div>
+                    ) : null}
                   </>
                 )}
               </div>
@@ -903,7 +973,7 @@ export function StockPage() {
                     <th className="px-2 py-1.5 text-right font-medium">QC pending</th>
                     <th className="px-2 py-1.5 text-right font-medium">Rework</th>
                     <th className="px-2 py-1.5 text-right font-medium">Scrap</th>
-                    <th className="px-2 py-1.5 text-right font-medium whitespace-nowrap">Total (all buckets)</th>
+                    <th className="px-2 py-1.5 text-right font-medium whitespace-nowrap">Total Accounted</th>
                     <th className="px-2 py-1.5 text-right font-medium">Action</th>
                   </tr>
                 </thead>

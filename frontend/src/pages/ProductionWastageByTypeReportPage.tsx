@@ -305,7 +305,7 @@ export function ProductionWastageByTypeReportPage() {
           </label>
           <label className="grid gap-0.5">
             <span className="font-medium text-slate-600">WO no.</span>
-            <Input className="h-8 w-32" value={woNumber} onChange={(e) => setWoNumber(e.target.value)} placeholder="WO-26-" />
+            <Input className="h-8 w-32" value={woNumber} onChange={(e) => setWoNumber(e.target.value)} placeholder="WO-R-26-" />
           </label>
           <label className="grid gap-0.5">
             <span className="font-medium text-slate-600">Customer</span>

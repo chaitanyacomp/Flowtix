@@ -378,6 +378,11 @@ function buildResetTransactionDataCleanupSteps(tx) {
     },
     { table: "salesBill", delete: () => tx.salesBill.deleteMany({}), count: () => tx.salesBill.count() },
     { table: "customerReturn", delete: () => tx.customerReturn.deleteMany({}), count: () => tx.customerReturn.count() },
+    {
+      table: "dispatchFgTraceAllocation",
+      delete: () => tx.dispatchFgTraceAllocation.deleteMany({}),
+      count: () => tx.dispatchFgTraceAllocation.count(),
+    },
     { table: "STORE", delete: () => tx.dispatch.deleteMany({}), count: () => tx.dispatch.count() },
     { table: "qcReversal", delete: () => tx.qcReversal.deleteMany({}), count: () => tx.qcReversal.count() },
     { table: "scrapRecord", delete: () => tx.scrapRecord.deleteMany({}), count: () => tx.scrapRecord.count() },
@@ -420,6 +425,11 @@ function buildResetTransactionDataCleanupSteps(tx) {
       count: () => tx.noQtySoCloseSnapshot.count(),
     },
     {
+      table: "noQtyQcExcessCycleAdjustment",
+      delete: () => tx.noQtyQcExcessCycleAdjustment.deleteMany({}),
+      count: () => tx.noQtyQcExcessCycleAdjustment.count(),
+    },
+    {
       table: "salesOrderCycle",
       delete: async () => {
         await tx.salesOrder.updateMany({ data: { currentCycleId: null } });
@@ -431,6 +441,11 @@ function buildResetTransactionDataCleanupSteps(tx) {
       table: "regularSoPlanningSnapshotLine",
       delete: () => tx.regularSoPlanningSnapshotLine.deleteMany({}),
       count: () => tx.regularSoPlanningSnapshotLine.count(),
+    },
+    {
+      table: "regularSoBufferApprovalRequest",
+      delete: () => tx.regularSoBufferApprovalRequest.deleteMany({}),
+      count: () => tx.regularSoBufferApprovalRequest.count(),
     },
     {
       table: "regularSoPlanningSnapshot",
@@ -1059,6 +1074,16 @@ async function runResetNoQtyTransactionalDeletes(tx) {
     tx.customerReturn.deleteMany({ where: { salesOrderId: { in: noQtySoIds } } }),
   );
 
+  if (await tableExists(tx, ["dispatchfgtraceallocation", "DispatchFgTraceAllocation"])) {
+    await addDeleteCount(deletedCounts, "dispatchFgTraceAllocation", () =>
+      tx.dispatchFgTraceAllocation.deleteMany({
+        where: { dispatch: { soId: { in: noQtySoIds } } },
+      }),
+    );
+  } else {
+    deletedCounts.dispatchFgTraceAllocation = 0;
+  }
+
   await addDeleteCount(deletedCounts, "STORE", () =>
     tx.dispatch.deleteMany({ where: { soId: { in: noQtySoIds } } }),
   );
@@ -1223,6 +1248,14 @@ async function runResetNoQtyTransactionalDeletes(tx) {
     tx.noQtySoCloseSnapshot.deleteMany({ where: { salesOrderId: { in: noQtySoIds } } }),
   );
 
+  if (await tableExists(tx, ["noqtyqcexcesscycleadjustment", "NoQtyQcExcessCycleAdjustment"])) {
+    await addDeleteCount(deletedCounts, "noQtyQcExcessCycleAdjustment", () =>
+      tx.noQtyQcExcessCycleAdjustment.deleteMany({ where: { salesOrderId: { in: noQtySoIds } } }),
+    );
+  } else {
+    deletedCounts.noQtyQcExcessCycleAdjustment = 0;
+  }
+
   await tx.salesOrder.updateMany({
     where: { id: { in: noQtySoIds } },
     data: { currentCycleId: null },
@@ -1334,6 +1367,17 @@ async function runFullDemoResetDeletes(tx, deleted) {
     ],
     ["salesBill", async () => addDeleteCount(deleted, "salesBill", () => tx.salesBill.deleteMany({}))],
     ["customerReturn", async () => addDeleteCount(deleted, "customerReturn", () => tx.customerReturn.deleteMany({}))],
+    [
+      "dispatchFgTraceAllocation",
+      async () =>
+        tryOptionalTableDelete(
+          tx,
+          deleted,
+          ["dispatchfgtraceallocation", "DispatchFgTraceAllocation"],
+          "dispatchFgTraceAllocation",
+          () => tx.dispatchFgTraceAllocation.deleteMany({}),
+        ),
+    ],
     [
       "STORE",
       async () =>
@@ -1497,6 +1541,17 @@ async function runFullDemoResetDeletes(tx, deleted) {
     ["requirementSheetLine", async () => addDeleteCount(deleted, "requirementSheetLine", () => tx.requirementSheetLine.deleteMany({}))],
     ["requirementSheet", async () => addDeleteCount(deleted, "requirementSheet", () => tx.requirementSheet.deleteMany({}))],
     [
+      "noQtyQcExcessCycleAdjustment",
+      async () =>
+        tryOptionalTableDelete(
+          tx,
+          deleted,
+          ["noqtyqcexcesscycleadjustment", "NoQtyQcExcessCycleAdjustment"],
+          "noQtyQcExcessCycleAdjustment",
+          () => tx.noQtyQcExcessCycleAdjustment.deleteMany({}),
+        ),
+    ],
+    [
       "salesOrder:clearCurrentCycle",
       async () => {
         await tx.salesOrder.updateMany({ data: { currentCycleId: null } });
@@ -1506,6 +1561,17 @@ async function runFullDemoResetDeletes(tx, deleted) {
     [
       "regularSoPlanningSnapshotLine",
       async () => addDeleteCount(deleted, "regularSoPlanningSnapshotLine", () => tx.regularSoPlanningSnapshotLine.deleteMany({})),
+    ],
+    [
+      "regularSoBufferApprovalRequest",
+      async () =>
+        tryOptionalTableDelete(
+          tx,
+          deleted,
+          ["regularsobufferapprovalrequest", "RegularSoBufferApprovalRequest"],
+          "regularSoBufferApprovalRequest",
+          () => tx.regularSoBufferApprovalRequest.deleteMany({}),
+        ),
     ],
     [
       "regularSoPlanningSnapshot",

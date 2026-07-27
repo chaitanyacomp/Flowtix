@@ -1,111 +1,77 @@
-import { formatFgQuantity, qtyDecimalPlacesFromUnit } from "./quantityDisplay";
-
-
+import { formatFgQuantity, formatFgQuantityForInput, qtyDecimalPlacesFromUnit } from "./quantityDisplay";
 
 /** Effective max qty operator may enter on this save (WO remaining ∩ RM cap when present). */
-
 export function resolveProductionEntryMaxQty(
-
   remainingQty: number | null | undefined,
-
   rmEntryQtyCap: number | null | undefined,
-
 ): number | null {
-
   const rem = Number(remainingQty ?? 0);
-
   if (!(rem > 0)) return rmEntryQtyCap != null ? Number(rmEntryQtyCap) : 0;
-
   if (rmEntryQtyCap != null && Number.isFinite(Number(rmEntryQtyCap))) {
-
     return Math.min(rem, Number(rmEntryQtyCap));
-
   }
-
   return rem;
-
 }
-
-
 
 export function formatProductionOperatorQty(
-
   value: number | null | undefined,
-
   unit?: string | null,
-
 ): string {
-
   if (value == null || !Number.isFinite(Number(value))) return "—";
-
   return formatFgQuantity(Number(value), unit ?? undefined);
-
 }
 
+/** Raw numeric string for the Produced Qty input — no grouping, no UOM. */
+export function formatProductionQtyForInput(
+  value: number | null | undefined,
+  unit?: string | null,
+): string {
+  if (value == null || !Number.isFinite(Number(value))) return "";
+  return formatFgQuantityForInput(Number(value), unit ?? undefined);
+}
 
-
-/** Short UOM token for compact helper text — Max: 6000 m */
-
-export function formatProductionOperatorShortUnit(unit?: string | null): string {
-
+/** Display UOM beside the qty input (fixed suffix) — consistent capitalization. */
+export function formatProductionOperatorUnitLabel(unit?: string | null): string {
   const raw = String(unit ?? "").trim();
-
   if (!raw) return "";
-
   const key = raw.toLowerCase();
-
-  if (key === "meter" || key === "mtr" || key === "m") return "m";
-
-  if (key === "nos" || key === "no" || key === "pcs" || key === "numbers") return "nos";
-
-  if (key === "kg" || key === "kilogram") return "kg";
-
-  if (key === "gm" || key === "gram") return "gm";
-
-  return raw.length <= 4 ? raw.toLowerCase() : raw;
-
+  if (key === "nos" || key === "no" || key === "numbers") return "Nos";
+  if (key === "mtr" || key === "m") return "Meter";
+  return raw;
 }
 
-
+/** Short UOM token for compact helper text — Max: 6,000 m */
+export function formatProductionOperatorShortUnit(unit?: string | null): string {
+  const raw = String(unit ?? "").trim();
+  if (!raw) return "";
+  const key = raw.toLowerCase();
+  if (key === "meter" || key === "mtr" || key === "m") return "m";
+  if (key === "nos" || key === "no" || key === "pcs" || key === "numbers") return "Nos";
+  if (key === "kg" || key === "kilogram") return "kg";
+  if (key === "gm" || key === "gram") return "gm";
+  return raw.length <= 4 ? raw : raw;
+}
 
 export function formatProductionOperatorMaxHelper(
-
   maxAllowedQty: number | null | undefined,
-
   unit?: string | null,
   labelPrefix = "Max",
-
 ): string | null {
-
   if (maxAllowedQty == null || !Number.isFinite(Number(maxAllowedQty))) return null;
-
   const qty = formatFgQuantity(Number(maxAllowedQty), undefined).replace(/\s+[^\d.,]+$/, "");
-
   const u = formatProductionOperatorShortUnit(unit);
-
   return u ? `${labelPrefix}: ${qty} ${u}` : `${labelPrefix}: ${qty}`;
-
 }
 
-
-
-/** Operator qty placeholder — unit-aware; integer UOMs avoid misleading decimals. */
+/** Operator qty placeholder — number sample only; UOM is shown as a fixed suffix outside the input. */
 export function productionOperatorQtyPlaceholder(unit?: string | null): string {
-  const u = String(unit ?? "").trim();
-  const decimals = qtyDecimalPlacesFromUnit(u);
-  const sample = decimals <= 0 ? "0" : decimals === 3 ? "0.000" : "0.00";
-  if (!u) return sample;
-  const key = u.toLowerCase();
-  const label =
-    key === "mtr" || key === "m" ? "Meter" : key === "nos" || key === "no" ? "Nos" : u;
-  return decimals <= 0 ? label : `${sample} ${label}`;
+  const decimals = qtyDecimalPlacesFromUnit(unit);
+  if (decimals <= 0) return "0";
+  if (decimals === 3) return "0.000";
+  return "0.00";
 }
-
-
 
 export const PRODUCTION_SAVE_BUTTON_LABEL = "Save Production";
-
-
 
 export const productionOperatorDateInputClass =
   "erp-flow-filter-input h-12 w-[9.5rem] shrink-0 tabular-nums text-sm font-semibold";
@@ -115,4 +81,3 @@ export const productionOperatorQtyInputClass =
 
 export const productionOperatorFieldLabelClass =
   "text-[11px] font-bold uppercase tracking-wider text-slate-600";
-

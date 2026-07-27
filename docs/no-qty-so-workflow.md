@@ -224,6 +224,16 @@ Export uses **SalesBillLine.qty** (dispatch-derived) only.
 
 NO_QTY dispatchable quantity is `min(remaining locked customer/cycle demand, remaining QC-accepted pool, free USABLE FG stock)`. Accepted FG above a completed customer obligation remains in USABLE stock, stays traceable to the SO + FG, and is eligible for the next-cycle accepted-surplus resolver. It is not an optional dispatch, dispatch queue item, closure blocker, or billing obligation. Draft creation and finalization enforce the same cap.
 
+## NO_QTY dispatch authority (2026-07-27 clarification)
+
+- **Scope key:** Sales Order + FG item + RS cycle. Dispatch is **not** WO-restricted.
+- **Partial qty:** any positive quantity up to the headroom formula above.
+- **Multi-WO consume:** one finalize may draw from multiple WOs/batches that contributed QC-accepted FG to the cycle pool. Internal FIFO writes `DispatchFgTraceAllocation` (WO / Production Entry / QC Entry) for traceability only.
+- **Exclusions:** Pending QC, Rework, Hold, Scrap, other drafts’ reserved qty (item-global), and already-dispatched operational net.
+- **Draft / finalize:** an `UNLOCKED` row reserves its exact qty against physical USABLE (item-global). Finalize revalidates headroom + reservation under SO/item/dispatch locks, posts USABLE `qtyOut`, and persists FIFO trace children.
+- **Reversal:** restores USABLE stock and unwinds the same FIFO lots onto the reversal row (exact underlying attribution).
+- **REGULAR isolation:** REGULAR uses SO-line FIFO and separate prepare/lock paths; do not mix formulas, queues, or terminology.
+
 - RS customer demand and WO planned quantity are historical commitments and never change when production exceeds plan.
 - Excess becomes eligible only after final QC acceptance. Pending and rejected quantities contribute zero.
 - Per SO + FG, the canonical resolver reconstructs prior accepted quantity, active locked customer demand, and locked dispatch/consumption. Cancelled versions are excluded; the highest active locked version per cycle wins.

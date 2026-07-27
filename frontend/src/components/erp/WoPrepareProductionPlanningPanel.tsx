@@ -1,5 +1,6 @@
 import { cn } from "../../lib/utils";
 import { DecimalInput } from "../ui/DecimalInput";
+import { Button } from "../ui/button";
 import {
   REGULAR_SO_BUFFER_PERCENT_DECIMALS,
   REGULAR_SO_BUFFER_PERCENT_MAX,
@@ -30,6 +31,11 @@ type Props = {
   bufferInputInvalid?: boolean;
   bufferRequiresAdminApproval?: boolean;
   isAdmin?: boolean;
+  /** Store may enter reason and request approval when buffer is above soft max. */
+  allowStoreReasonEntry?: boolean;
+  approvalStatus?: "none" | "pending" | "approved" | "rejected" | "stale";
+  requestingApproval?: boolean;
+  onRequestAdminApproval?: () => void;
   saving?: boolean;
   disabled?: boolean;
   className?: string;
@@ -47,6 +53,10 @@ export function WoPrepareProductionPlanningPanel({
   bufferInputInvalid,
   bufferRequiresAdminApproval,
   isAdmin,
+  allowStoreReasonEntry = false,
+  approvalStatus = "none",
+  requestingApproval = false,
+  onRequestAdminApproval,
   saving,
   disabled,
   className,
@@ -58,6 +68,7 @@ export function WoPrepareProductionPlanningPanel({
   const allLines = [primaryLine, ...extraLines];
   const band = classifyRegularSoBufferPercent(Number(bufferPercentInput) || metrics.productionBufferPercent);
   const showApprovalHint = bufferRequiresAdminApproval || band === "REQUIRES_ADMIN_APPROVAL";
+  const reasonEditable = Boolean(isAdmin || allowStoreReasonEntry);
 
   return (
     <section
@@ -140,20 +151,70 @@ export function WoPrepareProductionPlanningPanel({
                 id="fg-buffer-reason"
                 className="mt-0.5 min-h-[2.5rem] w-full rounded border border-amber-300 bg-white px-2 py-1 text-xs text-slate-900"
                 value={bufferReason}
-                disabled={disabled || saving || !isAdmin}
+                disabled={disabled || saving || !reasonEditable}
                 onChange={(e) => onBufferReasonChange(e.target.value)}
                 placeholder={
                   isAdmin
                     ? "Required when buffer is above 5%"
-                    : "Admin must enter a reason and apply buffer above 5%"
+                    : allowStoreReasonEntry
+                      ? "Required — then request Admin approval"
+                      : "Admin must enter a reason and apply buffer above 5%"
                 }
               />
             </div>
           ) : null}
+          {approvalStatus === "pending" ? (
+            <p className="text-[11px] font-semibold text-amber-900">
+              Waiting for Admin approval. Create Work Order stays disabled until approved.
+            </p>
+          ) : null}
+          {approvalStatus === "approved" ? (
+            <p className="text-[11px] font-semibold text-emerald-800">
+              Admin approved this buffer and planned quantity. You can create the Work Order.
+            </p>
+          ) : null}
+          {approvalStatus === "rejected" ? (
+            <p className="text-[11px] font-semibold text-red-800">
+              Admin rejected this request. Adjust buffer/reason and request approval again.
+            </p>
+          ) : null}
+          {approvalStatus === "stale" ? (
+            <p className="text-[11px] font-semibold text-amber-900">
+              Buffer, reason, or planned quantity changed — previous approval is no longer valid.
+            </p>
+          ) : null}
+          {!isAdmin && allowStoreReasonEntry && onRequestAdminApproval && approvalStatus !== "approved" ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 text-[11px]"
+              disabled={
+                disabled ||
+                saving ||
+                requestingApproval ||
+                !bufferReason.trim() ||
+                approvalStatus === "pending" ||
+                band === "BLOCKED"
+              }
+              onClick={onRequestAdminApproval}
+            >
+              {requestingApproval
+                ? "Requesting…"
+                : approvalStatus === "pending"
+                  ? "Approval requested"
+                  : "Request Admin Approval"}
+            </Button>
+          ) : null}
+          {isAdmin ? (
+            <p className="text-[10px] text-amber-900/80">
+              Admin can apply this buffer directly (reason required), or approve a Store request from Pending Actions.
+            </p>
+          ) : null}
         </div>
       ) : null}
 
-      {band === "BLOCKED" || bufferInputInvalid ? (
+      {band === "BLOCKED" ? (
         <p className="mt-1.5 text-[11px] font-medium text-red-700">
           Production buffer above {REGULAR_SO_BUFFER_PERCENT_MAX}% is blocked.
         </p>

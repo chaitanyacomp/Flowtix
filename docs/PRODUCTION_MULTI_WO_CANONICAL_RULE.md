@@ -48,13 +48,26 @@ For a REGULAR WO, End Production with Shortage is permanent: confirmed Productio
 
 Customer closure math uses `SalesOrderLine.customerPoQty`, not the buffered WO `plannedQty`. Thus customer shortage is `max(customer PO qty - confirmed dispatched - usable accepted FG pending dispatch, 0)`; the WO target shortfall remains a distinct manufacturing measure. When usable accepted FG reaches zero after dispatch, the SO operationally closes as `COMPLETED` with audited `AUTO_CLOSE_REGULAR_WITH_SHORTAGE` quantities (ordered, produced, accepted, dispatched, permanent short). Closed WOs disappear from active Production and planning queues.
 
-Admin may reopen an accidental REGULAR shortage closure only when the backend proves it safe: original status is `CLOSED_WITH_SHORTFALL`, a confirmed Production Report remains, no dispatch for the affected SO+FG pool, no Sales Bill/Tally export, and no later production/QC/RM-issue conflict. The SO+FG boundary is intentional because dispatch stock is pooled and Dispatch has no WO identity. Reopen preserves the original closure audit/report/output/stock, records a new audit event and reason, clears only terminal WO projection fields, and recalculates readiness from real material state. Returned RM is not reissued; Store must reissue before further production. NO_QTY is rejected.
+Admin may reopen an accidental REGULAR shortage closure only when the backend proves it safe: original status is `CLOSED_WITH_SHORTFALL`, a confirmed Production Report remains, no dispatch for the affected SO+FG pool, no Sales Bill/Tally export, and no later production/QC/RM-issue conflict. The SO+FG boundary is intentional because dispatch stock is pooled and Dispatch has no WO identity as a **scope key**. Reopen preserves the original closure audit/report/output/stock, records a new audit event and reason, clears only terminal WO projection fields, and recalculates readiness from real material state. Returned RM is not reissued; Store must reissue before further production. NO_QTY is rejected.
 
 ## Dispatch draft reservation ownership
 
-An `UNLOCKED` dispatch row is the reservation owner. Create/edit reserves its quantity; reducing or cancelling releases the difference. Reopening and finalizing validates physical usable stock as `own reservation + currently unreserved stock`, excluding other drafts. It consumes/posts the same row exactly once under SO/item/dispatch row locks. Increasing a draft needs only incremental availability. Duplicate or concurrent finalization cannot double-post or oversell, and a reservation never manufactures physical stock when the ledger is genuinely short.
+An `UNLOCKED` dispatch row is the reservation owner. Create/edit reserves its quantity against **item-global** physical USABLE (other drafts on any SO count); reducing or cancelling releases the difference. Reopening and finalizing validates physical usable stock as `own reservation + currently unreserved stock`, excluding other drafts. It consumes/posts the same row exactly once under SO/item/dispatch row locks. Increasing a draft needs only incremental availability. Duplicate or concurrent finalization cannot double-post or oversell, and a reservation never manufactures physical stock when the ledger is genuinely short.
 
-The business document number (`WorkOrder.docNo`, for example `WO-26-0001`) is the only user-facing WO identity. The numeric primary key is permitted in route and API keys only.
+### NO_QTY finalize WO/QC trace (not a WO gate)
+
+NO_QTY dispatch authority remains SO + FG + RS cycle. On finalize, the system allocates the confirmed qty across QC-accepted lots FIFO (oldest QC first) and stores `DispatchFgTraceAllocation` children (workOrderId / productionId / qcEntryId). Reversal unwinds those lots LIFO so the exact underlying attributions are restored. This is audit/traceability only — operators never select a WO to dispatch.
+The business document number (`WorkOrder.docNo`) is the only user-facing WO identity. The numeric primary key is permitted in route and API keys only.
+
+**Flow-wise numbering (new Work Orders):**
+
+| Flow | Format | Example |
+|------|--------|---------|
+| REGULAR_SO | `WO-R-YY-####` | `WO-R-26-0001` |
+| NO_QTY | `WO-NQ-YY-####` | `WO-NQ-26-0001` |
+| GREEN_LEVEL | `WO-GL-YY-####` | `WO-GL-26-0001` |
+
+Each flow keeps an independent sequence per calendar year (`year2`). Flow is taken from the authoritative Sales Order `orderType` (or Green Level create path)—never from stock source, WO history, or screen. Legacy numbers (`WO-YY-####`, e.g. `WO-26-0001`) are preserved and remain valid in UI, search, reports, and deep links; they are never auto-renumbered.
 
 ### Live reconciliation calculation authority (2026-07-19 correction)
 

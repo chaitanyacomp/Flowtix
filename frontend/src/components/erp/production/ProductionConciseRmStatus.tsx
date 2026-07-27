@@ -29,6 +29,7 @@ const TONE_CLASS: Record<ReturnType<typeof productionConciseRmTone>, string> = {
   ready: "border-emerald-300 bg-emerald-50 text-emerald-950",
   partial: "border-amber-300 bg-amber-50 text-amber-950",
   waiting: "border-amber-300 bg-amber-50 text-amber-950",
+  complete: "border-slate-300 bg-slate-50 text-slate-800",
 };
 
 /** P6B-2 — concise RM status for Production workspace (READY / PARTIAL / WAITING RM). */
@@ -166,11 +167,15 @@ export function ProductionConciseRmStatus({
           <p className="text-[11px] leading-snug opacity-90">Waiting for Store RM issue before production.</p>
         ) : !dense && !workstation && label === "PARTIAL" ? (
           <p className="text-[11px] leading-snug opacity-90">Partial issue — entry may be capped until Store completes issue.</p>
+        ) : !dense && !workstation && label === "COMPLETE" ? (
+          <p className="text-[11px] leading-snug opacity-90">
+            Planned quantity is complete and no extra RM capacity remains.
+          </p>
         ) : !dense && !workstation ? (
           <p className="text-[11px] leading-snug opacity-90">Store has issued required RM.</p>
         ) : null}
       </div>
-      {rmControlHref && label !== "READY" ? (
+      {rmControlHref && label !== "READY" && label !== "COMPLETE" ? (
         <Link
           to={rmControlHref}
           className="shrink-0 text-[11px] font-semibold underline underline-offset-2"

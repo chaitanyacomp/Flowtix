@@ -61,6 +61,7 @@ export type PartyMasterHeaderSnapshot = {
   stateId: number | "" | null;
   address: string;
   isActive: boolean;
+  isTransporter?: boolean;
 };
 
 export function snapshotPartyMasterForm(
@@ -75,6 +76,7 @@ export function snapshotPartyMasterForm(
     stateId: normStateId(header.stateId),
     address: normText(header.address),
     isActive: Boolean(header.isActive),
+    isTransporter: Boolean(header.isTransporter),
     locations: sortLocationSnapshots(locations.map(snapshotPartyLocation)),
   });
 }

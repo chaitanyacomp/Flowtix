@@ -7,8 +7,7 @@
  * Placement preview and create validation delegate to noQtyBatchPlacementEngine.
  */
 
-const { DocType } = require("../prismaClientPackage");
-const { allocateDocNo } = require("./docNoService");
+const { allocateWorkOrderDocNo, WORK_ORDER_FLOW } = require("./docNoService");
 const {
   assessNoQtyBatchPlacement,
   validateNoQtyPlacementRequest,
@@ -232,7 +231,7 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
         requirementSheetId: sheet.id,
         cycleId: activeCycleId,
         status: "PENDING",
-        docNo: await allocateDocNo(tx, { docType: DocType.WORK_ORDER, date: new Date() }),
+        docNo: await allocateWorkOrderDocNo(tx, { flow: WORK_ORDER_FLOW.NO_QTY, date: new Date() }),
         lines: {
           create: [
             {

@@ -84,8 +84,8 @@ export function computeDraftProductionRequired(line: DraftProductionLine, isNoQt
  * Net Production Requirement =
  *   max(Customer Demand + kept recovery after accepted WO-excess offset − Prior Accepted Excess, 0)
  *
- * Produced Excess Pending QC is NOT subtracted here (finalize is blocked until QC); it only
- * affects Provisional Net Recovery display.
+ * Produced Excess Pending QC is NOT subtracted from confirmed finalize qty; it only
+ * affects Provisional Net Recovery display. Later QC adjusts the active cycle.
  */
 export function computeLiveNetProductionRequirement(input: {
   customerDemandQty: number;
@@ -152,6 +152,7 @@ export function computeProvisionalNetRecovery(input: {
   confirmedNetRecoveryQty: number;
   demandBackedQcRejectionQty: number;
   subjectToQc: boolean;
+  /** @deprecated Always false — QC must not lock RS finalize. */
   finalizeBlocked: boolean;
 } {
   const grossShortage = Math.max(0, round3(safeNum(input.grossProductionShortageQty)));
@@ -169,6 +170,6 @@ export function computeProvisionalNetRecovery(input: {
     confirmedNetRecoveryQty: Math.max(0, round3(grossRecovery - acceptedOffset)),
     demandBackedQcRejectionQty,
     subjectToQc: pendingExcess > PLAN_EPS,
-    finalizeBlocked: pendingOffset > PLAN_EPS && grossRecovery > PLAN_EPS,
+    finalizeBlocked: false,
   };
 }

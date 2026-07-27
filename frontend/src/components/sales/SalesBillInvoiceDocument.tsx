@@ -36,6 +36,7 @@ export type SalesBillInvoiceDocumentBill = {
   transportationChargedBy?: "OUR_COMPANY" | "TRANSPORTER_DIRECTLY" | string;
   transporterName?: string | null;
   transportationReferenceNo?: string | null;
+  vehicleNumber?: string | null;
   roundOffAmount?: string;
   dispatchAllocations?: Array<{ dispatch?: { docNo?: string | null }; dispatchId: number; allocatedQty: string }>;
   taxIntraState?: boolean;
@@ -296,7 +297,17 @@ export function SalesBillInvoiceDocument({ bill, className }: Props) {
       </div>
       {bill.lines.some((line) => Number(line.transportationAllocation || 0) > 0) ? <p className="mt-1 text-[10px] text-slate-500">Taxable value includes proportionately allocated transportation.</p> : null}
 
-      {Number(bill.transportationAmount || 0) > 0 ? <p className="mt-2 text-[11px] text-slate-600">{bill.transportationChargedBy === "OUR_COMPANY" ? "Transportation GST is allocated proportionately across invoice items." : `Transporter bills customer separately${bill.transporterName ? ` · ${bill.transporterName}` : ""}${bill.transportationReferenceNo ? ` · Ref ${bill.transportationReferenceNo}` : ""}.`}</p> : null}
+      {Number(bill.transportationAmount || 0) > 0 ? (
+        <p className="mt-2 text-[11px] text-slate-600">
+          {bill.transportationChargedBy === "OUR_COMPANY"
+            ? "Transportation GST is allocated proportionately across invoice items."
+            : `Transporter bills customer separately${bill.transporterName ? ` · ${bill.transporterName}` : ""}.`}
+          {bill.vehicleNumber ? ` · Vehicle ${bill.vehicleNumber}` : ""}
+          {bill.transportationReferenceNo
+            ? ` · ${bill.vehicleNumber ? "LR" : "Ref"} ${bill.transportationReferenceNo}`
+            : ""}
+        </p>
+      ) : null}
 
       {bill.remarks?.trim() ? (
         <p className="mt-3 rounded border border-slate-100 bg-slate-50 px-2 py-1.5 text-[12px] text-slate-700">

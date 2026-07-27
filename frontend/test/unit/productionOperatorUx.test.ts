@@ -4,6 +4,8 @@ import {
   formatProductionOperatorMaxHelper,
   formatProductionOperatorQty,
   formatProductionOperatorShortUnit,
+  formatProductionOperatorUnitLabel,
+  formatProductionQtyForInput,
   productionOperatorQtyPlaceholder,
   resolveProductionEntryMaxQty,
 } from "../../src/lib/productionOperatorUx";
@@ -20,15 +22,24 @@ describe("productionOperatorUx", () => {
     expect(formatProductionOperatorQty(6000, "Meter")).toContain("Meter");
   });
 
-  it("uses compact max helper label", () => {
-    expect(formatProductionOperatorMaxHelper(6000, "Meter")).toBe("Max: 6,000 m");
-    expect(formatProductionOperatorMaxHelper(2050, "Nos", "RM-supported maximum")).toBe("RM-supported maximum: 2,050 nos");
-    expect(formatProductionOperatorShortUnit("NOS")).toBe("nos");
+  it("formatProductionQtyForInput is raw numeric only", () => {
+    expect(formatProductionQtyForInput(1571, "Nos")).toBe("1571");
+    expect(formatProductionQtyForInput(1500, "Nos")).toBe("1500");
+    expect(formatProductionQtyForInput(12.5, "Meter")).toBe("12.5");
   });
 
-  it("uses operator qty placeholder", () => {
-    expect(productionOperatorQtyPlaceholder("Meter")).toBe("0.000 Meter");
-    expect(productionOperatorQtyPlaceholder("Nos")).toBe("Nos");
+  it("uses compact max helper label", () => {
+    expect(formatProductionOperatorMaxHelper(6000, "Meter")).toBe("Max: 6,000 m");
+    expect(formatProductionOperatorMaxHelper(2050, "Nos", "RM-supported maximum")).toBe(
+      "RM-supported maximum: 2,050 Nos",
+    );
+    expect(formatProductionOperatorShortUnit("NOS")).toBe("Nos");
+    expect(formatProductionOperatorUnitLabel("nos")).toBe("Nos");
+  });
+
+  it("uses operator qty placeholder without embedding UOM", () => {
+    expect(productionOperatorQtyPlaceholder("Meter")).toBe("0.000");
+    expect(productionOperatorQtyPlaceholder("Nos")).toBe("0");
   });
 
   it("uses Save Production label for operator save CTA", () => {

@@ -142,7 +142,7 @@ async function assessNoQtyMonthlyPlanningGate(db, periodKey) {
   return {
     gate: NO_QTY_MONTHLY_PLANNING_GATE.INITIAL_PLAN_REQUIRED,
     periodKey: normalized,
-    action: "Monthly Planning Pending",
+    action: "Prepare Monthly Planning — NO_QTY",
     plan: null,
     preview,
   };

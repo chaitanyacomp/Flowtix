@@ -2486,6 +2486,7 @@ async function getRmRiskRowsUncached() {
     itemName: row.rmItemName,
     salesOrderId: row.salesOrderId,
     salesOrderNo: row.salesOrderNo,
+    orderType: row.orderType ?? null,
     workOrderId: row.workOrderId,
     workOrderNo: row.workOrderNo,
     fgItemName: row.fgItemName,

@@ -86,8 +86,12 @@ const {
   loadNoQtyProducedExcessByItemForPriorCycles,
   composeNoQtyRecoveryExcessView,
   effectiveRecoveryAfterAcceptedWoExcessOffset,
-  assertNoProducedExcessPendingQcForRecoveryOrThrow,
 } = require("../services/noQtyProductionExcessRecoveryService");
+const {
+  applyCarriedAcceptedExcessCredit,
+  loadNoQtyQcExcessOverlayCreditsByItem,
+  loadNoQtyUnappliedQcExcessCreditsByItem,
+} = require("../services/noQtyQcExcessCycleAdjustmentService");
 
 const requirementSheetsRouter = express.Router();
 
@@ -967,6 +971,17 @@ async function mapSheetDetail(sheet) {
     sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
       ? await loadNoQtyProductionQcPendingQtyByItem(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
       : new Map();
+  const qcExcessOverlayByItem =
+    sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
+      ? await loadNoQtyQcExcessOverlayCreditsByItem(prisma, {
+          salesOrderId: sheet.salesOrderId,
+          cycleId: Number(effCycleIdForPost),
+        })
+      : new Map();
+  const unappliedQcExcessByItem =
+    sheet?.salesOrder?.orderType === "NO_QTY"
+      ? await loadNoQtyUnappliedQcExcessCreditsByItem(prisma, sheet.salesOrderId)
+      : new Map();
   const undispatchedPriorByItem =
     sheet?.salesOrder?.orderType === "NO_QTY" && effCycleIdForPost != null && Number(effCycleIdForPost) > 0
       ? await loadNoQtyPriorCycleUndispatchedAcceptedByItem(prisma, sheet.salesOrderId, Number(effCycleIdForPost))
@@ -1034,7 +1049,13 @@ async function mapSheetDetail(sheet) {
         composedTotal != null
           ? composedTotal
           : resolveNoQtyCurrentCycleProductionRequirementQty(newWoQty, snapCarry);
-      productionRequiredQty = fromSnapshot != null ? fromSnapshot : recomputedDraftStyle;
+      const rawLockedRequirement = fromSnapshot != null ? fromSnapshot : recomputedDraftStyle;
+      const carriedCredit = round3(n(qcExcessOverlayByItem.get(Number(ln.itemId)) ?? 0));
+      const overlay = applyCarriedAcceptedExcessCredit({
+        lockedProductionRequirementQty: rawLockedRequirement,
+        carriedAcceptedExcessCreditQty: carriedCredit,
+      });
+      productionRequiredQty = overlay.effectiveProductionRequirementQty;
       if (
         fromSnapshot != null &&
         Math.abs(fromSnapshot - recomputedDraftStyle) > EPS &&
@@ -1226,8 +1247,11 @@ async function mapSheetDetail(sheet) {
             confirmedNetRecoveryQty: round3(n(recoveryExcessView?.confirmedNetRecoveryQty)),
             provisionalNetRecoverySubjectToQc: Boolean(recoveryExcessView?.subjectToQc),
             provisionalNetRecoveryExplanation: recoveryExcessView?.provisionalNetRecoveryExplanation ?? null,
-            producedExcessPendingQcBlocksFinalize: Boolean(recoveryExcessView?.finalizeBlocked),
-            producedExcessPendingQcFinalizeMessage: recoveryExcessView?.finalizeBlockMessage ?? null,
+            /** @deprecated Always false — QC must not lock RS finalize. */
+            producedExcessPendingQcBlocksFinalize: false,
+            producedExcessPendingQcFinalizeMessage: null,
+            carriedQcAcceptedExcessCreditQty: round3(n(qcExcessOverlayByItem.get(Number(ln.itemId)) ?? 0)),
+            unappliedQcAcceptedExcessCreditQty: round3(n(unappliedQcExcessByItem.get(Number(ln.itemId)) ?? 0)),
             acceptedExcessExplanation:
               priorAcceptedExcessQty > EPS
                 ? `${priorAcceptedExcessQty.toLocaleString("en-US", { maximumFractionDigits: 3 })} ${item?.unit || "qty"} accepted in previous cycles have been applied to this cycle.`
@@ -2165,24 +2189,7 @@ requirementSheetsRouter.post(
           actorUserId: req.user?.userId ?? null,
         });
 
-        // Block Finalize while WO excess that offsets recovery is still pending QC.
-        if (existing.salesOrder?.orderType === "NO_QTY" && activeCycleId) {
-          const recoveryByItem = new Map(
-            (recoveryLines || []).map((ln) => [
-              Number(ln.itemId),
-              {
-                productionShortfallQty: n(ln.productionShortfallQty),
-                qcFinalRejectionQty: n(ln.qcRejectionRecoveryQty),
-                unit: (existing.lines || []).find((x) => x.id === ln.id)?.item?.unit || "Nos",
-              },
-            ]),
-          );
-          await assertNoProducedExcessPendingQcForRecoveryOrThrow(tx, {
-            salesOrderId: existing.salesOrderId,
-            targetCycleId: activeCycleId,
-            recoveryByItem,
-          });
-        }
+        // Finalize uses confirmed recovery only. Pending QC is provisional — never blocks lock.
 
         const producedExcessByItemLock =
           existing.salesOrder?.orderType === "NO_QTY" && activeCycleId

@@ -49,15 +49,22 @@ const {
   buildDispatchDraftLockEligibilityContext,
   attachDraftLockEligibilityToDispatchRows,
 } = require("../services/dispatchDraftLockEligibility");
-const { resolveDispatchDraftReservation } = require("../services/dispatchDraftReservationService");
 const {
   filterNoQtyDispatchRowsForActiveCycle,
   netNoQtyCycleDispatchedByItemId,
   getNoQtyCycleDispatchHeadroomForItem,
+  getNoQtyCycleDispatchHeadroomForPrepare,
   getNoQtyUnlockedDraftQtyForItem,
+  getNoQtyUnlockedDraftQtyForItemCycle,
   computeNoQtyFifoPrepareSlicesForItem,
   assertNoQtyDispatchLockQtyAllowed,
 } = require("../services/noQtyDispatchFifoAllocation");
+const {
+  allocateNoQtyDispatchFifoAcrossQcLots,
+  unwindNoQtyDispatchFifoAllocations,
+  lotKeyFor,
+} = require("../services/noQtyDispatchWoTraceAllocation");
+const { resolveDispatchDraftReservation } = require("../services/dispatchDraftReservationService");
 const { loadPrimaryBillSummaryByDispatchId } = require("../services/salesBillEligibility");
 const { assertAdminPassword } = require("../services/adminPasswordAuth");
 const { DISPATCH_WRITE_ROLES, DISPATCH_READ_ROLES, QC_PAGE_ROLES } = require("../constants/erpRoles");
@@ -325,6 +332,206 @@ async function loadNoQtyCycleRecheckAcceptedMap(prisma, noQtySos) {
   return map;
 }
 
+/**
+ * NO_QTY: QC-accepted lots for one SO+cycle+FG, FIFO by QC date then id.
+ * Pending / voided QC and non-APPROVED production are excluded.
+ * @returns {Promise<Array<{ qcEntryId: number; productionId: number; workOrderId: number; acceptedQty: number; lotKey: string }>>}
+ */
+async function loadNoQtyQcAcceptedLotsForCycleItem(prisma, { soId, cycleId, itemId }) {
+  const cycleIdNorm = normalizePositiveCycleId(cycleId);
+  if (cycleIdNorm == null || !(soId > 0) || !(itemId > 0)) return [];
+
+  const rows = await prisma.qcEntry.findMany({
+    where: {
+      reversedAt: null,
+      acceptedQty: { gt: 0 },
+      production: {
+        workflowStatus: "APPROVED",
+        workOrderLine: {
+          fgItemId: Number(itemId),
+          workOrder: { salesOrderId: Number(soId) },
+        },
+      },
+    },
+    select: {
+      id: true,
+      acceptedQty: true,
+      date: true,
+      production: {
+        select: {
+          id: true,
+          workOrderLine: {
+            select: {
+              workOrder: {
+                select: {
+                  id: true,
+                  cycleId: true,
+                  requirementSheet: { select: { cycleId: true } },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    orderBy: [{ date: "asc" }, { id: "asc" }],
+  });
+
+  /** @type {Array<{ qcEntryId: number; productionId: number; workOrderId: number; acceptedQty: number; lotKey: string }>} */
+  const lots = [];
+  for (const r of rows) {
+    const pe = r.production;
+    const wo = pe?.workOrderLine?.workOrder;
+    if (!wo || !pe) continue;
+    const lotCycle =
+      wo.cycleId != null
+        ? normalizePositiveCycleId(wo.cycleId)
+        : wo.requirementSheet?.cycleId != null
+          ? normalizePositiveCycleId(wo.requirementSheet.cycleId)
+          : null;
+    if (lotCycle !== cycleIdNorm) continue;
+    const acceptedQty = num(r.acceptedQty);
+    if (acceptedQty <= REPORT_QUEUE_EPS) continue;
+    const lot = {
+      qcEntryId: Number(r.id),
+      productionId: Number(pe.id),
+      workOrderId: Number(wo.id),
+      acceptedQty,
+    };
+    lots.push({ ...lot, lotKey: lotKeyFor(lot) });
+  }
+  return lots;
+}
+
+/**
+ * Net prior WO/QC trace consumption for SO+cycle+item (finalize positive, reverse negative).
+ * @returns {Promise<Map<string, number>>}
+ */
+async function loadNoQtyPriorTraceConsumptionByLotKey(prisma, { soId, cycleId, itemId, excludeDispatchId }) {
+  const cycleIdNorm = normalizePositiveCycleId(cycleId);
+  /** @type {Map<string, number>} */
+  const map = new Map();
+  if (cycleIdNorm == null) return map;
+
+  const rows = await prisma.dispatchFgTraceAllocation.findMany({
+    where: {
+      itemId: Number(itemId),
+      cycleId: cycleIdNorm,
+      dispatch: {
+        soId: Number(soId),
+        ...(excludeDispatchId != null ? { id: { not: Number(excludeDispatchId) } } : {}),
+      },
+    },
+    select: {
+      qcEntryId: true,
+      productionId: true,
+      workOrderId: true,
+      allocatedQty: true,
+    },
+  });
+  for (const row of rows) {
+    const key = lotKeyFor(row);
+    map.set(key, (map.get(key) ?? 0) + num(row.allocatedQty));
+  }
+  return map;
+}
+
+/**
+ * Persist FIFO WO/QC slices when finalizing a NO_QTY dispatch (traceability only).
+ */
+async function persistNoQtyDispatchFgTraceOnFinalize(tx, { dispatchId, soId, itemId, cycleId, qty }) {
+  const lots = await loadNoQtyQcAcceptedLotsForCycleItem(tx, { soId, cycleId, itemId });
+  const previouslyConsumedByLotKey = await loadNoQtyPriorTraceConsumptionByLotKey(tx, {
+    soId,
+    cycleId,
+    itemId,
+    excludeDispatchId: dispatchId,
+  });
+  const { slices } = allocateNoQtyDispatchFifoAcrossQcLots({
+    lots,
+    previouslyConsumedByLotKey,
+    requestedQty: qty,
+    itemId,
+    cycleId,
+  });
+  if (!slices.length) return slices;
+  await tx.dispatchFgTraceAllocation.createMany({
+    data: slices.map((s) => ({
+      dispatchId: Number(dispatchId),
+      itemId: Number(s.itemId),
+      cycleId: s.cycleId != null ? Number(s.cycleId) : null,
+      workOrderId: s.workOrderId,
+      productionId: s.productionId,
+      qcEntryId: s.qcEntryId,
+      allocatedQty: String(s.allocatedQty),
+      sortOrder: s.sortOrder,
+    })),
+  });
+  return slices;
+}
+
+/**
+ * On NO_QTY reverse: unwind original FIFO lots onto the reversal dispatch row.
+ */
+async function persistNoQtyDispatchFgTraceOnReverse(tx, { originalDispatchId, reversalDispatchId, itemId, cycleId, reverseQty }) {
+  const originals = await tx.dispatchFgTraceAllocation.findMany({
+    where: { dispatchId: Number(originalDispatchId), allocatedQty: { gt: 0 } },
+    orderBy: { sortOrder: "asc" },
+    select: {
+      qcEntryId: true,
+      productionId: true,
+      workOrderId: true,
+      allocatedQty: true,
+      sortOrder: true,
+      itemId: true,
+      cycleId: true,
+    },
+  });
+  if (!originals.length) return [];
+
+  const priorReversals = await tx.dispatchFgTraceAllocation.findMany({
+    where: {
+      allocatedQty: { lt: 0 },
+      dispatch: { reversalOfId: Number(originalDispatchId) },
+    },
+    select: { qcEntryId: true, productionId: true, workOrderId: true, allocatedQty: true },
+  });
+  /** @type {Map<string, number>} */
+  const alreadyReversedByLotKey = new Map();
+  for (const row of priorReversals) {
+    const key = lotKeyFor(row);
+    alreadyReversedByLotKey.set(key, (alreadyReversedByLotKey.get(key) ?? 0) + Math.abs(num(row.allocatedQty)));
+  }
+
+  const { slices } = unwindNoQtyDispatchFifoAllocations({
+    originalAllocations: originals,
+    alreadyReversedByLotKey,
+    reverseQty,
+    itemId,
+    cycleId,
+  });
+  if (!slices.length) return slices;
+  await tx.dispatchFgTraceAllocation.createMany({
+    data: slices.map((s) => ({
+      dispatchId: Number(reversalDispatchId),
+      itemId: Number(s.itemId),
+      cycleId: s.cycleId != null ? Number(s.cycleId) : null,
+      workOrderId: s.workOrderId,
+      productionId: s.productionId,
+      qcEntryId: s.qcEntryId,
+      allocatedQty: String(s.allocatedQty),
+      sortOrder: s.sortOrder,
+    })),
+  });
+  return slices;
+}
+
+function sumUnlockedDraftQtyFromRows(rows, itemId) {
+  return (rows || [])
+    .filter((d) => d.reversalOfId == null && d.workflowStatus === "UNLOCKED" && Number(d.itemId) === Number(itemId))
+    .reduce((s, d) => s + num(d.dispatchedQty), 0);
+}
+
 function enrichDispatchLedgerForSo(so, deps) {
   const withReversal = attachDispatchMaxReversibleQty(so.dispatch);
   const eligibilityContext = buildDispatchDraftLockEligibilityContext(so, deps);
@@ -344,12 +551,45 @@ async function buildDispatchDraftEligibilityDeps(tx, so, opts = {}) {
       Number(await getItemStockQty(itemId, tx, { stockBucket: "USABLE", allLocations: true })),
     );
   }
+
+  /** @type {Map<number, number> | null} */
+  let unlockedDraftReservedByItemId = null;
+  /** @type {Map<string, number> | null} */
+  let demandByCycleItem = null;
+  /** @type {Array<{ id: number; cycleNo: number }> | null} */
+  let noQtyCyclesSorted = null;
+  if (so.orderType === "NO_QTY") {
+    unlockedDraftReservedByItemId = new Map();
+    for (const itemId of itemIds) {
+      const globalDrafts = await tx.dispatch.findMany({
+        where: { itemId, workflowStatus: "UNLOCKED", reversalOfId: null },
+        select: { id: true, itemId: true, dispatchedQty: true, workflowStatus: true, reversalOfId: true },
+      });
+      unlockedDraftReservedByItemId.set(itemId, sumUnlockedDraftQtyFromRows(globalDrafts, itemId));
+    }
+    noQtyCyclesSorted = await tx.salesOrderCycle.findMany({
+      where: { salesOrderId: so.id },
+      orderBy: { cycleNo: "asc" },
+      select: { id: true, cycleNo: true },
+    });
+    if (noQtyCyclesSorted.length) {
+      demandByCycleItem = await loadNoQtyLockedDemandByCycleItem(
+        tx,
+        so.id,
+        noQtyCyclesSorted.map((c) => c.id),
+      );
+    }
+  }
+
   return {
     lineInputs,
     onHandByItemId,
     qcAcceptedMap,
     replacementQcGrossBySoItem,
     noQtyQcMaps: opts.noQtyQcMaps ?? null,
+    noQtyCyclesSorted,
+    demandByCycleItem,
+    unlockedDraftReservedByItemId,
   };
 }
 
@@ -2759,7 +2999,12 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
 
         if (body.autoAllocateAcrossCycles === true) {
           const usableStock = await getItemStockQty(body.itemId, tx, { stockBucket: "USABLE", allLocations: true });
-          const unlockedDraftReservedQty = getNoQtyUnlockedDraftQtyForItem(so, body.itemId);
+          const globalDraftRows = await tx.dispatch.findMany({
+            where: { itemId: body.itemId, workflowStatus: "UNLOCKED", reversalOfId: null },
+            select: { id: true, itemId: true, dispatchedQty: true, workflowStatus: true, reversalOfId: true },
+          });
+          const unlockedDraftReservedQty = sumUnlockedDraftQtyFromRows(globalDraftRows, body.itemId);
+          const replaceableDraftQty = getNoQtyUnlockedDraftQtyForItem(so, body.itemId);
           const fifo = computeNoQtyFifoPrepareSlicesForItem({
             so,
             itemId: body.itemId,
@@ -2770,7 +3015,7 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
             postCycleMap: postCycleMapAll,
             usableStock,
             unlockedDraftReservedQty,
-            replaceableDraftQty: unlockedDraftReservedQty,
+            replaceableDraftQty,
             demandByCycleItem,
           });
           if (fifo.totalAvailable + REPORT_QUEUE_EPS < body.dispatchedQty) {
@@ -2897,6 +3142,43 @@ dispatchRouter.post("/dispatches", requireAuth, requireRole(DISPATCH_WRITE_ROLES
           }
 
           if (!(body.dispatchedQty > 0)) throw friendlyNoQtyDispatchError("Dispatch quantity must be greater than zero.", 400);
+
+          const demandHeadroom = getNoQtyCycleDispatchHeadroomForPrepare(
+            so,
+            currentCycleId,
+            body.itemId,
+            qcMapAll,
+            recheckMapAll,
+            postCycleMapAll,
+            demandByCycleItem,
+          );
+          if (body.dispatchedQty > demandHeadroom + REPORT_QUEUE_EPS) {
+            throw friendlyNoQtyDispatchError(
+              "Dispatch exceeds dispatchable quantity for available QC and stock. Refresh and adjust the draft.",
+              400,
+            );
+          }
+
+          const usableStockSingle = await getItemStockQty(body.itemId, tx, {
+            stockBucket: "USABLE",
+            allLocations: true,
+          });
+          const reservation = resolveDispatchDraftReservation({
+            dispatchId: existingDraft?.id ?? null,
+            itemId: body.itemId,
+            requestedQty: body.dispatchedQty,
+            physicalUsableQty: usableStockSingle,
+            dispatchRows: await tx.dispatch.findMany({
+              where: { itemId: body.itemId, workflowStatus: "UNLOCKED", reversalOfId: null },
+              select: { id: true, itemId: true, dispatchedQty: true, workflowStatus: true, reversalOfId: true },
+            }),
+          });
+          if (!reservation.allowed) {
+            throw friendlyNoQtyDispatchError(
+              `Insufficient usable stock for dispatch. Available to this draft: ${reservation.availableToThisDraftQty}, required: ${body.dispatchedQty}.`,
+              400,
+            );
+          }
         }
       } else {
         existingDraft = await tx.dispatch.findFirst({
@@ -3167,6 +3449,12 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
           stockBucket: "USABLE",
           allLocations: true,
         });
+        const globalDraftRowsLock = await tx.dispatch.findMany({
+          where: { itemId: existing.itemId, workflowStatus: "UNLOCKED", reversalOfId: null },
+          select: { id: true, itemId: true, dispatchedQty: true, workflowStatus: true, reversalOfId: true },
+        });
+        const unlockedDraftReservedLock = sumUnlockedDraftQtyFromRows(globalDraftRowsLock, existing.itemId);
+        const replaceableDraftLock = getNoQtyUnlockedDraftQtyForItemCycle(so, currentCycleId, existing.itemId);
         assertNoQtyDispatchLockQtyAllowed(
           {
             so,
@@ -3179,9 +3467,24 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
             postCycleMap: postCycleMapAllLock,
             usableStock: usableStockLock,
             demandByCycleItem: demandByCycleItemLock,
+            unlockedDraftReservedQty: unlockedDraftReservedLock,
+            replaceableDraftQty: Math.max(replaceableDraftLock, qty),
           },
           friendlyNoQtyDispatchError,
         );
+        const reservationLock = resolveDispatchDraftReservation({
+          dispatchId: id,
+          itemId: existing.itemId,
+          requestedQty: qty,
+          physicalUsableQty: usableStockLock,
+          dispatchRows: globalDraftRowsLock,
+        });
+        if (!reservationLock.allowed) {
+          throw friendlyNoQtyDispatchError(
+            `Insufficient usable stock for dispatch. Available to this draft: ${reservationLock.availableToThisDraftQty}, required: ${qty}.`,
+            400,
+          );
+        }
 
         console.debug("[FINALIZE_CHECK]", {
           dispatchId: existing.id,
@@ -3250,6 +3553,16 @@ dispatchRouter.post("/dispatches/:id/lock", requireAuth, requireRole(DISPATCH_WR
         where: { id },
         data: { workflowStatus: "LOCKED" },
       });
+
+      if (isNoQty && currentCycleId != null) {
+        await persistNoQtyDispatchFgTraceOnFinalize(tx, {
+          dispatchId: id,
+          soId: existing.soId,
+          itemId: existing.itemId,
+          cycleId: currentCycleId,
+          qty,
+        });
+      }
 
       // Commercial snapshots: freeze on first confirmed dispatch for NO_QTY (or any legacy SO).
       try {
@@ -3473,6 +3786,12 @@ dispatchRouter.post(
             stockBucket: "USABLE",
             allLocations: true,
           });
+          const globalDraftRowsFd = await tx.dispatch.findMany({
+            where: { itemId: existing.itemId, workflowStatus: "UNLOCKED", reversalOfId: null },
+            select: { id: true, itemId: true, dispatchedQty: true, workflowStatus: true, reversalOfId: true },
+          });
+          const unlockedDraftReservedFd = sumUnlockedDraftQtyFromRows(globalDraftRowsFd, existing.itemId);
+          const replaceableDraftFd = getNoQtyUnlockedDraftQtyForItemCycle(so, currentCycleId, existing.itemId);
           assertNoQtyDispatchLockQtyAllowed(
             {
               so,
@@ -3485,9 +3804,24 @@ dispatchRouter.post(
               postCycleMap: postCycleMapAllFd,
               usableStock: usableStockFd,
               demandByCycleItem: demandByCycleItemFd,
+              unlockedDraftReservedQty: unlockedDraftReservedFd,
+              replaceableDraftQty: Math.max(replaceableDraftFd, qty),
             },
             friendlyNoQtyDispatchError,
           );
+          const reservationFd = resolveDispatchDraftReservation({
+            dispatchId: id,
+            itemId: existing.itemId,
+            requestedQty: qty,
+            physicalUsableQty: usableStockFd,
+            dispatchRows: globalDraftRowsFd,
+          });
+          if (!reservationFd.allowed) {
+            throw friendlyNoQtyDispatchError(
+              `Insufficient usable stock for dispatch. Available to this draft: ${reservationFd.availableToThisDraftQty}, required: ${qty}.`,
+              400,
+            );
+          }
         } else {
           // NORMAL / REPLACEMENT etc: keep standard validation but exclude this draft row from "already dispatched".
           const lineInputs = mapSoLinesToDispatchFifoInputs(so.lines, so.orderType);
@@ -3547,6 +3881,16 @@ dispatchRouter.post(
           where: { id },
           data: { workflowStatus: "LOCKED" },
         });
+
+        if (so.orderType === "NO_QTY" && finalizedNoQtyCycleId != null) {
+          await persistNoQtyDispatchFgTraceOnFinalize(tx, {
+            dispatchId: id,
+            soId: existing.soId,
+            itemId: existing.itemId,
+            cycleId: finalizedNoQtyCycleId,
+            qty,
+          });
+        }
 
         await auditLog.write(tx, {
           action: auditLog.AuditAction.UPDATE,
@@ -3873,6 +4217,16 @@ dispatchRouter.post(
           workflowStatus: "LOCKED",
         },
       });
+
+      if (so.orderType === "NO_QTY") {
+        await persistNoQtyDispatchFgTraceOnReverse(tx, {
+          originalDispatchId: original.id,
+          reversalDispatchId: reversalRow.id,
+          itemId: original.itemId,
+          cycleId: normalizePositiveCycleId(original.cycleId),
+          reverseQty: body.reverseQty,
+        });
+      }
 
       await tx.stockTransaction.create({
         data: {

@@ -98,6 +98,10 @@ import {
   buildRegularPartialDispatchOperatorMessage,
   buildMultiDraftDeleteConfirmMessage,
   shouldIncludeCompactQueueRow,
+  DISPATCH_WORKSPACE_PANEL_FIRST_SPLIT_CLASS,
+  DISPATCH_WORKSPACE_QUEUE_PANE_CLASS,
+  DISPATCH_WORKSPACE_QUEUE_ROW_SELECTED_CLASS,
+  DISPATCH_WORKSPACE_QUEUE_ROW_SELECTED_EMERALD_CLASS,
   type DispatchCompactQueueRow,
 } from "../lib/dispatchWorkspaceUx";
 import {
@@ -5824,18 +5828,24 @@ export function DispatchPage() {
           <OperatorMainSplit
             panelFirstOnLg={selectedSo?.orderType === "NO_QTY" || isRegularDispatchWorkbench}
             lgGridClassName={
-              selectedSo?.orderType === "NO_QTY"
-                ? "lg:grid-cols-[minmax(0,2.4fr)_minmax(180px,220px)]"
-                : isRegularDispatchWorkbench
-                  ? "lg:grid-cols-[minmax(0,1.45fr)_minmax(220px,280px)]"
-                  : undefined
+              selectedSo?.orderType === "NO_QTY" || isRegularDispatchWorkbench
+                ? DISPATCH_WORKSPACE_PANEL_FIRST_SPLIT_CLASS
+                : undefined
+            }
+            queueClassName={
+              selectedSo?.orderType === "NO_QTY" || isRegularDispatchWorkbench
+                ? DISPATCH_WORKSPACE_QUEUE_PANE_CLASS
+                : undefined
             }
             panelContainerClassName={
               selectedSo?.orderType === "NO_QTY" || isRegularDispatchWorkbench ? "order-1 min-w-0" : undefined
             }
             panelClassName={isRegularDispatchWorkbench ? "p-2.5" : undefined}
             queue={
-              <div className={cn("flex flex-col", isRegularDispatchWorkbench ? "gap-1.5" : "gap-3")}>
+              <div
+                className={cn("flex flex-col", isRegularDispatchWorkbench ? "gap-1.5" : "gap-3")}
+                data-testid="dispatch-workspace-queue-pane"
+              >
                 {finalizePrepDraftMode ? null : (showPreparedDispatchActionCard ||
                   showDispatchCompletedBillingCard ||
                   showDispatchCompletedBillingFallback) &&
@@ -6067,14 +6077,14 @@ export function DispatchPage() {
                       });
                       return (
                         <div className="overflow-hidden rounded-lg border border-slate-200/80 bg-white shadow-sm ring-1 ring-slate-100/50">
-                          <div className="overflow-x-hidden">
-                            <table className="w-full table-fixed text-[11px]">
+                          <div className="overflow-x-hidden overflow-y-auto">
+                            <table className="w-full table-fixed text-[11px]" data-testid="dispatch-workspace-queue-table">
                               <thead className="sticky top-0 z-[1] border-b border-slate-200/80 bg-slate-50/95">
                                 <tr className="text-left text-[9px] font-medium uppercase tracking-wide text-slate-500">
                                   <th className="w-[4.75rem] px-1.5 py-1 font-medium">SO</th>
                                   <th className="min-w-0 px-1.5 py-1 font-medium">Item</th>
                                   <th className="w-[3.25rem] px-1.5 py-1 text-right font-medium">Qty</th>
-                                  <th className="w-[4.25rem] px-1 py-1 text-right font-medium"> </th>
+                                  <th className="w-[4.5rem] px-1 py-1 text-right font-medium"> </th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -6111,15 +6121,36 @@ export function DispatchPage() {
                                         : state === "AWAITING_PRODUCTION"
                                           ? { label: "Open Prod.", kind: "prod" as const }
                                           : { label: "View", kind: "view" as const };
+                                  const activateRow = () => {
+                                    if (action.kind === "prepare" || action.kind === "view") {
+                                      selectLineFromBacklog(so, ls);
+                                      return;
+                                    }
+                                    if (action.kind === "qc") {
+                                      navigate(buildRegularDispatchGuidedHref({ to: "/qc-entry", salesOrderId: so.id }));
+                                      return;
+                                    }
+                                    navigate(buildRegularDispatchGuidedHref({ to: "/production", salesOrderId: so.id }));
+                                  };
                                   return (
                                     <tr
                                       key={`${so.id}-${g.itemId}`}
+                                      role="button"
+                                      tabIndex={0}
                                       className={cn(
-                                        "border-t border-slate-100/90 hover:bg-slate-50/50",
+                                        "cursor-pointer border-t border-slate-100/90 hover:bg-slate-50/80",
                                         operatorTableRowClass,
-                                        selected && "bg-sky-50/60",
+                                        selected && DISPATCH_WORKSPACE_QUEUE_ROW_SELECTED_CLASS,
                                       )}
                                       title={stateLabel(state)}
+                                      onClick={activateRow}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter" || e.key === " ") {
+                                          e.preventDefault();
+                                          activateRow();
+                                        }
+                                      }}
+                                      data-selected={selected ? "true" : "false"}
                                     >
                                       <td className="whitespace-nowrap px-1.5 py-1 font-mono text-[10px] text-slate-800">
                                         {displaySalesOrderNo(so.id, so.docNo)}
@@ -6147,16 +6178,9 @@ export function DispatchPage() {
                                             action.kind === "qc" && "border-amber-200/80 text-amber-950 hover:bg-amber-50/50",
                                             action.kind === "prod" && "border-sky-200/80 text-sky-950 hover:bg-sky-50/50",
                                           )}
-                                          onClick={() => {
-                                            if (action.kind === "prepare" || action.kind === "view") {
-                                              selectLineFromBacklog(so, ls);
-                                              return;
-                                            }
-                                            if (action.kind === "qc") {
-                                              navigate(buildRegularDispatchGuidedHref({ to: "/qc-entry", salesOrderId: so.id }));
-                                              return;
-                                            }
-                                            navigate(buildRegularDispatchGuidedHref({ to: "/production", salesOrderId: so.id }));
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            activateRow();
                                           }}
                                         >
                                           {action.label}
@@ -6175,16 +6199,16 @@ export function DispatchPage() {
                   {fromNoQtySo && focusSoIdValid && selectedSo?.orderType === "NO_QTY" ? null : (
                     <div
                       className={cn(
-                        "overflow-auto rounded border border-slate-200 bg-white",
+                        "overflow-x-hidden overflow-y-auto rounded border border-slate-200 bg-white",
                         isRegularDispatchWorkbench ? "max-h-[min(28vh,200px)]" : "max-h-[min(30vh,220px)]",
                       )}
                     >
-                      <table className="w-full table-fixed text-[12px]">
+                      <table className="w-full table-fixed text-[12px]" data-testid="dispatch-workspace-queue-table">
                         <thead className="sticky top-0 z-[1] border-b border-slate-200 bg-slate-50">
                           <tr className="text-left text-[11px] text-slate-600">
                             <th className="w-[38%] px-1.5 py-0.5 font-medium">Customer · SO</th>
                             <th className="w-[32%] px-1.5 py-0.5 font-medium">Item</th>
-                            <th className="w-[18%] px-1.5 py-0.5 text-right font-medium">Dispatch</th>
+                            <th className="w-[18%] px-1.5 py-0.5 text-right font-medium">Qty</th>
                             <th className="w-[12%] px-1.5 py-0.5 text-right font-medium"> </th>
                           </tr>
                         </thead>
@@ -6206,15 +6230,26 @@ export function DispatchPage() {
                                         (so.noQtyDispatchContext?.selectedCycleId != null
                                           ? `Cycle #${so.noQtyDispatchContext.selectedCycleId}`
                                           : "Cycle");
+                                const activateRow = () => selectLineFromBacklog(so, ls);
                                 return (
                                   <tr
                                     key={`${so.id}-${ls.lineId}-${ls.noQtyCycleId ?? "x"}`}
+                                    role="button"
+                                    tabIndex={0}
                                     className={cn(
-                                      "border-t border-slate-100",
+                                      "cursor-pointer border-t border-slate-100 hover:bg-slate-50/80",
                                       operatorTableRowClass,
-                                      selected && "bg-emerald-50 ring-1 ring-inset ring-emerald-500/30",
+                                      selected && DISPATCH_WORKSPACE_QUEUE_ROW_SELECTED_EMERALD_CLASS,
                                       fromNoQtySo && soId > 0 && so.id !== soId && "opacity-60",
                                     )}
+                                    onClick={activateRow}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter" || e.key === " ") {
+                                        e.preventDefault();
+                                        activateRow();
+                                      }
+                                    }}
+                                    data-selected={selected ? "true" : "false"}
                                   >
                                     <td className="min-w-0 px-1.5 py-0.5 align-top">
                                       <div className="truncate text-slate-900" title={customerDisplayName(so)}>
@@ -6226,7 +6261,9 @@ export function DispatchPage() {
                                     </td>
                                     <td className="min-w-0 px-1.5 py-0.5 align-top" title={ls.itemName}>
                                       <div className="truncate font-medium text-slate-900">{ls.itemName}</div>
-                                      <div className="truncate text-[10px] text-slate-500">{cycleLabel}</div>
+                                      <div className="truncate text-[10px] text-slate-500" title={cycleLabel}>
+                                        {cycleLabel}
+                                      </div>
                                     </td>
                                     <td className="px-1.5 py-0.5 text-right align-top tabular-nums">
                                       <div className="font-semibold text-slate-900">{fmtDispatchQty(disp)}</div>
@@ -6245,7 +6282,10 @@ export function DispatchPage() {
                                         variant="ghost"
                                         size="sm"
                                         className="h-7 px-1.5 text-[11px] font-semibold"
-                                        onClick={() => selectLineFromBacklog(so, ls)}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          activateRow();
+                                        }}
                                         aria-label={`Select ${ls.itemName}`}
                                       >
                                         Select
@@ -6286,14 +6326,25 @@ export function DispatchPage() {
                                             ? so.noQtyDispatchContext?.cycleLabel?.trim() || `Cycle #${so.noQtyDispatchContext?.selectedCycleId}`
                                             : ""
                                       : "";
+                                  const activateRow = () => selectLineFromBacklog(so, ls);
                                   return (
                                     <tr
                                       key={`${so.id}-${ls.lineId}-${ls.noQtyCycleId ?? "x"}`}
+                                      role="button"
+                                      tabIndex={0}
                                       className={cn(
-                                        "border-t border-slate-100",
+                                        "cursor-pointer border-t border-slate-100 hover:bg-slate-50/80",
                                         operatorTableRowClass,
-                                        selected && "bg-emerald-50 ring-1 ring-inset ring-emerald-500/30",
+                                        selected && DISPATCH_WORKSPACE_QUEUE_ROW_SELECTED_EMERALD_CLASS,
                                       )}
+                                      onClick={activateRow}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter" || e.key === " ") {
+                                          e.preventDefault();
+                                          activateRow();
+                                        }
+                                      }}
+                                      data-selected={selected ? "true" : "false"}
                                     >
                                       <td className="min-w-0 px-1.5 py-0.5 align-top">
                                         <div className="truncate text-slate-900" title={customerDisplayName(so)}>
@@ -6306,7 +6357,9 @@ export function DispatchPage() {
                                       <td className="min-w-0 px-1.5 py-0.5 align-top" title={ls.itemName}>
                                         <div className="truncate font-medium text-slate-900">{ls.itemName}</div>
                                         {rowCycleLabel ? (
-                                          <div className="truncate text-[10px] text-slate-500">{rowCycleLabel}</div>
+                                          <div className="truncate text-[10px] text-slate-500" title={rowCycleLabel}>
+                                            {rowCycleLabel}
+                                          </div>
                                         ) : null}
                                       </td>
                                       <td className="px-1.5 py-0.5 text-right align-top tabular-nums">
@@ -6331,7 +6384,10 @@ export function DispatchPage() {
                                           variant="ghost"
                                           size="sm"
                                           className="h-7 px-1.5 text-[11px] font-semibold"
-                                          onClick={() => selectLineFromBacklog(so, ls)}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            activateRow();
+                                          }}
                                           aria-label={`Select ${ls.itemName}`}
                                         >
                                           Select

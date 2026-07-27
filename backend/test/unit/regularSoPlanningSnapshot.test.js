@@ -48,11 +48,23 @@ describe("regular SO buffer planning", () => {
     assert.equal(line.productionBufferQty, 50);
   });
 
-  it("5% allowed; 5.01% requires Admin + reason; above 10% blocked", () => {
+  it("5% allowed; 5.01% requires Admin + reason (or matching approved); 10% ok; above 10% blocked", () => {
     assert.equal(assertRegularSoBufferPercentForPersist(5, { role: "STORE" }).ok, true);
     const needsAdmin = assertRegularSoBufferPercentForPersist(5.01, { role: "STORE", bufferReason: "need" });
     assert.equal(needsAdmin.ok, false);
     assert.equal(needsAdmin.code, "BUFFER_PERCENT_ADMIN_REQUIRED");
+    const storeWithApproved = assertRegularSoBufferPercentForPersist(5.01, {
+      role: "STORE",
+      bufferReason: "need",
+      hasMatchingApprovedRequest: true,
+    });
+    assert.equal(storeWithApproved.ok, true);
+    const tenOk = assertRegularSoBufferPercentForPersist(10, {
+      role: "ADMIN",
+      bufferReason: "Max buffer",
+    });
+    assert.equal(tenOk.ok, true);
+    assert.equal(tenOk.bufferPercent, 10);
     const needsReason = assertRegularSoBufferPercentForPersist(5.01, { role: "ADMIN", bufferReason: "" });
     assert.equal(needsReason.ok, false);
     assert.equal(needsReason.code, "BUFFER_PERCENT_REASON_REQUIRED");

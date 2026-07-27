@@ -4,6 +4,7 @@ import { cn } from "../../../lib/utils";
 import {
   PRODUCTION_SAVE_BUTTON_LABEL,
   formatProductionOperatorMaxHelper,
+  formatProductionOperatorUnitLabel,
   productionOperatorDateInputClass,
   productionOperatorFieldLabelClass,
   productionOperatorQtyInputClass,
@@ -101,7 +102,7 @@ export function ProductionOperatorEntryFields({
   saveButtonTitle,
   warnings,
 }: ProductionOperatorEntryFieldsProps) {
-  const unitLabel = String(unit ?? "").trim();
+  const unitLabel = formatProductionOperatorUnitLabel(unit);
 
   return (
     <div className="space-y-1.5" data-testid="production-operator-entry-fields">

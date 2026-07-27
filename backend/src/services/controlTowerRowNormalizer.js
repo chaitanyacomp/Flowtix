@@ -109,6 +109,7 @@ function buildNormalizedRow(fields) {
     riskLevel,
     sourceModule,
     sourceId,
+    ...(fields.orderType != null ? { orderType: fields.orderType } : {}),
     metadata,
   };
 }
@@ -272,7 +273,7 @@ function normalizeRmRiskRow(raw) {
     sourceStatus: raw?.status ?? null,
     sourceQueueType: raw?.queueType ?? null,
     sourceNextAction: raw?.recommendedAction ?? null,
-    orderType: null,
+    orderType: raw?.orderType ?? null,
   });
 
   const nextActionLabel =
@@ -291,6 +292,7 @@ function normalizeRmRiskRow(raw) {
     riskLevel: riskFromRmStatus(raw?.status),
     sourceModule: SOURCE_MODULES.RM_RISK,
     sourceId,
+    orderType: raw?.orderType ?? null,
     metadata: {
       itemName: raw?.itemName ?? raw?.itemCode ?? null,
       fgItemName: raw?.fgItemName ?? null,
@@ -301,6 +303,7 @@ function normalizeRmRiskRow(raw) {
       href: raw?.href ?? null,
       salesOrderId,
       salesOrderDocNo: raw?.salesOrderNo ?? null,
+      orderType: raw?.orderType ?? null,
       workOrderId,
       workOrderNo: raw?.workOrderNo ?? null,
       rmItemId,

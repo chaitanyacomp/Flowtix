@@ -413,7 +413,7 @@ The Release-1 gate covers Primary Unit, one Alternate Unit, precision, missing U
 
 ## Pending Actions → Production Workspace routing
 
-1. Seed two Ready to Start NO_QTY WOs (e.g. WO-26-0003, WO-26-0004) on the same or different SOs; leave a prior completed WO on the same cycle if available.
+1. Seed two Ready to Start NO_QTY WOs (e.g. new-format `WO-NQ-26-0003` / `WO-NQ-26-0004`, or legacy `WO-26-0003` / `WO-26-0004`) on the same or different SOs; leave a prior completed WO on the same cycle if available.
 2. Pending Actions → Ready to Start Production (2) → **Open Production Workspace**.
 3. Expect **Ready to Start** tab with both cards — **not** empty Continue Production, and **not** “Production entry completed for this cycle”.
 4. URL must include `productionBucket=readyToStart`, `pwSection=ready`, and `from`/`returnTo=pending-actions`, and must **not** pin a completed `workOrderId` / stale `salesOrderId`+`cycleId`.

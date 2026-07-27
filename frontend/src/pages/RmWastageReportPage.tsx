@@ -181,7 +181,7 @@ export function RmWastageReportPage() {
               className="h-8 w-32"
               value={woNumber}
               onChange={(e) => patch({ woNumber: e.target.value })}
-              placeholder="WO-26-"
+              placeholder="WO-R-26- / WO-26-"
             />
           </label>
           <label className="grid gap-0.5">

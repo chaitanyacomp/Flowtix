@@ -54,10 +54,12 @@ export type RegularSoBufferPercentBand = "ALLOWED" | "REQUIRES_ADMIN_APPROVAL" |
 
 /**
  * 0–5%: allowed · above 5% through 10%: reason + Admin · above 10%: blocked.
+ * Classifies on 2-decimal normalization so exactly 10% (and float noise that rounds to 10) stays valid.
  */
 export function classifyRegularSoBufferPercent(value: number): RegularSoBufferPercentBand {
-  const p = n(value);
-  if (!Number.isFinite(p) || p < -EPS) return "BLOCKED";
+  const raw = n(value);
+  if (!Number.isFinite(raw) || raw < -EPS) return "BLOCKED";
+  const p = roundRegularSoBufferPercent(raw);
   if (p > REGULAR_SO_BUFFER_PERCENT_MAX + EPS) return "BLOCKED";
   if (p > REGULAR_SO_BUFFER_PERCENT_SOFT_MAX + EPS) return "REQUIRES_ADMIN_APPROVAL";
   return "ALLOWED";

@@ -72,6 +72,14 @@ import {
   REGULAR_SO_BUFFER_PERCENT_MAX,
 } from "../lib/regularSoProductionPlanning";
 import {
+  fetchLatestRegularSoBufferApproval,
+  regularSoBufferApprovalFingerprintsMatch,
+  resolveRegularSoBufferApprovalUiStatus,
+  submitRegularSoBufferApproval,
+  sumRegularSoPlannedProductionQtyForBuffer,
+  type RegularSoBufferApprovalDetail,
+} from "../lib/regularSoBufferApprovalApi";
+import {
   presentOperationalError,
   presentPlanningInitFailure,
   type OperationalErrorPresentation,
@@ -241,6 +249,11 @@ export function RmCheckPage() {
   const [fgBufferReason, setFgBufferReason] = React.useState("");
   const [suggestedFgPlanningBufferPercent, setSuggestedFgPlanningBufferPercent] = React.useState<number | null>(null);
   const [savingBuffer, setSavingBuffer] = React.useState(false);
+  const [bufferApproval, setBufferApproval] = React.useState<RegularSoBufferApprovalDetail | null>(null);
+  const [requestingBufferApproval, setRequestingBufferApproval] = React.useState(false);
+  const [bufferApprovalHydrated, setBufferApprovalHydrated] = React.useState(false);
+  const bufferFieldsTouchedRef = React.useRef(false);
+  const hydratedApprovalIdRef = React.useRef<number | null>(null);
   const bufferPersistSeqRef = React.useRef(0);
   const [loading, setLoading] = React.useState(false);
   const [creatingWo, setCreatingWo] = React.useState(false);
@@ -360,17 +373,82 @@ export function RmCheckPage() {
       return { ok: false, message: `Production buffer above ${REGULAR_SO_BUFFER_PERCENT_MAX}% is blocked.` };
     }
     if (band === "REQUIRES_ADMIN_APPROVAL") {
-      if (!isAdmin) {
-        return {
-          ok: false,
-          message: "Buffer above 5% requires Admin approval. Ask an Admin to apply it with a reason.",
-        };
-      }
-      if (!fgBufferReason.trim()) {
+      if (!fgBufferReason.trim() && !effectiveBufferReason) {
         return { ok: false, message: "Enter a reason when Production buffer is above 5%." };
       }
+      if (isAdmin) return { ok: true };
+      const planned = sumRegularSoPlannedProductionQtyForBuffer(
+        (data?.fgLines ?? []).filter((f) => !f.note),
+        normalized,
+      );
+      if (
+        bufferApproval?.status === "APPROVED" &&
+        regularSoBufferApprovalFingerprintsMatch(bufferApproval, {
+          bufferPercent: normalized,
+          plannedProductionQty: planned,
+          storeReason: fgBufferReason.trim() || effectiveBufferReason,
+        })
+      ) {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        message: "Buffer above 5% requires Admin approval. Enter a reason and request approval.",
+      };
     }
     return { ok: true };
+  }
+
+  async function refreshBufferApproval(forSoId: number = soId ?? 0) {
+    if (!forSoId) {
+      setBufferApproval(null);
+      setBufferApprovalHydrated(false);
+      hydratedApprovalIdRef.current = null;
+      return;
+    }
+    try {
+      const latest = await fetchLatestRegularSoBufferApproval(forSoId);
+      setBufferApproval(latest);
+    } catch {
+      setBufferApproval(null);
+    }
+  }
+
+  function markBufferFieldsTouched() {
+    bufferFieldsTouchedRef.current = true;
+  }
+
+  async function handleRequestBufferApproval() {
+    if (!soId || requestingBufferApproval) return;
+    const normalized = bufferPercentForSnapshot();
+    const band = classifyRegularSoBufferPercent(normalized);
+    if (band !== "REQUIRES_ADMIN_APPROVAL") {
+      toast.showError("Admin approval is only required for buffer above 5% through 10%.");
+      return;
+    }
+    if (!fgBufferReason.trim()) {
+      toast.showError("Enter a reason before requesting Admin approval.");
+      return;
+    }
+    const planned = sumRegularSoPlannedProductionQtyForBuffer(fgLinesForDisplay, normalized);
+    setRequestingBufferApproval(true);
+    try {
+      const created = await submitRegularSoBufferApproval({
+        salesOrderId: soId,
+        bufferPercent: normalized,
+        storeReason: fgBufferReason.trim(),
+        plannedProductionQty: planned > 0 ? planned : undefined,
+      });
+      setBufferApproval(created);
+      setBufferApprovalHydrated(true);
+      hydratedApprovalIdRef.current = created.id;
+      toast.showSuccess("Admin approval requested for production buffer.");
+    } catch (e) {
+      const presented = presentOperationalError(e);
+      toast.showError(presented.userMessage);
+    } finally {
+      setRequestingBufferApproval(false);
+    }
   }
 
   async function tryInitializePlanningSnapshot(): Promise<
@@ -386,7 +464,7 @@ export function RmCheckPage() {
         body: JSON.stringify({
           bufferPercent: normalized,
           ...(classifyRegularSoBufferPercent(normalized) === "REQUIRES_ADMIN_APPROVAL"
-            ? { bufferReason: fgBufferReason.trim() }
+            ? { bufferReason: fgBufferReason.trim() || effectiveBufferReason }
             : {}),
         }),
       });
@@ -412,7 +490,7 @@ export function RmCheckPage() {
         body: JSON.stringify({
           bufferPercent: normalized,
           ...(classifyRegularSoBufferPercent(normalized) === "REQUIRES_ADMIN_APPROVAL"
-            ? { bufferReason: fgBufferReason.trim() }
+            ? { bufferReason: fgBufferReason.trim() || effectiveBufferReason }
             : {}),
         }),
       });
@@ -805,12 +883,56 @@ export function RmCheckPage() {
     fgBufferParsed == null ? 0 : clampRegularSoBufferPercent(fgBufferParsed);
   const fgBufferBand = classifyRegularSoBufferPercent(fgBufferParsed ?? fgBufferPercentForCalc);
   const fgBufferRequiresAdmin = fgBufferBand === "REQUIRES_ADMIN_APPROVAL";
+  const effectiveBufferReason =
+    fgBufferReason.trim() ||
+    (!bufferFieldsTouchedRef.current && bufferApproval?.storeReason
+      ? String(bufferApproval.storeReason).trim()
+      : "");
   const fgBufferInputInvalid =
-    (fgBufferParsed != null && fgBufferParsed > REGULAR_SO_BUFFER_PERCENT_MAX + 1e-9) ||
     (fgBufferParsed != null && fgBufferParsed < -1e-9) ||
     regularSoBufferPercentExceedsFractionDigits(fgBufferPercentInput) ||
     fgBufferBand === "BLOCKED" ||
-    (fgBufferRequiresAdmin && (!isAdmin || !fgBufferReason.trim()));
+    (fgBufferRequiresAdmin && !effectiveBufferReason);
+
+  const productionPlanningMetrics = React.useMemo(() => {
+    if (!primaryFgLine || primaryFgLine.note) return null;
+    const customer = Number(primaryFgLine.customerCommittedQty ?? primaryFgLine.orderQty) || 0;
+    const fgStock = Number(primaryFgLine.fgStockAdjustmentQty ?? primaryFgLine.fgStock) || 0;
+    return computeProductionPlanningMetrics(customer, fgBufferPercentForCalc, fgStock);
+  }, [primaryFgLine, fgBufferPercentForCalc]);
+
+  const soLevelPlannedProductionQty = React.useMemo(() => {
+    const lines = (fgLinesForDisplay ?? []).filter((f) => !f.note);
+    if (!lines.length) return productionPlanningMetrics?.plannedProductionQty ?? 0;
+    return sumRegularSoPlannedProductionQtyForBuffer(lines, fgBufferPercentForCalc);
+  }, [fgLinesForDisplay, fgBufferPercentForCalc, productionPlanningMetrics?.plannedProductionQty]);
+
+  const bufferFingerprintCurrent = React.useMemo(
+    () => ({
+      bufferPercent: fgBufferPercentForCalc,
+      plannedProductionQty: soLevelPlannedProductionQty,
+      storeReason: effectiveBufferReason,
+    }),
+    [fgBufferPercentForCalc, soLevelPlannedProductionQty, effectiveBufferReason],
+  );
+
+  const bufferApprovalMatches =
+    Boolean(bufferApproval) &&
+    regularSoBufferApprovalFingerprintsMatch(bufferApproval, bufferFingerprintCurrent);
+
+  const bufferApprovalUiStatus = resolveRegularSoBufferApprovalUiStatus({
+    requiresAdmin: fgBufferRequiresAdmin,
+    approval: bufferApproval,
+    fingerprintMatches: bufferApprovalMatches,
+    hydrated: bufferApprovalHydrated,
+    userEdited: bufferFieldsTouchedRef.current,
+  });
+
+  const bufferApprovalSatisfiedForCreate =
+    !fgBufferRequiresAdmin ||
+    isAdmin ||
+    (bufferApprovalUiStatus === "approved" &&
+      (bufferApprovalMatches || (!bufferFieldsTouchedRef.current && bufferApproval?.status === "APPROVED")));
 
   const woCreateDisabled =
     !canStartWo ||
@@ -819,14 +941,8 @@ export function RmCheckPage() {
     savingBuffer ||
     fgBufferInputInvalid ||
     creatingWo ||
-    !canCreateWoRole;
-
-  const productionPlanningMetrics = React.useMemo(() => {
-    if (!primaryFgLine || primaryFgLine.note) return null;
-    const customer = Number(primaryFgLine.customerCommittedQty ?? primaryFgLine.orderQty) || 0;
-    const fgStock = Number(primaryFgLine.fgStockAdjustmentQty ?? primaryFgLine.fgStock) || 0;
-    return computeProductionPlanningMetrics(customer, fgBufferPercentForCalc, fgStock);
-  }, [primaryFgLine, fgBufferPercentForCalc]);
+    !canCreateWoRole ||
+    !bufferApprovalSatisfiedForCreate;
 
   const productionPlanningPrimaryLine = React.useMemo(() => {
     if (!primaryFgLine || primaryFgLine.note) return null;
@@ -850,10 +966,50 @@ export function RmCheckPage() {
   );
 
   React.useEffect(() => {
+    if (!soId) {
+      setBufferApproval(null);
+      setBufferApprovalHydrated(false);
+      hydratedApprovalIdRef.current = null;
+      bufferFieldsTouchedRef.current = false;
+      setFgBufferReason("");
+      return;
+    }
+    bufferFieldsTouchedRef.current = false;
+    setBufferApprovalHydrated(false);
+    hydratedApprovalIdRef.current = null;
+    void refreshBufferApproval(soId);
+    const onFocus = () => {
+      void refreshBufferApproval(soId);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soId]);
+
+  // Restore approved/pending buffer % + Store reason after reload (do not treat as user edit).
+  React.useEffect(() => {
+    if (!bufferApproval?.id) return;
+    if (bufferFieldsTouchedRef.current) return;
+    if (hydratedApprovalIdRef.current === bufferApproval.id && bufferApprovalHydrated) return;
+    const status = String(bufferApproval.status);
+    if (!["APPROVED", "PENDING_APPROVAL", "REJECTED"].includes(status)) return;
+
+    hydratedApprovalIdRef.current = bufferApproval.id;
+    setFgBufferPercentInput(String(clampRegularSoBufferPercent(Number(bufferApproval.bufferPercent))));
+    setFgBufferReason(String(bufferApproval.storeReason ?? ""));
+    setBufferApprovalHydrated(true);
+  }, [bufferApproval, bufferApprovalHydrated]);
+
+  React.useEffect(() => {
     if (!soId || !data || errorPresentation || fgBufferInputInvalid || savingBuffer || loading) return;
-    if (fgBufferRequiresAdmin && (!isAdmin || !fgBufferReason.trim())) return;
+    if (fgBufferRequiresAdmin) {
+      if (!effectiveBufferReason) return;
+      if (!isAdmin && bufferApprovalUiStatus !== "approved") return;
+    }
     const serverPct = clampRegularSoBufferPercent(Number(primaryFgLine?.productionBufferPercent ?? 0));
     if (Math.abs(fgBufferPercentForCalc - serverPct) < 1e-9) return;
+    // Avoid overwriting an approved snapshot during initial hydration/recalc.
+    if (!bufferFieldsTouchedRef.current && bufferApprovalUiStatus === "approved") return;
     const t = window.setTimeout(() => {
       void persistProductionBuffer(fgBufferPercentForCalc);
     }, 450);
@@ -861,8 +1017,9 @@ export function RmCheckPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     fgBufferPercentForCalc,
-    fgBufferReason,
+    effectiveBufferReason,
     fgBufferRequiresAdmin,
+    bufferApprovalUiStatus,
     isAdmin,
     soId,
     data,
@@ -1205,13 +1362,21 @@ export function RmCheckPage() {
               bufferPercentInput={fgBufferPercentInput}
               onBufferPercentInputChange={(v) => {
                 if (regularSoBufferPercentExceedsFractionDigits(v)) return;
+                markBufferFieldsTouched();
                 setFgBufferPercentInput(v);
               }}
-              bufferReason={fgBufferReason}
-              onBufferReasonChange={setFgBufferReason}
+              bufferReason={fgBufferReason || effectiveBufferReason}
+              onBufferReasonChange={(v) => {
+                markBufferFieldsTouched();
+                setFgBufferReason(v);
+              }}
               bufferInputInvalid={fgBufferInputInvalid}
               bufferRequiresAdminApproval={fgBufferRequiresAdmin}
               isAdmin={isAdmin}
+              allowStoreReasonEntry={!isAdmin}
+              approvalStatus={bufferApprovalUiStatus}
+              requestingApproval={requestingBufferApproval}
+              onRequestAdminApproval={() => void handleRequestBufferApproval()}
               saving={savingBuffer}
               disabled={loading || initializingPlanning}
             />

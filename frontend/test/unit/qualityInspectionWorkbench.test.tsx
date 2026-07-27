@@ -111,8 +111,8 @@ describe("resolveQcSaveInspectionStatus", () => {
         inspectingQty: 100,
         checkedQtyValid: true,
         rejectedQty: 10,
-        reasonTrimmed: "",
-        inlineValidationMsg: "Rejection reason is required.",
+        rejectionReasonComplete: false,
+        inlineValidationMsg: "Rejection Reason is required.",
         readyQtyLabel: "100 Nos",
       }),
     ).toBe("Rejected quantity requires a reason");
@@ -127,7 +127,7 @@ describe("resolveQcSaveInspectionStatus", () => {
         inspectingQty: 1992,
         checkedQtyValid: true,
         rejectedQty: 0,
-        reasonTrimmed: "",
+        rejectionReasonComplete: true,
         inlineValidationMsg: null,
         readyQtyLabel: "1,992 Nos",
       }),
@@ -143,7 +143,7 @@ describe("resolveQcSaveInspectionStatus", () => {
         inspectingQty: 50,
         checkedQtyValid: true,
         rejectedQty: 10,
-        reasonTrimmed: "Dent",
+        rejectionReasonComplete: true,
         inlineValidationMsg: "Rework + Hold + Scrap must equal rejected qty.",
         readyQtyLabel: "50 Nos",
       }),
@@ -184,6 +184,10 @@ describe("QcEntryPage workbench source contract", () => {
     const bodyEnd = pageSrc.indexOf("{fromNoQtySo && focusSoIdValid && olderCycleHistoryRows.length > 0", bodyStart);
     const bodyBlock = pageSrc.slice(bodyStart, bodyEnd > bodyStart ? bodyEnd : bodyStart + 12000);
     expect(bodyBlock).toContain('data-testid="qc-rejection-details"');
+    expect(bodyBlock).toContain("Rejection Reason");
+    expect(bodyBlock).toContain('data-testid="qc-rejection-reason"');
+    expect(bodyBlock).toContain("Specify Other Reason");
+    expect(bodyBlock).toContain('data-testid="qc-rejection-reason-other"');
     expect(bodyBlock).toContain("overflow-y-auto");
     expect(bodyBlock).not.toContain('data-testid="qc-save-btn"');
   });

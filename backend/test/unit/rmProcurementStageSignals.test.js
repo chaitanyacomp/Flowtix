@@ -97,6 +97,48 @@ describe("rmProcurementStageSignals", () => {
     assert.match(resolved.href, /salesOrderId=261/);
   });
 
+  it("NO_QTY SO shortage never emits Create Purchase Request — Regular SO", () => {
+    const resolved = resolveRmRiskPendingAction(
+      {
+        materialRequirementId: null,
+        sourceType: "SALES_ORDER",
+        salesOrderId: 262,
+        salesOrderDocNo: "SO-26-0002",
+        orderType: "NO_QTY",
+        prLineCount: 0,
+        poLineCount: 0,
+        hasOpenMr: false,
+        procurementDemandPool: "REGULAR_SO",
+        operationalKey: "PROCUREMENT_PENDING",
+      },
+      { queueType: "WO_BLOCKED_RM_SHORTAGE", freeStockQty: 0, netShortageAfterIncomingQty: 9000 },
+      "STORE",
+    );
+    assert.equal(resolved.excludeFromPendingActions, true);
+    assert.equal(resolved.action, null);
+    assert.notEqual(resolved.action, "Create Purchase Request — Regular SO");
+  });
+
+  it("isRegularSoProcurementStage is false for NO_QTY even when pool defaults Regular", () => {
+    const { isRegularSoProcurementStage } = require("../../src/services/rmProcurementStageSignals");
+    assert.equal(
+      isRegularSoProcurementStage({
+        orderType: "NO_QTY",
+        procurementDemandPool: "REGULAR_SO",
+        sourceType: "SALES_ORDER",
+      }),
+      false,
+    );
+    assert.equal(
+      isRegularSoProcurementStage({
+        orderType: "NORMAL",
+        procurementDemandPool: "REGULAR_SO",
+        sourceType: "SALES_ORDER",
+      }),
+      true,
+    );
+  });
+
   it("draft MR emits Approve Material Requirement instead of Create PR", () => {
     const resolved = resolveRmRiskPendingAction(
       {

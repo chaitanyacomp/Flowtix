@@ -736,6 +736,13 @@ export function MonthlyPlanningWorkspacePage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const periodFromUrl = searchParams.get("period");
+  const focusSalesOrderId = Number(searchParams.get("salesOrderId") ?? 0);
+  const focusCycleId = Number(searchParams.get("cycleId") ?? 0);
+  const focusRequirementSheetId = Number(
+    searchParams.get("requirementSheetId") ?? searchParams.get("sheetId") ?? 0,
+  );
+  const hasPendingActionsFocus =
+    focusSalesOrderId > 0 || focusCycleId > 0 || focusRequirementSheetId > 0;
   const requestedPlanId = requestedMonthlyPlanId(searchParams);
   const [period, setPeriod] = React.useState<string>(
     normalizePeriodKey(periodFromUrl ?? "") ?? currentMonthKey(),
@@ -795,6 +802,32 @@ export function MonthlyPlanningWorkspacePage() {
   const [releaseSummary, setReleaseSummary] = React.useState<ReleaseSummary | null>(null);
   const [rsSuggestions, setRsSuggestions] = React.useState<RsSuggestionsResponse | null>(null);
   const [loadingRsSuggestions, setLoadingRsSuggestions] = React.useState(false);
+
+  const focusedRsSuggestions = React.useMemo(() => {
+    if (!rsSuggestions || !hasPendingActionsFocus) return rsSuggestions;
+    const items = (rsSuggestions.items ?? [])
+      .map((item) => ({
+        ...item,
+        sources: (item.sources ?? []).filter((src) => {
+          if (focusSalesOrderId > 0 && Number(src.salesOrderId) !== focusSalesOrderId) return false;
+          if (focusCycleId > 0 && Number(src.cycleId ?? 0) !== focusCycleId) return false;
+          if (
+            focusRequirementSheetId > 0 &&
+            Number(src.requirementSheetId) !== focusRequirementSheetId
+          ) {
+            return false;
+          }
+          return true;
+        }),
+      }))
+      .filter((item) => (item.sources?.length ?? 0) > 0);
+    return {
+      ...rsSuggestions,
+      items,
+      sheetCount: new Set(items.flatMap((it) => it.sources.map((s) => s.requirementSheetId))).size,
+    };
+  }, [rsSuggestions, hasPendingActionsFocus, focusSalesOrderId, focusCycleId, focusRequirementSheetId]);
+
   const [greenLevels, setGreenLevels] = React.useState<GreenLevelsResponse | null>(null);
   const [, setLoadingGreenLevels] = React.useState(false);
   const [greenLevelsVisible, setGreenLevelsVisible] = React.useState(false);
@@ -1931,8 +1964,8 @@ export function MonthlyPlanningWorkspacePage() {
 
   const fgRequirementBreakdown = React.useMemo(
     () =>
-      computeProductionRequirementBreakdown(period, requirementComposition, rsSuggestions, totalFgPlanned),
-    [period, requirementComposition, rsSuggestions, totalFgPlanned],
+      computeProductionRequirementBreakdown(period, requirementComposition, focusedRsSuggestions, totalFgPlanned),
+    [period, requirementComposition, focusedRsSuggestions, totalFgPlanned],
   );
 
   React.useEffect(() => {
@@ -2149,6 +2182,18 @@ export function MonthlyPlanningWorkspacePage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1.5 p-2 sm:p-3">
       {/* Header — compact toolbar: selectors | meta strip | actions */}
+      {hasPendingActionsFocus ? (
+        <div
+          className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-[12px] text-sky-950"
+          data-testid="monthly-planning-pending-actions-focus"
+        >
+          Filtered from Pending Actions
+          {focusSalesOrderId > 0 ? ` · SO #${focusSalesOrderId}` : ""}
+          {focusCycleId > 0 ? ` · Cycle #${focusCycleId}` : ""}
+          {focusRequirementSheetId > 0 ? ` · RS #${focusRequirementSheetId}` : ""}
+          . Customer Requirement Summary shows matching locked RS demand only.
+        </div>
+      ) : null}
       <div className="rounded-md border border-slate-200 bg-white px-2 py-1 shadow-sm">
         <div className="flex min-h-9 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
           <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1">
@@ -2708,7 +2753,7 @@ export function MonthlyPlanningWorkspacePage() {
               canCreateAdditionalPlan: showAdditionalPlanEntry,
             })}
             period={period}
-            rsSuggestions={rsSuggestions}
+            rsSuggestions={focusedRsSuggestions}
             loadingRsSuggestions={loadingRsSuggestions}
             onLoadRsSuggestions={() => void loadRsSuggestions()}
             onApplyRsSuggestion={(item) => void applyRsSuggestion(item)}

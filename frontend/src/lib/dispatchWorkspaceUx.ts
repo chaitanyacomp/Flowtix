@@ -6,6 +6,33 @@ import { formatQtyNumber, formatFgQuantity } from "./quantityDisplay";
 
 export const DISPATCH_COMPACT_PENDING_SOURCE = "pending-actions";
 
+/** Practical minimum width (px) for the Dispatch Workspace Queue column on desktop. */
+export const DISPATCH_WORKSPACE_QUEUE_MIN_WIDTH_PX = 360;
+
+/**
+ * Desktop Current Dispatch / Queue split when Current Dispatch is the first column
+ * (`panelFirstOnLg`). Stacks below `xl` so the queue is not compressed under 360px.
+ */
+export const DISPATCH_WORKSPACE_PANEL_FIRST_SPLIT_CLASS =
+  "xl:grid-cols-[minmax(0,70%)_minmax(360px,30%)]";
+
+/**
+ * Desktop Queue / Current Dispatch split when Queue is the first column
+ * (compact balanced workbench). Stacks below `xl`.
+ */
+export const DISPATCH_WORKSPACE_QUEUE_FIRST_SPLIT_CLASS =
+  "xl:grid-cols-[minmax(360px,30%)_minmax(0,70%)]";
+
+/** Queue column chrome: enforce min width once the desktop split is active. */
+export const DISPATCH_WORKSPACE_QUEUE_PANE_CLASS = "xl:min-w-[360px]";
+
+/** Selected queue row highlight — clear without changing selection behavior. */
+export const DISPATCH_WORKSPACE_QUEUE_ROW_SELECTED_CLASS =
+  "bg-sky-100/95 ring-2 ring-inset ring-sky-500/45";
+
+export const DISPATCH_WORKSPACE_QUEUE_ROW_SELECTED_EMERALD_CLASS =
+  "bg-emerald-100/95 ring-2 ring-inset ring-emerald-500/45";
+
 
 
 export const DISPATCH_DRAFT_DELETE_CONFIRM_MESSAGE =

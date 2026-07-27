@@ -41,6 +41,9 @@ const {
   buildRegularSoPlanningSnapshotView,
 } = require("../services/regularSoPlanningSnapshotService");
 const {
+  assertRegularSoBufferApprovalForWoCreate,
+} = require("../services/regularSoBufferApprovalService");
+const {
   ensureSubmittedProductionMaterialRequestForWorkOrder,
 } = require("../services/productionMaterialRequestService");
 const {
@@ -79,7 +82,7 @@ const {
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("../services/productionMetrics");
 const productionRouter = express.Router();
 const { DocType } = require("../prismaClientPackage");
-const { allocateDocNo } = require("../services/docNoService");
+const { allocateDocNo, allocateWorkOrderDocNo, resolveWorkOrderFlowFromSalesOrderType } = require("../services/docNoService");
 const { normalizePositiveCycleId } = require("../utils/cycleIds");
 const {
   assertNoQtyWorkOrderExecutionReleased,
@@ -145,6 +148,8 @@ const {
   appendTerminalQcScrapRecovery,
   cancelUnallocatedRecoverySource,
 } = require("../services/noQtyRecoveryService");
+const { recordNoQtyQcExcessDecision } = require("../services/noQtyQcExcessCycleAdjustmentService");
+const { validateQcRejectionReasonInput, buildQcEntryCreateData } = require("../services/qcRejectionReason");
 const {
   resolveProductionReportConfirmCloseAction,
 } = require("../services/productionReportConfirmClosePolicy");
@@ -665,6 +670,11 @@ productionRouter.post(
           );
         }
         if ((soMeta?.orderType ?? "NORMAL") !== "NO_QTY") {
+          await assertRegularSoBufferApprovalForWoCreate(
+            body.salesOrderId,
+            { actorRole: req.user?.role ?? null },
+            tx,
+          );
           const planningView = await buildRegularSoPlanningSnapshotView(body.salesOrderId, tx);
           const authoritativeByFg = new Map(
             (planningView.lines || []).map((line) => [
@@ -791,7 +801,10 @@ productionRouter.post(
 
         return tx.workOrder.create({
           data: {
-            docNo: await allocateDocNo(tx, { docType: DocType.WORK_ORDER, date: new Date() }),
+            docNo: await allocateWorkOrderDocNo(tx, {
+              flow: resolveWorkOrderFlowFromSalesOrderType(orderType),
+              date: new Date(),
+            }),
             salesOrderId: body.salesOrderId,
             status: "PENDING",
             ...(hasSufficientFg && isAdmin && overrideEnabled
@@ -2619,6 +2632,11 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           scrapQty: z.number().nonnegative(),
         })
         .optional(),
+      /** Stable catalog code; required when rejectedQty > 0. */
+      rejectionReasonCode: z.string().optional(),
+      /** Free-text details when rejectionReasonCode is OTHER. */
+      rejectionReasonOther: z.string().optional(),
+      /** Stored description (legacy + OTHER details). Prefer rejectionReasonCode. */
       reason: z.string().optional(),
       scrapReusable: z.boolean().default(false),
     });
@@ -2687,6 +2705,18 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
       const acceptedQty = checkedQty - rejectedQty;
       if (acceptedQty < -WO_SO_EPS) {
         const err = new Error("Accepted quantity cannot be negative.");
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const rejectionReason = validateQcRejectionReasonInput({
+        rejectedQty,
+        rejectionReasonCode: body.rejectionReasonCode,
+        rejectionReasonOther: body.rejectionReasonOther,
+        reason: body.reason,
+      });
+      if (!rejectionReason.ok) {
+        const err = new Error(rejectionReason.message || "Rejection Reason is required.");
         err.statusCode = 400;
         throw err;
       }
@@ -2867,18 +2897,23 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
       }
 
       const created = await tx.qcEntry.create({
-        data: {
+        data: buildQcEntryCreateData({
           docNo: await allocateDocNo(tx, { docType: DocType.QC_ENTRY, date: new Date() }),
           productionId: prod.id,
-          acceptedQty: String(acceptedQty),
-          rejectedQty: String(rejectedQty),
+          acceptedQty,
+          rejectedQty,
           rejectedStockBucket: ledgerRejectedBucket,
           rejectedRoute,
-          lossQty: String(lossQty),
-          reason: body.reason,
+          lossQty,
+          rejectionReasonCode: rejectionReason.rejectionReasonCode,
+          reasonDescription: rejectionReason.reasonDescription,
           scrapReusable: body.scrapReusable,
-        },
+        }),
       });
+
+      const reasonTrim = rejectionReason.reasonDescription
+        ? String(rejectionReason.reasonDescription).trim()
+        : "";
 
       const woId = prod.workOrderLine.workOrderId;
       // IMPORTANT: these must be declared before any REWORK pre/post reads (REWORK bucket, not production WO).
@@ -2899,7 +2934,6 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
       if (hasSplit && rejectedQty > WO_SO_EPS) {
         // Split: create multiple dispositions and stock postings.
         const now = new Date();
-        const reasonTrim = typeof body.reason === "string" ? body.reason.trim() : "";
 
         // REWORK portion: disposition ready for final rework QC + owned REWORK (manual rework → final QC).
         if (splitRework > WO_SO_EPS) {
@@ -3061,7 +3095,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
               remainingQty: String(rejectedQty),
               phase: "FIRST_QC",
               status: "REWORK_READY_FOR_QC",
-              remarks: body.reason ?? null,
+              remarks: reasonTrim || null,
               createdByUserId: req.user.userId,
             },
           });
@@ -3092,8 +3126,8 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
               stockBucket: "REWORK",
               qtyIn: String(rejectedQty),
               qtyOut: "0",
-              reason: body.reason?.trim()
-                ? `QC reject → rework bucket (owned REWORK) — ${body.reason.trim()}`
+              reason: reasonTrim
+                ? `QC reject → rework bucket (owned REWORK) — ${reasonTrim}`
                 : "QC reject → rework bucket (owned REWORK)",
               createdByUserId: req.user.userId,
             },
@@ -3126,7 +3160,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
               remainingQty: String(rejectedQty),
               phase: "FIRST_QC",
               status: "HOLD",
-              remarks: body.reason ?? null,
+              remarks: reasonTrim || null,
               createdByUserId: req.user.userId,
             },
           });
@@ -3146,8 +3180,8 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
               stockBucket: "QC_HOLD",
               qtyIn: String(rejectedQty),
               qtyOut: "0",
-              reason: body.reason?.trim()
-                ? `QC reject → HOLD (owned QC_HOLD) — ${body.reason.trim()}`
+              reason: reasonTrim
+                ? `QC reject → HOLD (owned QC_HOLD) — ${reasonTrim}`
                 : "QC reject → HOLD (owned QC_HOLD)",
               createdByUserId: req.user.userId,
             },
@@ -3162,7 +3196,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
               remainingQty: "0",
               phase: "FIRST_QC",
               status: "SCRAP",
-              remarks: body.reason ?? null,
+              remarks: reasonTrim || null,
               createdByUserId: req.user.userId,
               closedAt: new Date(),
             },
@@ -3186,8 +3220,8 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
             },
             scrapQty: rejectedQty,
             actorUserId: req.user.userId,
-            remarks: body.reason?.trim()
-              ? `First-pass QC scrap (disposition #${scrapDisp.id}) — ${body.reason.trim()}`
+            remarks: reasonTrim
+              ? `First-pass QC scrap (disposition #${scrapDisp.id}) — ${reasonTrim}`
               : `First-pass QC scrap (disposition #${scrapDisp.id})`,
           });
         }
@@ -3206,7 +3240,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
             fgItemId: prod.workOrderLine.fgItemId,
             workOrderId: prod.workOrderLine.workOrderId,
             rejectedQty: String(scrapLossQty),
-            reason: body.reason,
+            reason: reasonTrim || null,
             qcEntryId: created.id,
           },
         });
@@ -3342,7 +3376,7 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
 
       const wol = prod.workOrderLine;
       const soId = wol.workOrder.salesOrderId;
-      const reasonTrim = body.reason?.trim() ?? "";
+      // reasonTrim resolved from catalog above
 
       /** @type {Record<string, unknown>} */
       const auditPayload = {
@@ -3395,6 +3429,24 @@ productionRouter.post("/qc-entries", requireAuth, requireRole(["ADMIN", "QA"]), 
           cycleId: woQ?.cycleId != null ? Number(woQ.cycleId) : undefined,
           cycleNo: woQ?.cycle?.cycleNo != null ? Number(woQ.cycle.cycleNo) : undefined,
         },
+      });
+
+      // NO_QTY: post WO-excess QC delta to the latest ACTIVE cycle (never rewrite finalized snapshots).
+      // Rejected surplus is audit-only here; demand-backed scrap recovery stays on Keep/Waive paths.
+      await recordNoQtyQcExcessDecision(tx, {
+        salesOrderId: soId,
+        itemId: fgItemId,
+        sourceCycleId: woQ?.cycleId != null ? Number(woQ.cycleId) : null,
+        sourceWorkOrderId: woQ?.id ?? null,
+        sourceWorkOrderLineId: prod.workOrderLine.id,
+        productionEntryId: prod.id,
+        qcEntryId: created.id,
+        plannedQty: Number(prod.workOrderLine.plannedQty ?? prod.workOrderLine.qty ?? 0),
+        producedQty,
+        acceptedQtyBefore: priorAccepted,
+        rejectedQtyBefore: priorRejected,
+        acceptedQtyAfter: priorAccepted + acceptedQty,
+        rejectedQtyAfter: priorRejected + rejectedQty,
       });
 
       await maybeAutoCloseSalesOrderOperationally(tx, soId, {

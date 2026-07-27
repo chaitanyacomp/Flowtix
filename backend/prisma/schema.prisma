@@ -83,6 +83,12 @@ enum DbBackupStatus {
 enum DocType {
   SALES_ORDER
   WORK_ORDER
+  /// Flow-wise WO series: WO-R-YY-#### (Regular SO)
+  WORK_ORDER_REGULAR
+  /// Flow-wise WO series: WO-NQ-YY-#### (NO_QTY)
+  WORK_ORDER_NO_QTY
+  /// Flow-wise WO series: WO-GL-YY-#### (Green Level)
+  WORK_ORDER_GREEN_LEVEL
   PRODUCTION_ENTRY
   QC_ENTRY
   DISPATCH
@@ -336,6 +342,15 @@ enum RmAllowanceApprovalStatus {
   APPROVED
   REJECTED
   ISSUED
+  CANCELLED
+  SUPERSEDED
+}
+
+/// REGULAR_SO Prepare WO production buffer Admin approval (above 5% through 10%).
+enum RegularSoBufferApprovalStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
   CANCELLED
   SUPERSEDED
 }
@@ -615,6 +630,8 @@ model User {
   rmAllowanceApprovalsRequested             RmAllowanceApprovalRequest[]   @relation("RmAllowanceApprovalRequestedBy")
   rmAllowanceApprovalsReviewed              RmAllowanceApprovalRequest[]   @relation("RmAllowanceApprovalReviewedBy")
   rmAllowanceApprovalsIssued                RmAllowanceApprovalRequest[]   @relation("RmAllowanceApprovalIssuedBy")
+  regularSoBufferApprovalsRequested         RegularSoBufferApprovalRequest[] @relation("RegularSoBufferApprovalRequestedBy")
+  regularSoBufferApprovalsReviewed          RegularSoBufferApprovalRequest[] @relation("RegularSoBufferApprovalReviewedBy")
 }
 
 /// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
@@ -676,6 +693,8 @@ model Supplier {
   tallyGuid String?  @db.VarChar(64)
   tallyImportedAt DateTime?
   isActive  Boolean  @default(true)
+  /// When true, this supplier master may be selected as a Sales Bill transporter.
+  isTransporter Boolean @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -686,11 +705,13 @@ model Supplier {
   purchaseBills    PurchaseBill[]
   grns             Grn[]
   locations        SupplierLocation[]
+  salesBillTransports SalesBill[] @relation("SalesBillTransporter")
 
   @@index([stateId])
   @@index([stateCode])
   @@index([gst])
   @@index([isActive])
+  @@index([isTransporter])
   @@index([tallyName])
   @@index([tallyGuid])
 }
@@ -865,12 +886,15 @@ model Item {
   productionRmReturnPendings      ProductionRmReturnPending[]
   pmrLines                        ProductionMaterialRequestLine[]
   rmAllowanceApprovalRequests     RmAllowanceApprovalRequest[]
+  regularSoBufferApprovalRequests RegularSoBufferApprovalRequest[]
   materialAllocations             MaterialAllocation[]            @relation("MaterialAllocationRmItem")
   noQtyClosedShortageLines        NoQtySoClosedShortageLine[]
   noQtySoWaiverLines              NoQtySoWaiverLine[]
   noQtyAcceptedFgDispositions     NoQtyAcceptedFgDisposition[]
+  noQtyQcExcessCycleAdjustments   NoQtyQcExcessCycleAdjustment[]
   scrapRecords                    ScrapRecord[]                    @relation("ScrapFgItem")
   dispatches                      Dispatch[]
+  dispatchFgTraceAllocations      DispatchFgTraceAllocation[]
   stockTxns                       StockTransaction[]
   stockAdjustmentQcEntries        StockAdjustmentQcEntry[]
   customerReturns                 CustomerReturn[]
@@ -1282,6 +1306,7 @@ model SalesOrder {
   customerReturns          CustomerReturn[]
   regularSoPlanningSnapshot RegularSoPlanningSnapshot?
   regularSoPlanningSnapshotLines RegularSoPlanningSnapshotLine[]
+  regularSoBufferApprovals RegularSoBufferApprovalRequest[]
 
   cycles       SalesOrderCycle[]
   currentCycle SalesOrderCycle?  @relation("SalesOrderCurrentCycle", fields: [currentCycleId], references: [id], onDelete: SetNull)
@@ -1290,6 +1315,7 @@ model SalesOrder {
   carryForwardPending CarryForwardPending[]
   noQtySoWaivers NoQtySoWaiver[]
   noQtyAcceptedFgDispositions NoQtyAcceptedFgDisposition[]
+  noQtyQcExcessCycleAdjustments NoQtyQcExcessCycleAdjustment[]
 
   @@index([customerId])
   @@index([shipToAddressId])
@@ -1316,6 +1342,38 @@ model RegularSoPlanningSnapshot {
   @@index([salesOrderId])
   @@index([createdByUserId])
   @@index([updatedByUserId])
+}
+
+/// Store → Admin REGULAR_SO production buffer approval (above 5% through 10%) on Prepare Work Order.
+model RegularSoBufferApprovalRequest {
+  id                   Int                          @id @default(autoincrement())
+  requestNo            String?                      @unique @db.VarChar(32)
+  salesOrderId         Int
+  /// Primary FG item for Admin queue display (first SO line).
+  fgItemId             Int?
+  bufferPercent        Decimal                      @db.Decimal(18, 2)
+  plannedProductionQty Decimal                      @db.Decimal(18, 3)
+  storeReason          String                       @db.VarChar(500)
+  status               RegularSoBufferApprovalStatus @default(PENDING_APPROVAL)
+  requestedByUserId    Int
+  requestedAt          DateTime                     @default(now())
+  reviewedByUserId     Int?
+  reviewedAt           DateTime?
+  adminRemarks         String?                      @db.VarChar(500)
+  rejectionReason      String?                      @db.VarChar(500)
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+
+  salesOrder  SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade, map: "RegSoBufAppr_so_fkey")
+  fgItem      Item?      @relation(fields: [fgItemId], references: [id], onDelete: SetNull, map: "RegSoBufAppr_fg_fkey")
+  requestedBy User       @relation("RegularSoBufferApprovalRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict, map: "RegSoBufAppr_reqBy_fkey")
+  reviewedBy  User?      @relation("RegularSoBufferApprovalReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull, map: "RegSoBufAppr_revBy_fkey")
+
+  @@index([salesOrderId, status], map: "RegSoBufAppr_so_status_idx")
+  @@index([status, requestedAt], map: "RegSoBufAppr_status_reqAt_idx")
+  @@index([requestedByUserId], map: "RegSoBufAppr_reqBy_idx")
+  @@index([reviewedByUserId], map: "RegSoBufAppr_revBy_idx")
+  @@index([fgItemId], map: "RegSoBufAppr_fg_idx")
 }
 
 model RegularSoPlanningSnapshotLine {
@@ -1484,12 +1542,44 @@ model Dispatch {
   customerReturns CustomerReturn[]
   salesBills      SalesBill[]
   salesBillAllocations SalesBillDispatchAllocation[]
+  /// NO_QTY only: FIFO WO/production/QC slices for traceability (not a WO dispatch gate).
+  fgTraceAllocations DispatchFgTraceAllocation[]
 
   @@index([soId])
   @@index([cycleId])
   @@index([date])
   @@index([reversalOfId])
   @@index([deliveryLocationId])
+}
+
+/// NO_QTY finalize/reverse: retain WO/production/QC FIFO attribution for audit.
+/// Dispatch authority remains SO + FG + RS cycle — these rows are not a WO scope key.
+model DispatchFgTraceAllocation {
+  id           Int      @id @default(autoincrement())
+  dispatchId   Int
+  itemId       Int
+  cycleId      Int?
+  workOrderId  Int?
+  productionId Int?
+  qcEntryId    Int?
+  /// Positive on finalize; negative on reversal unwind of the same lots.
+  allocatedQty Decimal  @db.Decimal(18, 3)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  dispatch   Dispatch         @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  item       Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  cycle      SalesOrderCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  workOrder  WorkOrder?       @relation(fields: [workOrderId], references: [id], onDelete: SetNull)
+  production ProductionEntry? @relation(fields: [productionId], references: [id], onDelete: SetNull)
+  qcEntry    QcEntry?         @relation(fields: [qcEntryId], references: [id], onDelete: SetNull)
+
+  @@index([dispatchId])
+  @@index([itemId])
+  @@index([cycleId])
+  @@index([workOrderId])
+  @@index([productionId])
+  @@index([qcEntryId])
 }
 
 /// Requirement planning sheet for NO_QTY sales orders (versioned per period).
@@ -2309,8 +2399,14 @@ model SalesBill {
   transportationChargedBy    SalesBillTransportationChargedBy @default(OUR_COMPANY)
   transportationAllocationMethod SalesBillTransportationAllocationMethod @default(PROPORTIONAL_TAXABLE_VALUE)
   transportationTaxableValue Decimal @default(0) @db.Decimal(18, 2)
+  /// Optional FK to Supplier master classified as transporter. Null on legacy bills.
+  transporterId              Int?
+  /// Name snapshot (from master at save, or legacy free-text).
   transporterName            String? @db.VarChar(256)
+  /// LR / transport reference (legacy rows may still hold a combined LR/vehicle/ref string).
   transportationReferenceNo  String? @db.VarChar(128)
+  /// Normalized Indian vehicle registration; null on legacy bills that only have combined reference text.
+  vehicleNumber              String? @db.VarChar(32)
   transportationRemarks      String? @db.Text
   roundOffAmount              Decimal @default(0) @db.Decimal(18, 2)
   calculationVersion          String  @default("LEGACY_V1") @db.VarChar(32)
@@ -2332,6 +2428,7 @@ model SalesBill {
   salesOrder SalesOrder?    @relation(fields: [soId], references: [id], onDelete: Restrict)
   cycle    SalesOrderCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
   shipToAddress CustomerDeliveryAddress? @relation("SalesBillShipToAddress", fields: [shipToAddressId], references: [id], onDelete: SetNull)
+  transporter Supplier?     @relation("SalesBillTransporter", fields: [transporterId], references: [id], onDelete: Restrict)
   lines    SalesBillLine[]
   dispatchAllocations SalesBillDispatchAllocation[]
   receipts SalesBillReceipt[]
@@ -2350,6 +2447,7 @@ model SalesBill {
   @@index([cycleId])
   @@index([shipToAddressId])
   @@index([shipToChangedById])
+  @@index([transporterId])
   @@index([isExported])
   @@index([exportedById])
   @@index([exportResetById])
@@ -2712,7 +2810,7 @@ model PurchaseBillLine {
 
 model WorkOrder {
   id                      Int          @id @default(autoincrement())
-  /// Display document number (e.g. WO-24-0001). Auto-generated on create.
+  /// Display document number. New WOs: WO-R/NQ/GL-YY-#### by flow; legacy WO-YY-#### preserved.
   docNo                   String?      @unique @db.VarChar(32)
   /// Customer WOs belong to a sales order. Green Level replenishment WOs are stock WOs and leave this null.
   salesOrderId            Int?
@@ -2769,6 +2867,7 @@ model WorkOrder {
   productionRmReturnPendings      ProductionRmReturnPending[]
   productionShortfallResolutions  ProductionShortfallResolution[]
   carryForwardPendingSources      CarryForwardPending[]           @relation("CfPendingSourceWo")
+  dispatchFgTraceAllocations      DispatchFgTraceAllocation[]
 
   @@index([status])
   @@index([salesOrderId])
@@ -2979,6 +3078,39 @@ model NoQtySoWaiverLine {
   @@index([itemId])
 }
 
+/// NO_QTY: QC WO-excess decisions posted to the latest ACTIVE cycle (never rewrite finalized snapshots).
+/// Accepted excess reduces active-cycle production requirement (LIVE or OVERLAY). Rejected surplus is audit-only.
+model NoQtyQcExcessCycleAdjustment {
+  id                       Int       @id @default(autoincrement())
+  salesOrderId             Int
+  itemId                   Int
+  sourceCycleId            Int?
+  sourceWorkOrderId        Int?
+  sourceWorkOrderLineId    Int?
+  sourceProductionEntryId  Int?
+  sourceQcEntryId          Int?
+  acceptedExcessDeltaQty   Decimal   @default(0) @db.Decimal(18, 3)
+  /// Surplus reject audit only — does not create QC_FINAL_REJECTION recovery.
+  rejectedSurplusDeltaQty  Decimal   @default(0) @db.Decimal(18, 3)
+  /// Idempotency key — each QC excess decision is consumed exactly once.
+  consumptionKey           String    @unique @db.VarChar(96)
+  /// LIVE | OVERLAY | UNAPPLIED
+  applicationMode          String    @db.VarChar(16)
+  appliedCycleId           Int?
+  appliedAt                DateTime?
+  createdAt                DateTime  @default(now())
+
+  salesOrder      SalesOrder       @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  item            Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  sourceCycle     SalesOrderCycle? @relation("QcExcessSourceCycle", fields: [sourceCycleId], references: [id], onDelete: SetNull)
+  appliedCycle    SalesOrderCycle? @relation("QcExcessAppliedCycle", fields: [appliedCycleId], references: [id], onDelete: SetNull)
+
+  @@index([salesOrderId, itemId])
+  @@index([salesOrderId, applicationMode])
+  @@index([appliedCycleId])
+  @@index([sourceQcEntryId])
+}
+
 /// NO_QTY Batch 3A: accepted FG disposition audit before CLOSED_WITH_WAIVER (does not post stock).
 model NoQtyAcceptedFgDisposition {
   id                 Int                            @id @default(autoincrement())
@@ -3047,10 +3179,13 @@ model SalesOrderCycle {
   noQtyTreatFgAsOptionalStoreStock Boolean @default(false)
 
   dispatchRows      Dispatch[]
+  dispatchFgTraceAllocations DispatchFgTraceAllocation[]
   requirementSheets RequirementSheet[]
   workOrders        WorkOrder[]
   salesBills        SalesBill[]
   carryForwardPending CarryForwardPending[]
+  qcExcessAdjustmentsApplied NoQtyQcExcessCycleAdjustment[] @relation("QcExcessAppliedCycle")
+  qcExcessAdjustmentsSourced NoQtyQcExcessCycleAdjustment[] @relation("QcExcessSourceCycle")
 
   @@unique([salesOrderId, cycleNo])
   @@index([salesOrderId])
@@ -3210,6 +3345,7 @@ model ProductionEntry {
   workOrderLine   WorkOrderLine                  @relation(fields: [workOrderLineId], references: [id], onDelete: Cascade)
   qcEntries       QcEntry[]
   rmConsumptions  ProductionEntryRmConsumption[]
+  dispatchFgTraceAllocations DispatchFgTraceAllocation[]
 
   @@index([workOrderLineId])
   @@index([date])
@@ -3249,6 +3385,9 @@ model QcEntry {
   rejectedStockBucket StockBucket?
   /// Operator routing for rejected qty (Rework vs Hold vs Scrap vs immediate Usable). Null on legacy rows.
   rejectedRoute       QcRejectedRoute?
+  /// Stable catalog code (e.g. DIMENSIONAL_ISSUE, OTHER). Null when rejectedQty is 0 or legacy rows.
+  rejectionReasonCode String?          @db.VarChar(48)
+  /// Display description for reporting (catalog label, or free-text when code is OTHER).
   reason              String?
   scrapReusable       Boolean          @default(false)
   lossQty             Decimal          @db.Decimal(18, 3)
@@ -3262,9 +3401,11 @@ model QcEntry {
   scrapRecords                 ScrapRecord[]
   rejectedDispositions         QcRejectedDisposition[]         @relation("RejectedDispositionSourceQc")
   legacyRejectedClassification QcLegacyRejectedClassification?
+  dispatchFgTraceAllocations   DispatchFgTraceAllocation[]
 
   @@index([productionId])
   @@index([date])
+  @@index([rejectionReasonCode])
 }
 
 /// Traceable lot for rejected QC quantity: rework approval, hold, scrap, and QC recheck branching.

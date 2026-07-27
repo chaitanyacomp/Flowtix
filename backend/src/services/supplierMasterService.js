@@ -25,6 +25,7 @@ function mapSupplierRow(row) {
     stateName: row.stateRef?.stateName ?? row.stateName ?? null,
     stateCode: row.stateRef?.stateCode ?? row.stateCode ?? null,
     isActive: row.isActive !== false,
+    isTransporter: row.isTransporter === true,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     locations,

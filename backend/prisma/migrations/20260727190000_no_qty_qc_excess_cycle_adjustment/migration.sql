@@ -1,0 +1,28 @@
+-- NO_QTY: QC WO-excess decisions applied to the latest ACTIVE cycle (idempotent ledger).
+CREATE TABLE `NoQtyQcExcessCycleAdjustment` (
+  `id` INTEGER NOT NULL AUTO_INCREMENT,
+  `salesOrderId` INTEGER NOT NULL,
+  `itemId` INTEGER NOT NULL,
+  `sourceCycleId` INTEGER NULL,
+  `sourceWorkOrderId` INTEGER NULL,
+  `sourceWorkOrderLineId` INTEGER NULL,
+  `sourceProductionEntryId` INTEGER NULL,
+  `sourceQcEntryId` INTEGER NULL,
+  `acceptedExcessDeltaQty` DECIMAL(18, 3) NOT NULL DEFAULT 0,
+  `rejectedSurplusDeltaQty` DECIMAL(18, 3) NOT NULL DEFAULT 0,
+  `consumptionKey` VARCHAR(96) NOT NULL,
+  `applicationMode` VARCHAR(16) NOT NULL,
+  `appliedCycleId` INTEGER NULL,
+  `appliedAt` DATETIME(3) NULL,
+  `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (`id`),
+  UNIQUE INDEX `NoQtyQcExcessCycleAdjustment_consumptionKey_key`(`consumptionKey`),
+  INDEX `NoQtyQcExcessCycleAdjustment_salesOrderId_itemId_idx`(`salesOrderId`, `itemId`),
+  INDEX `NoQtyQcExcessCycleAdjustment_salesOrderId_applicationMode_idx`(`salesOrderId`, `applicationMode`),
+  INDEX `NoQtyQcExcessCycleAdjustment_appliedCycleId_idx`(`appliedCycleId`),
+  INDEX `NoQtyQcExcessCycleAdjustment_sourceQcEntryId_idx`(`sourceQcEntryId`),
+  CONSTRAINT `NoQtyQcExcessCycleAdjustment_salesOrderId_fkey` FOREIGN KEY (`salesOrderId`) REFERENCES `SalesOrder`(`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `NoQtyQcExcessCycleAdjustment_itemId_fkey` FOREIGN KEY (`itemId`) REFERENCES `Item`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `NoQtyQcExcessCycleAdjustment_sourceCycleId_fkey` FOREIGN KEY (`sourceCycleId`) REFERENCES `SalesOrderCycle`(`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `NoQtyQcExcessCycleAdjustment_appliedCycleId_fkey` FOREIGN KEY (`appliedCycleId`) REFERENCES `SalesOrderCycle`(`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

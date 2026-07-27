@@ -225,11 +225,16 @@ import {
   type ProductionOperatorOpenWoRow,
 } from "../components/erp/production/ProductionOperatorOpenWoQueue";
 import {
+  formatProductionQtyForInput,
   productionOperatorQtyPlaceholder,
   resolveProductionEntryMaxQty,
 } from "../lib/productionOperatorUx";
 import { NoQtyMacroLifecycleStrip } from "../components/erp/production/NoQtyMacroLifecycleStrip";
 import { deriveProductionConciseRmLabel } from "../lib/productionRmConciseStatus";
+import {
+  PRODUCTION_QUANTITY_COMPLETED_MESSAGE,
+  resolveProductionEntryCapacityPhase,
+} from "../lib/productionEntryCapacityUx";
 import { formatFgQuantity, formatRmQuantity } from "../lib/quantityDisplay";
 import { parseProductionWorkspaceBucket } from "../lib/productionWorkspaceBucketFilter";
 import {
@@ -826,6 +831,8 @@ export function ProductionPage() {
   } = useMandatoryPositiveQtyDraft();
   /** Prevents async line prefill / RM clamp from overwriting manual qty entry. */
   const producedQtyUserTouchedRef = React.useRef(false);
+  /** Current FG UOM for qty sanitization (selected line may be declared later in this component). */
+  const producedQtyUnitRef = React.useRef<string | null>(null);
   const resetProducedQtyField = React.useCallback(() => {
     producedQtyUserTouchedRef.current = false;
     resetProducedQty();
@@ -833,7 +840,7 @@ export function ProductionPage() {
   const onProducedQtyInputChange = React.useCallback(
     (raw: string) => {
       producedQtyUserTouchedRef.current = true;
-      setProducedQtyStr(sanitizeProductionQtyDraftInput(raw));
+      setProducedQtyStr(sanitizeProductionQtyDraftInput(raw, producedQtyUnitRef.current));
     },
     [setProducedQtyStr],
   );
@@ -1570,9 +1577,16 @@ export function ProductionPage() {
   );
 
   const selected = flatLines.find((l) => l.id === wolId);
+  producedQtyUnitRef.current = selected?.fgItem?.unit ?? null;
 
   const fmtProdQty = React.useCallback(
     (n: number, unit?: string | null) => formatFgQuantity(n, unit ?? selected?.fgItem?.unit ?? ""),
+    [selected?.fgItem?.unit],
+  );
+
+  const fmtProdQtyForInput = React.useCallback(
+    (n: number, unit?: string | null) =>
+      formatProductionQtyForInput(n, unit ?? selected?.fgItem?.unit ?? null),
     [selected?.fgItem?.unit],
   );
 
@@ -2129,7 +2143,7 @@ export function ProductionPage() {
         else if (t) setUserLockedFlowMode("REGULAR");
         if (isCarryForwardLine(l, t) && !noQtyAllowShopFloorContinue) return;
         if (rem > 1e-9 && !producedQtyUserTouchedRef.current && !isGreenLevelWo) {
-          setProducedQtyStr(fmtProdQty(rem));
+          setProducedQtyStr(formatProductionQtyForInput(rem, l.fgItem.unit));
         }
       })();
     },
@@ -2487,6 +2501,24 @@ export function ProductionPage() {
     };
   }, [selected]);
 
+  const productionEntryCapacityPhase = React.useMemo(() => {
+    if (!(showRegularRmReadiness || showNoQtyRmStatus)) return null;
+    if (!effectiveRmReadiness && !selectedMetrics) return null;
+    return resolveProductionEntryCapacityPhase({
+      gate: effectiveRmReadiness?.gate,
+      bomMissing: effectiveRmReadiness?.bomMissing,
+      productionAllowedNowQty: effectiveRmReadiness?.productionAllowedNowQty,
+      maxAdditionalQty: effectiveRmReadiness?.maxAdditionalQty,
+      woQty: effectiveRmReadiness?.woQty ?? selectedMetrics?.woLineQty,
+      woRemainingQty: effectiveRmReadiness?.woRemainingQty ?? selectedMetrics?.remainingQty,
+      approvedProducedQty: effectiveRmReadiness?.approvedProducedQty ?? selectedMetrics?.usedQty,
+      rmSupportedCumulativeCapacityQty: effectiveRmReadiness?.rmSupportedCumulativeCapacityQty,
+    });
+  }, [showRegularRmReadiness, showNoQtyRmStatus, effectiveRmReadiness, selectedMetrics]);
+
+  const productionQuantityCompleted = productionEntryCapacityPhase === "QUANTITY_COMPLETED";
+  const productionWaitingRmForCapacity = productionEntryCapacityPhase === "WAITING_RM";
+
   const pausedWoQtyStrip = React.useMemo(() => {
     if (!selected || !selectedWoPaused || !selectedMetrics) return null;
     const lineEntries = entries.filter(
@@ -2581,6 +2613,7 @@ export function ProductionPage() {
       producedQtyValid &&
       producedQtyWithinCaps &&
       !rmProductionEntryBlocked &&
+      !productionQuantityCompleted &&
       !woProductionLifecycleBlocked &&
       !regularCreateFormLockedByDraft &&
       !(navigateNoQtyContext && noQtyBlockProductionEntry),
@@ -2634,6 +2667,7 @@ export function ProductionPage() {
     !flowMismatchMessage &&
     showRegularRmReadiness &&
     !rmProductionEntryBlocked &&
+    !productionQuantityCompleted &&
     !rmReadinessLoading &&
     !shouldHideRegularProductionEntryForReport(regularSoCoverage);
 
@@ -3676,6 +3710,10 @@ export function ProductionPage() {
       );
       return;
     }
+    if (productionQuantityCompleted) {
+      setError(PRODUCTION_QUANTITY_COMPLETED_MESSAGE);
+      return;
+    }
     if (
       (showRegularRmReadiness || showNoQtyRmStatus) &&
       rmEntryQtyCap != null &&
@@ -3731,6 +3769,10 @@ export function ProductionPage() {
           ? "Waiting for Store RM Issue."
           : "Production is blocked until a material request is submitted and Store issues RM.",
       );
+      return;
+    }
+    if (productionQuantityCompleted) {
+      setError(PRODUCTION_QUANTITY_COMPLETED_MESSAGE);
       return;
     }
     if (
@@ -4051,7 +4093,9 @@ export function ProductionPage() {
     if (!canOfferProductionReverse(entry, isAdmin)) return;
     const safe = reversibleProductionQty(entry);
     setReverseModalEntry(entry);
-    setReverseQtyDraft(fmtProdQty(safe));
+    setReverseQtyDraft(
+      formatProductionQtyForInput(safe, entry.workOrderLine?.fgItem?.unit ?? selected?.fgItem?.unit),
+    );
     setReverseReasonDraft("");
     setReverseModalError(null);
   }
@@ -4066,7 +4110,8 @@ export function ProductionPage() {
   function reverseModalFillFull() {
     if (!reverseModalEntry) return;
     const pq = Number(reverseModalEntry.producedQty);
-    setReverseQtyDraft(fmtProdQty(Number.isFinite(pq) ? pq : 0));
+    const unit = reverseModalEntry.workOrderLine?.fgItem?.unit ?? selected?.fgItem?.unit;
+    setReverseQtyDraft(formatProductionQtyForInput(Number.isFinite(pq) ? pq : 0, unit));
     setReverseModalError(null);
   }
 
@@ -4836,11 +4881,12 @@ export function ProductionPage() {
     }
     if (draftApprovalPendingRegular) return "Draft Pending";
     if (woProductionLifecycleBlocked && isWorkOrderPausedStatus(selectedWoForLifecycle?.status)) return "Paused";
-    if (rmProductionEntryBlocked && showRegularRmReadiness) return "Waiting for RM issue";
+    if (productionWaitingRmForCapacity && showRegularRmReadiness) return "Waiting for RM issue";
     if (selectedMetrics && selectedMetrics.remainingQty > 1e-6) {
       const produced = Number(selectedMetrics.usedQty ?? 0);
       return produced > 1e-6 ? "Continue" : "Ready";
     }
+    if (productionQuantityCompleted) return "Line complete";
     if (selectedWoQcPending && (regularQcBannerHref || !canOpenQaFromProduction)) return "QC Pending";
     if (showQcCompletedStrip) return "Complete";
     if (selectedMetrics && selectedMetrics.remainingQty <= 1e-6) return "Line complete";
@@ -4864,7 +4910,8 @@ export function ProductionPage() {
     regularQcBannerHref,
     woProductionLifecycleBlocked,
     selectedWoForLifecycle?.status,
-    rmProductionEntryBlocked,
+    productionWaitingRmForCapacity,
+    productionQuantityCompleted,
     showRegularRmReadiness,
     selectedMetrics,
     showQcCompletedStrip,
@@ -4997,19 +5044,19 @@ export function ProductionPage() {
     if (fromNoQtySo) {
       const cap = Math.max(0, rmEntryQtyCap ?? selectedMetrics?.remainingQty ?? 0);
       producedQtyUserTouchedRef.current = true;
-      setProducedQtyStr(fmtProdQty(cap));
+      setProducedQtyStr(fmtProdQtyForInput(cap));
       return;
     }
     const fill = resolveUseRemainingQtyFill(selectedMetrics?.remainingQty, rmEntryQtyCap);
     producedQtyUserTouchedRef.current = true;
-    setProducedQtyStr(fmtProdQty(fill));
-  }, [fromNoQtySo, selectedMetrics?.remainingQty, rmEntryQtyCap, fmtProdQty, setProducedQtyStr]);
+    setProducedQtyStr(fmtProdQtyForInput(fill));
+  }, [fromNoQtySo, selectedMetrics?.remainingQty, rmEntryQtyCap, fmtProdQtyForInput, setProducedQtyStr]);
 
   const fillOperatorRmSupportedMaxQty = React.useCallback(() => {
     const cap = Math.max(0, Number(rmEntryQtyCap ?? 0));
     producedQtyUserTouchedRef.current = true;
-    setProducedQtyStr(fmtProdQty(cap));
-  }, [rmEntryQtyCap, fmtProdQty, setProducedQtyStr]);
+    setProducedQtyStr(fmtProdQtyForInput(cap));
+  }, [rmEntryQtyCap, fmtProdQtyForInput, setProducedQtyStr]);
 
   const submitOperatorEntryFromQty = React.useCallback(() => {
     if (!posting && createFormCanSubmit) {
@@ -5026,7 +5073,7 @@ export function ProductionPage() {
       producedQtyStr={producedQtyStr}
       prodQtyPlaceholder={operatorProdQtyPlaceholder}
       unit={selected?.fgItem.unit ?? null}
-      disabled={rmProductionEntryBlocked}
+      disabled={rmProductionEntryBlocked || productionQuantityCompleted}
       maxAllowedQty={productionEntryMaxQty}
       maxLabelPrefix={
         fromNoQtySo || showRegularRmReadiness ? "Maximum allowed from issued RM" : "Max"
@@ -5035,7 +5082,7 @@ export function ProductionPage() {
       wolId={wolId}
       rmReadinessLoading={rmReadinessLoading}
       rmAllowedNowQty={rmAllowedNowQty}
-      rmProductionEntryBlocked={rmProductionEntryBlocked}
+      rmProductionEntryBlocked={rmProductionEntryBlocked || productionQuantityCompleted}
       showRmCapHint={!productionOperatorIdentityProps && !hardenedWoSummary}
       posting={posting}
       createFormCanSubmit={createFormCanSubmit}
@@ -5043,12 +5090,16 @@ export function ProductionPage() {
         posting ||
         !selectedMetrics ||
         (selectedMetrics?.remainingQty ?? 0) <= 0 ||
-        Boolean(rmProductionEntryBlocked)
+        Boolean(rmProductionEntryBlocked) ||
+        productionQuantityCompleted
       }
       onUseRemaining={fillOperatorRemainingQty}
       showUseRmSupportedMax={Boolean(showRegularRmReadiness || fromNoQtySo) && rmEntryQtyCap != null}
       useRmSupportedMaxDisabled={
-        posting || !(rmEntryQtyCap != null && rmEntryQtyCap > 1e-6) || Boolean(rmProductionEntryBlocked)
+        posting ||
+        !(rmEntryQtyCap != null && rmEntryQtyCap > 1e-6) ||
+        Boolean(rmProductionEntryBlocked) ||
+        productionQuantityCompleted
       }
       onUseRmSupportedMax={fillOperatorRmSupportedMaxQty}
       prodSaveFocusBind={prodSaveFocusBind}
@@ -5060,6 +5111,15 @@ export function ProductionPage() {
       saveButtonTitle={opts?.saveButtonTitle}
       warnings={productionWarnings}
     />
+  );
+
+  const renderProductionQuantityCompletedNotice = () => (
+    <p
+      className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-[12px] font-medium text-slate-800"
+      data-testid="production-quantity-completed-notice"
+    >
+      {PRODUCTION_QUANTITY_COMPLETED_MESSAGE}
+    </p>
   );
 
   const productionWorkbenchIdentity = React.useMemo(() => {
@@ -6150,6 +6210,9 @@ export function ProductionPage() {
                                     </p>
                                   );
                                 }
+                                if (productionQuantityCompleted) {
+                                  return renderProductionQuantityCompletedNotice();
+                                }
                                 const eps = 1e-6;
                                 const produced = selected.approvedProducedQty ?? 0;
                                 const remCompact = lineRemaining(selected);
@@ -6524,6 +6587,9 @@ export function ProductionPage() {
                             </p>
                           );
                         }
+                        if (productionQuantityCompleted) {
+                          return renderProductionQuantityCompletedNotice();
+                        }
                         const eps = 1e-6;
                         const rem = lineRemaining(selected);
                         const produced = selected.approvedProducedQty ?? 0;
@@ -6811,9 +6877,11 @@ export function ProductionPage() {
                         return (
                           <>
                             <ProductionOperatorEntryShell>
-                              {renderOperatorEntryFields({ saveButtonTitle: noQtyEntryContextLine || undefined })}
+                              {productionQuantityCompleted
+                                ? renderProductionQuantityCompletedNotice()
+                                : renderOperatorEntryFields({ saveButtonTitle: noQtyEntryContextLine || undefined })}
                             </ProductionOperatorEntryShell>
-                            {noQtyEntryContextLine && !embedNoQtyRecentEntries ? (
+                            {noQtyEntryContextLine && !embedNoQtyRecentEntries && !productionQuantityCompleted ? (
                               <p className="text-[10px] leading-snug text-slate-500">{noQtyEntryContextLine}</p>
                             ) : null}
                           </>
@@ -6933,6 +7001,8 @@ export function ProductionPage() {
                   </p>
                 ) : showRegularProductionEntry ? (
                   renderOperatorEntryFields()
+                ) : productionQuantityCompleted ? (
+                  renderProductionQuantityCompletedNotice()
                 ) : regularSoCoverage?.reportPending ? (
                   <p className="text-[12px] text-amber-900" data-testid="regular-entry-locked-report-pending">
                     Production entry locked while Production Report is pending.
@@ -6959,7 +7029,9 @@ export function ProductionPage() {
             ) : null
           ) : showProductionOperatorWorkbench ? (
               renderProductionOperatorWorkbench({
-                entry: renderOperatorEntryFields(),
+                entry: productionQuantityCompleted
+                  ? renderProductionQuantityCompletedNotice()
+                  : renderOperatorEntryFields(),
               })
             ) : (
             <>
@@ -7150,7 +7222,9 @@ export function ProductionPage() {
                         </div>
                       </div>
                     ) : null}
-                    {renderOperatorEntryFields()}
+                    {productionQuantityCompleted
+                      ? renderProductionQuantityCompletedNotice()
+                      : renderOperatorEntryFields()}
                   </div>
                   </ProductionOperatorEntryShell>
                 </div>
@@ -7283,7 +7357,9 @@ export function ProductionPage() {
                       className="h-9 tabular-nums text-sm"
                       value={reverseQtyDraft}
                       onChange={(e) => {
-                        setReverseQtyDraft(e.target.value);
+                        const unit =
+                          reverseModalEntry.workOrderLine?.fgItem?.unit ?? selected?.fgItem?.unit ?? null;
+                        setReverseQtyDraft(sanitizeProductionQtyDraftInput(e.target.value, unit));
                         setReverseModalError(null);
                       }}
                     />

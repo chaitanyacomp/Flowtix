@@ -287,10 +287,12 @@ Customer PO reference is **display/match only** — does not set balance.
 
 Multiple **Dispatch Notes** may ship portions of:
 
-- Accepted FG pool for a batch/WO
-- ISO line remaining balance
+- **REGULAR:** ISO line remaining balance (SO-line FIFO; WO is not the dispatch key)
+- **NO_QTY:** cycle dispatch entitlement remaining, capped by QC-accepted unreserved FG and physical USABLE stock
 
-Each posted note reduces dispatch-eligible stock and remaining commercial balance.
+A NO_QTY note is authorized against **SO + FG + RS cycle**. One note may consume accepted FG that originated from **multiple WOs/batches**; internal FIFO attribution is retained for traceability only (`DispatchFgTraceAllocation`) and is not a WO gate.
+
+Each posted note reduces dispatch-eligible stock and remaining commercial / cycle balance.
 
 ### 7.5 Multiple dispatches
 
@@ -306,13 +308,14 @@ One ISO line or NO_QTY cycle may have **many** Dispatch Notes over time until ba
 
 ### 7.7 Traceability
 
-Dispatch Note lines carry:
+Dispatch Note header identity:
 
-- FG item, qty, batch/lot reference
-- WO, Production Entry, QA Inspection, FG Acceptance links
-- Internal Sales Order line reference
+- FG item, qty, Internal Sales Order / cycle reference
 - Optional Customer PO ref on paperwork
 
+**NO_QTY finalize** additionally persists FIFO children (`DispatchFgTraceAllocation`) linking WO, Production Entry, and QC Entry for audit and exact reversal unwind. These children do **not** change dispatch scope (still SO + FG + cycle). REGULAR continues to use SO-line FIFO without WO-scoped dispatch rows.
+
+Pending QC, Rework, Hold, Scrap, reserved drafts, and already-dispatched quantities are excluded from the dispatchable pool.
 ### 7.8 Customer Delivery Location (ship-to)
 
 At Dispatch prepare:

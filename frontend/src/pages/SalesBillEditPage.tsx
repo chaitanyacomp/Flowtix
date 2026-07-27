@@ -96,8 +96,10 @@ type Bill = {
   transportationAmount?: string;
   transportationTaxableValue?: string;
   transportationChargedBy?: string;
+  transporterId?: number | null;
   transporterName?: string | null;
   transportationReferenceNo?: string | null;
+  vehicleNumber?: string | null;
   roundOffAmount?: string;
   dispatchAllocations?: Array<{ dispatchId: number; allocatedQty: string; dispatch?: { docNo?: string | null } }>;
   paymentStatus?: string;
@@ -1525,6 +1527,33 @@ export function SalesBillEditPage() {
                 <span className="tabular-nums">{formatMoney(bill.goodsTaxableValue ?? bill.totalBasic)}</span>
               </div>
               {Number(bill.transportationAmount || 0) > 0 ? <div className="flex items-center justify-between gap-4"><span className="text-slate-600">Transportation Charges{bill.transportationChargedBy === "TRANSPORTER_DIRECTLY" ? " (direct)" : ""}</span><span className="tabular-nums">{formatMoney(bill.transportationAmount || 0)}</span></div> : null}
+              {bill.transporterName || bill.transportationChargedBy === "TRANSPORTER_DIRECTLY" ? (
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-slate-600">Transporter{bill.transporterId ? "" : " (legacy)"}</span>
+                  <span className="truncate text-right">{bill.transporterName || "—"}</span>
+                </div>
+              ) : null}
+              {(() => {
+                const vehicle = String(bill.vehicleNumber || "").trim();
+                const ref = String(bill.transportationReferenceNo || "").trim();
+                if (!vehicle && !ref) return null;
+                return (
+                  <>
+                    {vehicle ? (
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-slate-600">Vehicle Number</span>
+                        <span className="truncate text-right font-mono text-xs">{vehicle}</span>
+                      </div>
+                    ) : null}
+                    {ref ? (
+                      <div className="flex items-center justify-between gap-4">
+                        <span className="text-slate-600">{vehicle ? "LR / Transport Reference" : "LR / vehicle / ref (legacy)"}</span>
+                        <span className="truncate text-right font-mono text-xs">{ref}</span>
+                      </div>
+                    ) : null}
+                  </>
+                );
+              })()}
               <div className="flex items-center justify-between gap-4"><span className="text-slate-600">Total Taxable Value</span><span className="tabular-nums">{formatMoney(bill.totalBasic)}</span></div>
               <div className="flex items-center justify-between gap-4">
                 <span className="text-slate-600">CGST</span>

@@ -93,7 +93,7 @@ Zip the diagnostics folder for support. Passwords are masked — still avoid att
 See Support Guide and `06 Support\templates\Support_Escalation.md`.
 # Dashboard WO counts disagree
 
-Compare Pending Actions work items, distinct production-eligible WOs, and Active Production lines using `docs/PRODUCTION_MULTI_WO_CANONICAL_RULE.md`. A higher sibling WO id is not evidence that an earlier WO was carried forward. User-facing labels must come from `WorkOrder.docNo`.
+Compare Pending Actions work items, distinct production-eligible WOs, and Active Production lines using `docs/PRODUCTION_MULTI_WO_CANONICAL_RULE.md`. A higher sibling WO id is not evidence that an earlier WO was carried forward. User-facing labels must come from `WorkOrder.docNo` (flow-wise `WO-R` / `WO-NQ` / `WO-GL` or legacy `WO-YY-####` — see `docs/DOCUMENT_NUMBERING_WORK_ORDERS.md`).
 
 If Resume opens Final Report, verify execution is RUNNING, remainder is positive, and no report is confirmed. Pending QC on an earlier entry is informational. If unused RM appears as wastage before confirmation, verify the report payload uses explicit `scrapWasteQty`; available RM must remain issued minus consumed/returned/declared wastage.
 # Production RM reconciliation

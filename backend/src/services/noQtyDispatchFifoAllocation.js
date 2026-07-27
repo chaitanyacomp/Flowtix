@@ -138,11 +138,19 @@ function assertNoQtyDispatchLockQtyAllowed(
     postCycleMap,
     usableStock,
     demandByCycleItem,
+    /** Optional: item-global UNLOCKED draft qty (all SOs). Defaults to this SO only. */
+    unlockedDraftReservedQty,
+    /** Optional: draft qty being replaced on this SO+cycle. Defaults to cycle draft sum. */
+    replaceableDraftQty,
   },
   throwError,
 ) {
-  const unlockedDraftReserved = getNoQtyUnlockedDraftQtyForItem(so, itemId);
-  const replaceableDraftQty = getNoQtyUnlockedDraftQtyForItemCycle(so, cycleId, itemId);
+  const unlockedDraftReserved =
+    unlockedDraftReservedQty != null ? num(unlockedDraftReservedQty) : getNoQtyUnlockedDraftQtyForItem(so, itemId);
+  const replaceable =
+    replaceableDraftQty != null
+      ? num(replaceableDraftQty)
+      : getNoQtyUnlockedDraftQtyForItemCycle(so, cycleId, itemId);
   const fifo = computeNoQtyFifoPrepareSlicesForItem({
     so,
     itemId,
@@ -153,7 +161,7 @@ function assertNoQtyDispatchLockQtyAllowed(
     postCycleMap,
     usableStock,
     unlockedDraftReservedQty: unlockedDraftReserved,
-    replaceableDraftQty: Math.max(replaceableDraftQty, qty),
+    replaceableDraftQty: Math.max(replaceable, qty),
     demandByCycleItem,
   });
   if (fifo.totalAvailable + REPORT_QUEUE_EPS < qty) {
@@ -207,6 +215,8 @@ function resolveNoQtyFifoLockEligibility({
   cyclesSorted,
   onHandUsable,
   noQtyQcMaps,
+  demandByCycleItem,
+  unlockedDraftReservedQty,
 }) {
   const eps = REPORT_QUEUE_EPS;
   const cycleIdNorm = normalizePositiveCycleId(cycleId);
@@ -221,7 +231,10 @@ function resolveNoQtyFifoLockEligibility({
     cyclesSorted?.length > 0
       ? cyclesSorted
       : deriveNoQtyCyclesSortedForItem(soId, itemId, noQtyQcMaps, soStub.dispatch, cycleId);
-  const unlockedDraftReserved = getNoQtyUnlockedDraftQtyForItem(soStub, itemId);
+  const unlockedDraftReserved =
+    unlockedDraftReservedQty != null
+      ? num(unlockedDraftReservedQty)
+      : getNoQtyUnlockedDraftQtyForItem(soStub, itemId);
   const replaceableDraftQty = getNoQtyUnlockedDraftQtyForItemCycle(soStub, cycleIdNorm, itemId);
   const fifo = computeNoQtyFifoPrepareSlicesForItem({
     so: soStub,
@@ -234,6 +247,7 @@ function resolveNoQtyFifoLockEligibility({
     usableStock: onHandUsable,
     unlockedDraftReservedQty: unlockedDraftReserved,
     replaceableDraftQty: Math.max(replaceableDraftQty, draftQty),
+    demandByCycleItem,
   });
   if (fifo.totalAvailable + eps < draftQty) {
     return { state: "WAITING_STOCK", reason: "Insufficient usable stock for dispatch." };

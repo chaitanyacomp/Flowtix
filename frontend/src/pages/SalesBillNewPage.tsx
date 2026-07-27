@@ -5,6 +5,19 @@ import { Input } from "../components/ui/input";
 import { PageContainer, PageSmartBackLink, StickyWorkspaceHead } from "../components/PageHeader";
 import { apiFetch } from "../services/api";
 import { blockNumericStepperKey, defaultBillNow, isDispatchSelectable, selectAllEligible, selectAllState } from "../lib/salesBillSelection";
+import {
+  isSalesBillTransportDetailsApplicable,
+  isSalesBillTransporterRequired,
+  normalizeTransportationAmount,
+  sanitizeTransportationChargeDraft,
+  validateSalesBillTransportationInput,
+} from "../lib/salesBillTransporterValidation";
+import { SalesBillTransporterSelect, type TransporterOption } from "../components/sales/SalesBillTransporterSelect";
+import { SupplierMasterForm } from "../components/erp/SupplierMasterForm";
+import { PartyMasterModal } from "../components/erp/partyMasterUi";
+import { useAuth } from "../hooks/useAuth";
+import type { StateRow } from "../lib/gstinValidation";
+import { cn } from "../lib/utils";
 
 type DispatchRow = {
   dispatchId: number; dispatchNo: string; dispatchDate: string; salesOrderId: number;
@@ -16,9 +29,20 @@ type DispatchRow = {
 const today = () => new Date().toISOString().slice(0, 10);
 const qty = (value: unknown) => Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 3 });
 
+type TransportFieldError = {
+  transporter?: string;
+  referenceNo?: string;
+  vehicleNumber?: string;
+  amount?: string;
+};
+
 export function SalesBillNewPage() {
   const navigate = useNavigate();
   const [sp] = useSearchParams();
+  const { user } = useAuth();
+  // Match backend supplier write roles (ADMIN / STORE); not PURCHASE-only master write.
+  const canAddTransporter = ["ADMIN", "STORE"].includes(String(user?.role || ""));
+
   const [seedRows, setSeedRows] = React.useState<DispatchRow[]>([]);
   const [rows, setRows] = React.useState<DispatchRow[]>([]);
   const [soId, setSoId] = React.useState(Number(sp.get("salesOrderId") || 0));
@@ -27,12 +51,40 @@ export function SalesBillNewPage() {
   const [billDate, setBillDate] = React.useState(today);
   const [transportAmount, setTransportAmount] = React.useState("0");
   const [chargedBy, setChargedBy] = React.useState<"OUR_COMPANY" | "TRANSPORTER_DIRECTLY">("OUR_COMPANY");
-  const [transporterName, setTransporterName] = React.useState("");
+  const [transporterId, setTransporterId] = React.useState<number | null>(null);
+  const [transporterName, setTransporterName] = React.useState<string | null>(null);
   const [referenceNo, setReferenceNo] = React.useState("");
+  const [vehicleNumber, setVehicleNumber] = React.useState("");
   const [remarks, setRemarks] = React.useState("");
+  const [transporters, setTransporters] = React.useState<TransporterOption[]>([]);
+  const [states, setStates] = React.useState<StateRow[]>([]);
+  const [addTransporterOpen, setAddTransporterOpen] = React.useState(false);
+  const [fieldError, setFieldError] = React.useState<TransportFieldError>({});
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const selectAllRef = React.useRef<HTMLInputElement>(null);
+
+  const transporterRequired = isSalesBillTransporterRequired({
+    amount: transportAmount,
+    chargedBy,
+  });
+  const vehicleRequired = isSalesBillTransportDetailsApplicable({
+    amount: transportAmount,
+    chargedBy,
+  });
+
+  const loadTransporters = React.useCallback(() => {
+    return apiFetch<TransporterOption[]>("/api/suppliers?isTransporter=true&isActive=true")
+      .then((data) => setTransporters(Array.isArray(data) ? data : []))
+      .catch(() => setTransporters([]));
+  }, []);
+
+  React.useEffect(() => {
+    void loadTransporters();
+    void apiFetch<StateRow[]>("/api/states")
+      .then((data) => setStates(Array.isArray(data) ? data : []))
+      .catch(() => setStates([]));
+  }, [loadTransporters]);
 
   React.useEffect(() => {
     void apiFetch<DispatchRow[]>("/api/sales-bills/eligible-dispatches").then((data) => {
@@ -75,11 +127,44 @@ export function SalesBillNewPage() {
     if (!allocations.length || allocations.some((row) => !(row.billNowQty > 0))) return setError("Select dispatches and enter a Bill Now quantity greater than zero.");
     const over = chosen.find((row) => Number(billNow[row.dispatchId]) > Number(row.availableQty || 0));
     if (over) return setError(`Bill Now exceeds available quantity for ${over.dispatchNo}.`);
+
+    const transportGate = validateSalesBillTransportationInput({
+      amount: transportAmount,
+      chargedBy,
+      transporterId,
+      referenceNo,
+      vehicleNumber,
+    });
+    if (!transportGate.ok) {
+      setFieldError({
+        amount: transportGate.field === "amount" ? transportGate.message : undefined,
+        transporter: transportGate.field === "transporter" ? transportGate.message : undefined,
+        referenceNo: transportGate.field === "referenceNo" ? transportGate.message : undefined,
+        vehicleNumber: transportGate.field === "vehicleNumber" ? transportGate.message : undefined,
+      });
+      setError(transportGate.message);
+      return;
+    }
+    const amountGate = normalizeTransportationAmount(transportAmount);
+    if (!amountGate.ok) {
+      setFieldError({ amount: amountGate.message });
+      setError(amountGate.message);
+      return;
+    }
+    setFieldError({});
     setBusy(true); setError(null);
     try {
       const bill = await apiFetch<{ id: number }>("/api/sales-bills/from-sales-order", { method: "POST", body: JSON.stringify({
         salesOrderId: soId, billDate, allocations,
-        transportation: { amount: Number(transportAmount || 0), chargedBy, transporterName: transporterName || null, referenceNo: referenceNo || null, remarks: remarks || null },
+        transportation: {
+          amount: amountGate.value,
+          chargedBy,
+          transporterId,
+          transporterName: transporterName || null,
+          referenceNo: referenceNo || null,
+          vehicleNumber: vehicleNumber || null,
+          remarks: remarks || null,
+        },
       }) });
       navigate(`/sales-bills/${bill.id}`);
     } catch (e) { setError(e instanceof Error ? e.message : "Unable to create Sales Bill draft."); }
@@ -118,14 +203,121 @@ export function SalesBillNewPage() {
         <td className="px-2 py-1.5">{row.unit}</td></tr>)}</tbody></table></div>
     </section>
     <section className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-      <div className="mb-2 text-sm font-semibold">Additional charges</div><div className="grid gap-3 md:grid-cols-3">
-        <label className="text-xs font-semibold">Transportation charges<Input className="mt-1" type="text" inputMode="decimal" value={transportAmount} onWheel={(e) => e.currentTarget.blur()} onKeyDown={(e) => { if (blockNumericStepperKey(e.key)) e.preventDefault(); }} onChange={(e) => setTransportAmount(e.target.value)} /></label>
-        <label className="text-xs font-semibold">Charged by<select className="mt-1 h-9 w-full rounded border border-slate-300 px-2" value={chargedBy} onChange={(e) => setChargedBy(e.target.value as typeof chargedBy)}><option value="OUR_COMPANY">Our Company</option><option value="TRANSPORTER_DIRECTLY">Transporter Directly</option></select></label>
-        <label className="text-xs font-semibold">Transporter name<Input className="mt-1" value={transporterName} onChange={(e) => setTransporterName(e.target.value)} /></label>
-        <label className="text-xs font-semibold">LR / vehicle / reference<Input className="mt-1" value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} /></label>
-        <label className="text-xs font-semibold md:col-span-2">Remarks<Input className="mt-1" value={remarks} onChange={(e) => setRemarks(e.target.value)} /></label>
-      </div>{chargedBy === "OUR_COMPANY" ? <p className="mt-2 text-xs text-slate-600">Transportation GST is allocated proportionately across invoice items.</p> : <p className="mt-2 text-xs text-amber-700">The transporter will bill the customer separately; this amount is excluded from this invoice.</p>}
+      <div className="mb-2 text-sm font-semibold">Additional charges</div>
+      <div className="grid gap-3 md:grid-cols-3">
+        <label className="text-xs font-semibold">
+          Transportation charges
+          <Input
+            className={cn("mt-1", fieldError.amount && "border-red-400")}
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
+            value={transportAmount}
+            onWheel={(e) => e.currentTarget.blur()}
+            onKeyDown={(e) => { if (blockNumericStepperKey(e.key)) e.preventDefault(); }}
+            onChange={(e) => {
+              const next = sanitizeTransportationChargeDraft(e.target.value);
+              if (next == null) return;
+              setTransportAmount(next);
+              setFieldError((f) => ({ ...f, amount: undefined, transporter: undefined, vehicleNumber: undefined }));
+            }}
+            onBlur={() => {
+              const gate = normalizeTransportationAmount(transportAmount);
+              if (gate.ok) setTransportAmount(String(gate.value));
+            }}
+            aria-invalid={Boolean(fieldError.amount)}
+          />
+          {fieldError.amount ? (
+            <span className="mt-1 block text-[11px] font-medium text-red-700">{fieldError.amount}</span>
+          ) : null}
+        </label>
+        <label className="text-xs font-semibold">Charged by
+          <select
+            className="mt-1 h-9 w-full rounded border border-slate-300 px-2"
+            value={chargedBy}
+            onChange={(e) => {
+              setChargedBy(e.target.value as typeof chargedBy);
+              setFieldError((f) => ({ ...f, transporter: undefined, vehicleNumber: undefined }));
+            }}
+          >
+            <option value="OUR_COMPANY">Our Company</option>
+            <option value="TRANSPORTER_DIRECTLY">Transporter Directly</option>
+          </select>
+        </label>
+        <SalesBillTransporterSelect
+          options={transporters}
+          valueId={transporterId}
+          required={transporterRequired}
+          error={fieldError.transporter ?? null}
+          canAdd={canAddTransporter}
+          onAdd={() => setAddTransporterOpen(true)}
+          onChange={(id, name) => {
+            setTransporterId(id);
+            setTransporterName(name);
+            setFieldError((f) => ({ ...f, transporter: undefined }));
+          }}
+        />
+        <label className="text-xs font-semibold">
+          LR / Transport Reference
+          <Input
+            className={cn("mt-1", fieldError.referenceNo && "border-red-400")}
+            value={referenceNo}
+            onChange={(e) => {
+              setReferenceNo(e.target.value);
+              setFieldError((f) => ({ ...f, referenceNo: undefined }));
+            }}
+            maxLength={64}
+            aria-invalid={Boolean(fieldError.referenceNo)}
+          />
+          {fieldError.referenceNo ? (
+            <span className="mt-1 block text-[11px] font-medium text-red-700">{fieldError.referenceNo}</span>
+          ) : null}
+        </label>
+        <label className="text-xs font-semibold">
+          Vehicle Number{vehicleRequired ? " *" : ""}
+          <Input
+            className={cn("mt-1 uppercase", fieldError.vehicleNumber && "border-red-400")}
+            value={vehicleNumber}
+            placeholder={vehicleRequired ? "e.g. MH 12 AB 1234" : "Optional"}
+            onChange={(e) => {
+              setVehicleNumber(e.target.value);
+              setFieldError((f) => ({ ...f, vehicleNumber: undefined }));
+            }}
+            maxLength={32}
+            aria-invalid={Boolean(fieldError.vehicleNumber)}
+            aria-required={vehicleRequired}
+          />
+          {fieldError.vehicleNumber ? (
+            <span className="mt-1 block text-[11px] font-medium text-red-700">{fieldError.vehicleNumber}</span>
+          ) : null}
+        </label>
+        <label className="text-xs font-semibold md:col-span-1">Remarks
+          <Input className="mt-1" value={remarks} onChange={(e) => setRemarks(e.target.value)} />
+        </label>
+      </div>
+      {chargedBy === "OUR_COMPANY" ? (
+        <p className="mt-2 text-xs text-slate-600">Transportation GST is allocated proportionately across invoice items.</p>
+      ) : (
+        <p className="mt-2 text-xs text-amber-700">The transporter will bill the customer separately; this amount is excluded from this invoice.</p>
+      )}
     </section>
-    <div className="sticky bottom-0 flex items-center justify-between rounded-lg border border-slate-200 bg-white/95 px-3 py-2 shadow-lg backdrop-blur"><span className="text-sm font-semibold">{chosen.length} dispatches · {qty(billQty)} total quantity</span><Button disabled={busy || !chosen.length} onClick={() => void createDraft()}>{busy ? "Creating…" : "Create Sales Bill Draft"}</Button></div>
+    <div className="sticky bottom-0 flex items-center justify-between rounded-lg border border-slate-200 bg-white/95 px-3 py-2 shadow-lg backdrop-blur">
+      <span className="text-sm font-semibold">{chosen.length} dispatches · {qty(billQty)} total quantity</span>
+      <Button disabled={busy || !chosen.length} onClick={() => void createDraft()}>{busy ? "Creating…" : "Create Sales Bill Draft"}</Button>
+    </div>
+
+    {addTransporterOpen ? (
+      <PartyMasterModal title="Add Transporter" onClose={() => setAddTransporterOpen(false)}>
+        <SupplierMasterForm
+          states={states}
+          defaultIsTransporter
+          onCancel={() => setAddTransporterOpen(false)}
+          onSaved={async () => {
+            setAddTransporterOpen(false);
+            await loadTransporters();
+          }}
+        />
+      </PartyMasterModal>
+    ) : null}
   </PageContainer>;
 }

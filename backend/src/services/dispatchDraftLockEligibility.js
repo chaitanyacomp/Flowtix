@@ -147,6 +147,8 @@ function resolveNoQtyDispatchDraftLockEligibility(p) {
     cyclesSorted: noQtyCyclesSorted,
     onHandUsable,
     noQtyQcMaps,
+    demandByCycleItem: p.demandByCycleItem ?? null,
+    unlockedDraftReservedQty: p.unlockedDraftReservedQty,
   });
 }
 
@@ -178,6 +180,9 @@ function resolveDispatchDraftLockEligibility(ctx) {
       cycleId: ctx.cycleId,
       onHandUsable,
       noQtyQcMaps: ctx.noQtyQcMaps,
+      noQtyCyclesSorted: ctx.noQtyCyclesSorted,
+      demandByCycleItem: ctx.demandByCycleItem,
+      unlockedDraftReservedQty: ctx.unlockedDraftReservedByItemId?.get?.(Number(ctx.itemId)),
     });
   }
 
@@ -210,6 +215,9 @@ function buildDispatchDraftLockEligibilityContext(so, deps) {
     qcAcceptedMap: deps.qcAcceptedMap,
     replacementQcGrossBySoItem: deps.replacementQcGrossBySoItem,
     noQtyQcMaps: deps.noQtyQcMaps ?? null,
+    noQtyCyclesSorted: deps.noQtyCyclesSorted ?? null,
+    demandByCycleItem: deps.demandByCycleItem ?? null,
+    unlockedDraftReservedByItemId: deps.unlockedDraftReservedByItemId ?? null,
   };
 }
 

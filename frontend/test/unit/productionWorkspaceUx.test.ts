@@ -38,12 +38,33 @@ describe("deriveProductionConciseRmLabel", () => {
     ).toBe("READY");
   });
 
-  it("returns WAITING RM when ready gate has no producible RM cap", () => {
+  it("returns COMPLETE when ready gate has no producible RM cap and plan is fully produced", () => {
     expect(
       deriveProductionConciseRmLabel({
         bomMissing: false,
         gate: "READY_FOR_PRODUCTION",
         productionAllowedNowQty: 0,
+        maxAdditionalQty: 0,
+        woQty: 22,
+        woRemainingQty: 0,
+        approvedProducedQty: 22,
+        rmSupportedCumulativeCapacityQty: 22,
+        rmLines: [{ status: "READY" }],
+        workOrderId: 1,
+      } as never),
+    ).toBe("COMPLETE");
+  });
+
+  it("returns WAITING RM when ready gate has no producible RM cap but target remaining exists", () => {
+    expect(
+      deriveProductionConciseRmLabel({
+        bomMissing: false,
+        gate: "READY_FOR_PRODUCTION",
+        productionAllowedNowQty: 0,
+        woQty: 22,
+        woRemainingQty: 8,
+        approvedProducedQty: 14,
+        rmSupportedCumulativeCapacityQty: 14,
         rmLines: [{ status: "READY" }],
         workOrderId: 1,
       } as never),

@@ -25,6 +25,10 @@ const {
 } = require("./salesBillEligibility");
 const { shipToFromDispatchOrSo } = require("./dispatchDeliveryLocation");
 const { calculateSalesBillSnapshot } = require("./salesBillCalculationService");
+const {
+  validateSalesBillTransportationInput,
+  trimNullable,
+} = require("./salesBillTransporterValidation");
 
 function round2(n) {
   return Math.round(Number(n) * 100) / 100;
@@ -154,6 +158,7 @@ async function deriveSalesRateForSoItem(tx, so, itemId) {
 const billInclude = {
   customer: { include: { stateRef: { select: { id: true, stateName: true, stateCode: true } } } },
   cycle: { select: { id: true, cycleNo: true } },
+  transporter: { select: { id: true, name: true, isActive: true, isTransporter: true } },
   dispatch: {
     include: {
       cycle: { select: { id: true, cycleNo: true } },
@@ -166,6 +171,61 @@ const billInclude = {
   dispatchAllocations: { include: { dispatch: { include: { item: true } } }, orderBy: { id: "asc" } },
   receipts: { orderBy: { id: "asc" }, include: { createdBy: { select: { id: true, name: true } } } },
 };
+
+/**
+ * Resolve transporter master FK + name snapshot. Never trusts display name alone for new selection.
+ * Legacy bills may keep name-only when allowLegacyNameOnly and no transporterId is sent.
+ */
+async function resolveSalesBillTransporterForSave(tx, transportation = {}, opts = {}) {
+  const allowLegacyNameOnly = opts.allowLegacyNameOnly === true;
+  const allowLegacyVehicleOmit = opts.allowLegacyVehicleOmit === true;
+  const legacyTransporterName = trimNullable(opts.legacyTransporterName);
+  const gate = validateSalesBillTransportationInput({
+    amount: transportation.amount,
+    chargedBy: transportation.chargedBy,
+    transporterId: transportation.transporterId,
+    transporterName: allowLegacyNameOnly ? legacyTransporterName || transportation.transporterName : transportation.transporterName,
+    referenceNo: transportation.referenceNo,
+    vehicleNumber: transportation.vehicleNumber,
+    allowLegacyNameOnly,
+    allowLegacyVehicleOmit,
+  });
+  if (!gate.ok) throw friendlyError(gate.message, 400);
+
+  const value = gate.value;
+  const remarks = trimNullable(transportation.remarks);
+
+  if (value.transporterId == null) {
+    return {
+      amount: value.amount,
+      chargedBy: value.chargedBy,
+      transporterId: null,
+      // Legacy bills: keep the stored name snapshot; never accept a free-text replacement.
+      transporterName: allowLegacyNameOnly ? legacyTransporterName || value.transporterName : null,
+      referenceNo: value.referenceNo,
+      vehicleNumber: value.vehicleNumber,
+      remarks,
+    };
+  }
+
+  const master = await tx.supplier.findUnique({
+    where: { id: value.transporterId },
+    select: { id: true, name: true, isActive: true, isTransporter: true },
+  });
+  if (!master || master.isActive === false || master.isTransporter !== true) {
+    throw friendlyError("Select an active transporter from the master list.", 400);
+  }
+
+  return {
+    amount: value.amount,
+    chargedBy: value.chargedBy,
+    transporterId: master.id,
+    transporterName: String(master.name || "").trim() || null,
+    referenceNo: value.referenceNo,
+    vehicleNumber: value.vehicleNumber,
+    remarks,
+  };
+}
 
 async function getCompanyState(tx) {
   const row = await tx.appSetting.findUnique({
@@ -806,7 +866,9 @@ async function finalizeBill(prisma, billId, userId) {
         billId,
         bill.dispatchAllocations.map((row) => ({ dispatchId: row.dispatchId, allocatedQty: Number(row.allocatedQty) })),
         { amount: bill.transportationAmount, chargedBy: bill.transportationChargedBy,
-          transporterName: bill.transporterName, referenceNo: bill.transportationReferenceNo, remarks: bill.transportationRemarks },
+          transporterId: bill.transporterId, transporterName: bill.transporterName,
+          referenceNo: bill.transportationReferenceNo, vehicleNumber: bill.vehicleNumber,
+          remarks: bill.transportationRemarks },
         userId,
       );
       bill = await tx.salesBill.findUnique({ where: { id: billId }, include: { ...billInclude, lines: { orderBy: { id: "asc" }, include: { item: true } } } });
@@ -1389,6 +1451,35 @@ async function rebuildDraftFromAllocations(tx, billId, requestedAllocations, tra
   const bill = await tx.salesBill.findUnique({ where: { id: billId }, include: billInclude });
   if (!bill) throw friendlyError("Sales bill not found.", 404);
   if (bill.status !== "DRAFT") throw friendlyError("Only draft Sales Bills can be edited.", 409);
+
+  const transportPayload = {
+    amount: transportation.amount !== undefined ? transportation.amount : bill.transportationAmount,
+    chargedBy: transportation.chargedBy !== undefined ? transportation.chargedBy : bill.transportationChargedBy,
+    transporterId:
+      transportation.transporterId !== undefined ? transportation.transporterId : bill.transporterId,
+    transporterName:
+      transportation.transporterName !== undefined ? transportation.transporterName : bill.transporterName,
+    referenceNo:
+      transportation.referenceNo !== undefined ? transportation.referenceNo : bill.transportationReferenceNo,
+    vehicleNumber:
+      transportation.vehicleNumber !== undefined ? transportation.vehicleNumber : bill.vehicleNumber,
+    remarks: transportation.remarks !== undefined ? transportation.remarks : bill.transportationRemarks,
+  };
+  const allowLegacyNameOnly =
+    !(Number(transportPayload.transporterId) > 0) &&
+    !(Number(bill.transporterId) > 0) &&
+    Boolean(trimNullable(bill.transporterName));
+  // Legacy bills may only have combined reference text and no split vehicleNumber.
+  const allowLegacyVehicleOmit =
+    !trimNullable(transportPayload.vehicleNumber) &&
+    !trimNullable(bill.vehicleNumber) &&
+    Boolean(trimNullable(bill.transportationReferenceNo));
+  const resolvedTransport = await resolveSalesBillTransporterForSave(tx, transportPayload, {
+    allowLegacyNameOnly,
+    allowLegacyVehicleOmit,
+    legacyTransporterName: bill.transporterName,
+  });
+
   const normalized = (requestedAllocations || []).map((row) => ({ dispatchId: Number(row.dispatchId), allocatedQty: Number(row.billNowQty ?? row.allocatedQty) }));
   if (!normalized.length) throw friendlyError("Select at least one dispatch allocation.");
   if (normalized.some((row) => !(row.dispatchId > 0) || !(row.allocatedQty > 0))) throw friendlyError("Bill Now quantity must be greater than zero.");
@@ -1441,7 +1532,11 @@ async function rebuildDraftFromAllocations(tx, billId, requestedAllocations, tra
       rate, discountRate: 0, gstRate, taxTreatment: "GOODS", rateEffectiveFrom: contract?.effectiveFrom ?? null,
     });
   }
-  const snapshot = calculateSalesBillSnapshot({ allocationRows, transportation: transportInputFromBill(bill, transportation), intraState });
+  const snapshot = calculateSalesBillSnapshot({
+    allocationRows,
+    transportation: { amount: resolvedTransport.amount, chargedBy: resolvedTransport.chargedBy },
+    intraState,
+  });
   await tx.salesBillDispatchAllocation.deleteMany({ where: { salesBillId: billId } });
   await tx.salesBillLine.deleteMany({ where: { salesBillId: billId } });
   for (const line of snapshot.lines) {
@@ -1469,9 +1564,11 @@ async function rebuildDraftFromAllocations(tx, billId, requestedAllocations, tra
     transportationChargedBy: snapshot.transportation.chargedBy,
     transportationAllocationMethod: snapshot.transportation.allocationMethod,
     transportationTaxableValue: totals.transportationTaxableValue.toString(),
-    transporterName: transportation.transporterName === undefined ? bill.transporterName : (transportation.transporterName || null),
-    transportationReferenceNo: transportation.referenceNo === undefined ? bill.transportationReferenceNo : (transportation.referenceNo || null),
-    transportationRemarks: transportation.remarks === undefined ? bill.transportationRemarks : (transportation.remarks || null),
+    transporterId: resolvedTransport.transporterId,
+    transporterName: resolvedTransport.transporterName,
+    transportationReferenceNo: resolvedTransport.referenceNo,
+    vehicleNumber: resolvedTransport.vehicleNumber,
+    transportationRemarks: resolvedTransport.remarks,
     totalBasic: totals.totalBasic.toString(), totalCgst: totals.totalCgst.toString(), totalSgst: totals.totalSgst.toString(),
     totalIgst: totals.totalIgst.toString(), totalTax: totals.totalTax.toString(), roundOffAmount: totals.roundOffAmount.toString(),
     netAmount: totals.netAmount.toString(), calculationVersion: "GST_COMPONENT_BUCKET_V4", calculatedAt: new Date(), calculatedById: actorUserId,
@@ -1539,4 +1636,6 @@ module.exports = {
   updateSalesBillPaymentTracking,
   addSalesBillReceipt,
   deleteSalesBillReceipt,
+  /** @internal unit tests */
+  resolveSalesBillTransporterForSave,
 };

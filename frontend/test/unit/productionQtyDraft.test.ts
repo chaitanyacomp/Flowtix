@@ -3,6 +3,11 @@ import {
   parsePositiveQuantityDraft,
   sanitizeProductionQtyDraftInput,
 } from "../../src/lib/quantityDraft";
+import {
+  formatProductionOperatorUnitLabel,
+  formatProductionQtyForInput,
+  productionOperatorQtyPlaceholder,
+} from "../../src/lib/productionOperatorUx";
 
 describe("production qty draft", () => {
   it("sanitizes leading zeros without blocking normal entry", () => {
@@ -16,5 +21,51 @@ describe("production qty draft", () => {
     expect(parsePositiveQuantityDraft(sanitizeProductionQtyDraftInput("2000"))).toBe(2000);
     expect(parsePositiveQuantityDraft(sanitizeProductionQtyDraftInput("0000"))).toBe(null);
     expect(parsePositiveQuantityDraft(sanitizeProductionQtyDraftInput("2500"))).toBe(2500);
+  });
+
+  it("quick-fill 1500 and 1571 store raw numbers accepted by validation", () => {
+    for (const n of [1500, 1571]) {
+      const filled = formatProductionQtyForInput(n, "Nos");
+      expect(filled).toBe(String(n));
+      expect(filled).not.toMatch(/,/);
+      expect(filled.toLowerCase()).not.toContain("nos");
+      expect(parsePositiveQuantityDraft(filled)).toBe(n);
+      expect(parsePositiveQuantityDraft(sanitizeProductionQtyDraftInput(filled, "Nos"))).toBe(n);
+    }
+  });
+
+  it("rejects formatted display strings with commas and unit text", () => {
+    expect(sanitizeProductionQtyDraftInput("1,571 Nos", "Nos")).toBe("1571");
+    expect(parsePositiveQuantityDraft(sanitizeProductionQtyDraftInput("1,571 Nos", "Nos"))).toBe(1571);
+    expect(sanitizeProductionQtyDraftInput("1,500 nos", "Nos")).toBe("1500");
+    expect(sanitizeProductionQtyDraftInput("-12", "Nos")).toBe("12");
+    expect(sanitizeProductionQtyDraftInput("12a", "Nos")).toBe("12");
+  });
+
+  it("allows decimal entry when UOM supports decimals", () => {
+    expect(sanitizeProductionQtyDraftInput("12.75", "Meter")).toBe("12.75");
+    expect(sanitizeProductionQtyDraftInput("0.5", "Kg")).toBe("0.5");
+    expect(sanitizeProductionQtyDraftInput("2.", "Meter")).toBe("2.");
+    expect(parsePositiveQuantityDraft(sanitizeProductionQtyDraftInput("12.75", "Meter"))).toBe(12.75);
+    // Integer UOM ignores decimal portion (does not glue fractional digits)
+    expect(sanitizeProductionQtyDraftInput("12.75", "Nos")).toBe("12");
+  });
+
+  it("shows UOM once as fixed suffix label, not inside the input value", () => {
+    const inputValue = formatProductionQtyForInput(1571, "Nos");
+    const suffix = formatProductionOperatorUnitLabel("Nos");
+    expect(inputValue).toBe("1571");
+    expect(suffix).toBe("Nos");
+    expect(`${inputValue} ${suffix}`.match(/Nos/gi)?.length).toBe(1);
+    expect(productionOperatorQtyPlaceholder("Nos")).toBe("0");
+    expect(productionOperatorQtyPlaceholder("Meter")).toBe("0.000");
+  });
+
+  it("manual entry enables successful positive-qty submission parse", () => {
+    const typed = sanitizeProductionQtyDraftInput("1571", "Nos");
+    const parsed = parsePositiveQuantityDraft(typed);
+    expect(parsed).toBe(1571);
+    // Simulated API body uses the parsed number, not the display string
+    expect(JSON.stringify({ producedQty: parsed })).toBe('{"producedQty":1571}');
   });
 });

@@ -626,6 +626,8 @@ async function loadCandidateSoPlanningMrs(db, filters) {
     sourceType: { in: regularSoProcurementSourceTypes() },
     status: { in: OPEN_MR_STATUSES },
     salesOrderId: { not: null },
+    // Authoritative flow isolation: Regular SO MR path never includes NO_QTY SOs.
+    salesOrder: { orderType: { in: ["NORMAL", "REPLACEMENT"] } },
   };
   if (filters.materialRequirementId) where.id = filters.materialRequirementId;
   if (filters.salesOrderId) where.salesOrderId = filters.salesOrderId;
@@ -767,11 +769,15 @@ async function loadCandidateSoPlanningShortageSalesOrders(db, filters, existingM
 
   if (filters.salesOrderId) {
     if (existingMrSalesOrderIds.has(filters.salesOrderId)) return [];
-    return db.salesOrder.findMany({
-      where: { id: filters.salesOrderId },
+    const rows = await db.salesOrder.findMany({
+      where: {
+        id: filters.salesOrderId,
+        orderType: "NORMAL",
+      },
       take: 1,
       include: SO_PLANNING_SHORTAGE_INCLUDE,
     });
+    return rows;
   }
 
   const rows = await db.salesOrder.findMany({
@@ -2032,6 +2038,7 @@ function buildQueueRow({
     queueType,
     salesOrderId: wo.salesOrderId,
     salesOrderNo: wo.salesOrder?.docNo ?? null,
+    orderType: wo.salesOrder?.orderType ?? null,
     workOrderId: wo.id,
     workOrderNo: wo.docNo ?? null,
     workOrderReleased: Boolean(wo.materialReleasedToProductionAt),

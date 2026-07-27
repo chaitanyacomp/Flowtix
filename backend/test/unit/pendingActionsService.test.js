@@ -1172,6 +1172,89 @@ describe("pendingActionsService", () => {
     assert.match(action.href, /returnTo=pending-actions/);
   });
 
+  it("NO_QTY SO/RS MR never maps to Create Purchase Request — Regular SO (flow isolation)", () => {
+    const noQtySalesOrderMr = mapProcurementQueueRowToPurchasePendingAction({
+      materialRequirementId: 501,
+      docNo: "MR-26-0501",
+      salesOrderId: 24,
+      salesOrderDocNo: "SO-26-0002",
+      sourceType: "SALES_ORDER",
+      procurementDemandPool: "REGULAR_SO",
+      orderType: "NO_QTY",
+      salesOrderOrderType: "NO_QTY",
+      operationalKey: "PROCUREMENT_PENDING",
+      nextActionKey: "CREATE_PR",
+      totalShortageQty: 9000,
+      createdAt: "2026-06-01T10:00:00.000Z",
+    });
+    assert.equal(noQtySalesOrderMr, null);
+
+    const noQtyWoPlanningMr = mapProcurementQueueRowToPurchasePendingAction({
+      materialRequirementId: 502,
+      docNo: "MR-26-0502",
+      salesOrderId: 24,
+      salesOrderDocNo: "SO-26-0002",
+      sourceType: "WORK_ORDER_PLANNING",
+      orderType: "NO_QTY",
+      operationalKey: "PROCUREMENT_PENDING",
+      nextActionKey: "CREATE_PR",
+      createdAt: "2026-06-01T10:00:00.000Z",
+    });
+    assert.equal(noQtyWoPlanningMr, null);
+
+    // MPRS Create PR remains valid for NO_QTY after Monthly Plan release — never Regular SO label.
+    const noQtyMonthlyPlanMr = mapProcurementQueueRowToPurchasePendingAction({
+      materialRequirementId: 503,
+      docNo: "MR-26-0503",
+      salesOrderId: 24,
+      salesOrderDocNo: "SO-26-0002",
+      sourceType: "MONTHLY_PLAN",
+      procurementDemandPool: "MPRS",
+      orderType: "NO_QTY",
+      operationalKey: "PROCUREMENT_PENDING",
+      nextActionKey: "CREATE_PR",
+      createdAt: "2026-06-01T10:00:00.000Z",
+    });
+    assert.ok(noQtyMonthlyPlanMr);
+    assert.equal(noQtyMonthlyPlanMr.action, "Create Purchase Request");
+    assert.notEqual(noQtyMonthlyPlanMr.action, "Create Purchase Request — Regular SO");
+    assert.match(noQtyMonthlyPlanMr.href, /demandPool=MPRS/);
+  });
+
+  it("Regular SO Create PR queue count ignores NO_QTY rows", () => {
+    const queueRows = [
+      {
+        materialRequirementId: 601,
+        docNo: "MR-REG",
+        sourceType: "SALES_ORDER",
+        procurementDemandPool: "REGULAR_SO",
+        orderType: "NORMAL",
+        operationalKey: "PROCUREMENT_PENDING",
+        nextActionKey: "CREATE_PR",
+        createdAt: "2026-06-01T10:00:00.000Z",
+      },
+      {
+        materialRequirementId: 602,
+        docNo: "MR-NQ",
+        sourceType: "SALES_ORDER",
+        procurementDemandPool: "REGULAR_SO",
+        orderType: "NO_QTY",
+        salesOrderOrderType: "NO_QTY",
+        salesOrderId: 24,
+        salesOrderDocNo: "SO-26-0002",
+        operationalKey: "PROCUREMENT_PENDING",
+        nextActionKey: "CREATE_PR",
+        createdAt: "2026-06-01T11:00:00.000Z",
+      },
+    ];
+    const purchaseActions = queueRows
+      .map((row) => mapProcurementQueueRowToPurchasePendingAction(row))
+      .filter(Boolean);
+    assert.equal(purchaseActions.length, 1);
+    assert.equal(purchaseActions[0].action, "Create Purchase Request — Regular SO");
+    assert.equal(purchaseActions[0].id, "procurement:create-pr:mr:601");
+  });
+
   it("mapProcurementQueueRowToPurchasePendingAction maps PR pending PO to Prepare RM PO", () => {
     const action = mapProcurementQueueRowToPurchasePendingAction({
       materialRequirementId: 99,
@@ -1851,7 +1934,7 @@ describe("pendingActionsService", () => {
     }
   });
 
-  it("fetchStoreNoQtyMonthlyPlanningPendingActions emits Monthly Planning Pending when no period plan exists", async () => {
+  it("fetchStoreNoQtyMonthlyPlanningPendingActions emits Prepare Monthly Planning — NO_QTY when no period plan exists", async () => {
     await withMonthlyPlanningEnabled(true, async () => {
       const executionPath = require.resolve("../../src/services/requirementSheetExecutionService");
       const gatePath = require.resolve("../../src/services/noQtyMonthlyPlanningGateService");
@@ -1865,10 +1948,14 @@ describe("pendingActionsService", () => {
         readyToPlaceWo: false,
         processStageKey: "NO_QTY_REQUIREMENT_READY",
         requirementSheetId: 18,
+        requirementSheetDocNo: "RS-26-0001",
+        rsBalanceQty: 15000,
+        skipMonthlyPlanning: false,
+        readinessStatus: "AWAITING_PROCUREMENT",
       });
       require(gatePath).assessNoQtyMonthlyPlanningGate = async () => ({
         gate: "INITIAL_PLAN_REQUIRED",
-        action: "Monthly Planning Pending",
+        action: "Prepare Monthly Planning — NO_QTY",
         plan: null,
       });
 
@@ -1876,12 +1963,13 @@ describe("pendingActionsService", () => {
       const { fetchStoreNoQtyMonthlyPlanningPendingActions: fetchMonthlyPlanning } = require(pendingPath);
       const db = {
         salesOrder: {
-          findMany: async () => [{ id: 24, docNo: "SO-26-0000", updatedAt: new Date("2026-06-01T00:00:00Z") }],
+          findMany: async () => [{ id: 24, docNo: "SO-26-0002", updatedAt: new Date("2026-06-01T00:00:00Z") }],
         },
         requirementSheet: {
           findMany: async () => [
             {
               id: 18,
+              docNo: "RS-26-0001",
               salesOrderId: 24,
               cycleId: 5,
               periodKey: "2026-06",
@@ -1891,18 +1979,30 @@ describe("pendingActionsService", () => {
             },
           ],
         },
-        workOrder: { findMany: async () => [] },
+        requirementSheetLine: {
+          findFirst: async () => ({ item: { itemName: "Cap", unit: "Nos" } }),
+        },
+        workOrder: { findMany: async () => [{ id: 99, salesOrderId: 24, cycleId: 5 }] },
       };
 
       try {
         const actions = await fetchMonthlyPlanning(db);
         assert.equal(actions.length, 1);
-        assert.equal(actions[0].action, "Monthly Planning Pending");
+        assert.equal(actions[0].action, "Prepare Monthly Planning — NO_QTY");
         assert.equal(actions[0].currentStatus, "MONTHLY_PLANNING_PENDING");
-        assert.equal(
-          actions[0].href,
-          "/monthly-planning?period=2026-06&from=pending-actions",
-        );
+        assert.match(String(actions[0].documentNo), /SO-26-0002/);
+        assert.match(String(actions[0].documentNo), /RS-26-0001/);
+        assert.match(String(actions[0].documentNo), /Cycle 1/);
+        assert.match(String(actions[0].documentNo), /Cap/);
+        assert.match(String(actions[0].documentNo), /15,000/);
+        assert.match(actions[0].href, /\/monthly-planning\?/);
+        assert.match(actions[0].href, /period=2026-06/);
+        assert.match(actions[0].href, /salesOrderId=24/);
+        assert.match(actions[0].href, /cycleId=5/);
+        assert.match(actions[0].href, /requirementSheetId=18/);
+        assert.match(actions[0].href, /from=pending-actions/);
+        assert.equal(actions[0].metadata.orderType, "NO_QTY");
+        assert.equal(actions[0].metadata.remainingRequirement, 15000);
       } finally {
         require(executionPath).assessNoQtyPlacementStageForCycle = origAssess;
         require(gatePath).assessNoQtyMonthlyPlanningGate = origPlanningGate;
@@ -1910,6 +2010,106 @@ describe("pendingActionsService", () => {
         require(pendingPath);
       }
     });
+  });
+
+  it("fetchStoreNoQtyMonthlyPlanningPendingActions still emits after stock-ready WO when remaining RS needs procurement", async () => {
+    await withMonthlyPlanningEnabled(true, async () => {
+      const executionPath = require.resolve("../../src/services/requirementSheetExecutionService");
+      const gatePath = require.resolve("../../src/services/noQtyMonthlyPlanningGateService");
+      const pendingPath = require.resolve("../../src/services/pendingActionsService");
+      const origExecution = require(executionPath);
+      const origGate = require(gatePath);
+      const origAssess = origExecution.assessNoQtyPlacementStageForCycle;
+      const origPlanningGate = origGate.assessNoQtyMonthlyPlanningGate;
+
+      require(executionPath).assessNoQtyPlacementStageForCycle = async () => ({
+        readyToPlaceWo: false,
+        processStageKey: "NO_QTY_AWAITING_PROCUREMENT",
+        requirementSheetId: 18,
+        requirementSheetDocNo: "RS-26-0001",
+        rsBalanceQty: 12000,
+        skipMonthlyPlanning: false,
+        readinessStatus: "AWAITING_PROCUREMENT",
+        allowWoWithoutPlanRelease: true,
+      });
+      // Period already released for another SO — must not hide this SO's remaining demand.
+      require(gatePath).assessNoQtyMonthlyPlanningGate = async () => ({
+        gate: "READY_FOR_EXECUTION",
+        action: null,
+        plan: { id: 9 },
+      });
+
+      delete require.cache[pendingPath];
+      const { fetchStoreNoQtyMonthlyPlanningPendingActions: fetchMonthlyPlanning } = require(pendingPath);
+      const db = {
+        salesOrder: {
+          findMany: async () => [{ id: 24, docNo: "SO-26-0002", updatedAt: new Date("2026-06-01T00:00:00Z") }],
+        },
+        requirementSheet: {
+          findMany: async () => [
+            {
+              id: 18,
+              docNo: "RS-26-0001",
+              salesOrderId: 24,
+              cycleId: 5,
+              periodKey: "2026-06",
+              createdAt: new Date("2026-06-01T00:00:00Z"),
+              updatedAt: new Date("2026-06-01T00:00:00Z"),
+              cycle: { cycleNo: 1 },
+            },
+          ],
+        },
+        requirementSheetLine: {
+          findFirst: async () => ({ item: { itemName: "Cap", unit: "Nos" } }),
+        },
+        workOrder: { findMany: async () => [{ id: 99, salesOrderId: 24, cycleId: 5 }] },
+      };
+
+      try {
+        const actions = await fetchMonthlyPlanning(db);
+        assert.equal(actions.length, 1);
+        assert.equal(actions[0].action, "Prepare Monthly Planning — NO_QTY");
+        assert.match(actions[0].href, /salesOrderId=24/);
+        assert.match(actions[0].href, /cycleId=5/);
+        assert.match(actions[0].href, /requirementSheetId=18/);
+        assert.equal(actions[0].metadata.remainingRequirement, 12000);
+        assert.notEqual(actions[0].action, "View Planning Status");
+      } finally {
+        require(executionPath).assessNoQtyPlacementStageForCycle = origAssess;
+        require(gatePath).assessNoQtyMonthlyPlanningGate = origPlanningGate;
+        delete require.cache[pendingPath];
+        require(pendingPath);
+      }
+    });
+  });
+
+  it("NO_QTY RM shortage does not map to Create Purchase Request — Regular SO", () => {
+    const row = normalizeRmRiskRow({
+      workOrderId: 91,
+      workOrderNo: "WO-26-0091",
+      salesOrderId: 262,
+      salesOrderNo: "SO-26-0002",
+      orderType: "NO_QTY",
+      itemId: 96,
+      itemName: "PP",
+      unit: "Kg",
+      fgItemName: "Cap",
+      shortageAfterReservationQty: 9000,
+      queueType: "WO_BLOCKED_RM_SHORTAGE",
+      freeStockQty: 0,
+      netShortageAfterIncomingQty: 9000,
+      materialRequirementId: null,
+      sourceType: "SALES_ORDER",
+      prLineCount: 0,
+      poLineCount: 0,
+      operationalKey: "PROCUREMENT_PENDING",
+      nextActionKey: "CREATE_PR",
+      procurementDemandPool: "REGULAR_SO",
+      hasOpenMr: false,
+    });
+    assert.equal(row.metadata.orderType, "NO_QTY");
+    const action = mapNormalizedRowToPendingAction(row, "STORE");
+    assert.equal(action, null);
   });
 
   it("fetchStoreNoQtyMonthlyPlanningPendingActions skips when Net RM = 0 unlocks Place WO", async () => {
@@ -1975,12 +2175,13 @@ describe("pendingActionsService", () => {
         processStageKey: "NO_QTY_READY_TO_PLACE_WO",
         readinessStatus: "PARTIALLY_READY",
         requirementSheetId: 19,
+        rsBalanceQty: 8000,
         skipMonthlyPlanning: false,
         allowWoWithoutPlanRelease: true,
       });
       require(gatePath).assessNoQtyMonthlyPlanningGate = async () => ({
         gate: "INITIAL_PLAN_REQUIRED",
-        action: "Monthly Planning Pending",
+        action: "Prepare Monthly Planning — NO_QTY",
       });
 
       delete require.cache[pendingPath];
@@ -2008,8 +2209,10 @@ describe("pendingActionsService", () => {
       try {
         const actions = await fetchMonthlyPlanning(db);
         assert.equal(actions.length, 1);
-        assert.equal(actions[0].action, "Monthly Planning Pending");
+        assert.equal(actions[0].action, "Prepare Monthly Planning — NO_QTY");
         assert.equal(actions[0].metadata.mixedFgReadiness, true);
+        assert.match(actions[0].href, /salesOrderId=25/);
+        assert.match(actions[0].href, /cycleId=6/);
       } finally {
         require(executionPath).assessNoQtyPlacementStageForCycle = origAssess;
         require(gatePath).assessNoQtyMonthlyPlanningGate = origPlanningGate;

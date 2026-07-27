@@ -429,36 +429,30 @@ export function noQtyPlanningHubHref(
 
 
 
-/** NO_QTY Monthly Planning workspace — includes RS period when known. */
-
+/** NO_QTY Monthly Planning workspace — includes RS period / SO / cycle when known. */
 export function noQtyMonthlyPlanningHref(opts: {
-
   salesOrderId?: number;
-
   period?: string | null;
-
   source?: string;
-
+  cycleId?: number | null;
+  requirementSheetId?: number | null;
 }): string {
-
   const params = new URLSearchParams();
-
   if (opts.source) params.set("source", opts.source);
-
   if (opts.salesOrderId != null && opts.salesOrderId > 0) {
-
     params.set("salesOrderId", String(opts.salesOrderId));
-
   }
-
   const period = String(opts.period ?? "").trim();
-
   if (period) params.set("period", period);
-
+  const cycleId = Number(opts.cycleId ?? 0);
+  if (Number.isFinite(cycleId) && cycleId > 0) params.set("cycleId", String(cycleId));
+  const sheetId = Number(opts.requirementSheetId ?? 0);
+  if (Number.isFinite(sheetId) && sheetId > 0) {
+    params.set("requirementSheetId", String(sheetId));
+    params.set("sheetId", String(sheetId));
+  }
   const q = params.toString();
-
   return q ? `/monthly-planning?${q}` : "/monthly-planning";
-
 }
 
 

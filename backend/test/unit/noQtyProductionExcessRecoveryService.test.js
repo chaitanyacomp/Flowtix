@@ -140,7 +140,7 @@ describe("final recovery 57 / 61 / 67 — no surplus-reject double count", () =>
     assert.notEqual(r.confirmedNetRecoveryQty, 77);
   });
 
-  it("pending QC: provisional net 57 and finalize blocked", () => {
+  it("pending QC: provisional net 57 and finalize allowed (confirmed 67)", () => {
     const r = computeProductionShortageRecoveryOffset({
       grossProductionShortageQty: 67,
       producedExcessPendingQcQty: 10,
@@ -150,8 +150,8 @@ describe("final recovery 57 / 61 / 67 — no surplus-reject double count", () =>
     assert.equal(r.producedExcessPendingQcQty, 10);
     assert.equal(r.provisionalNetRecoveryQty, 57);
     assert.equal(r.confirmedNetRecoveryQty, 67);
-    assert.equal(r.finalizeBlocked, true);
-    assert.match(r.finalizeBlockMessage, /Final recovery cannot be confirmed until QC decides 10 Nos excess production/);
+    assert.equal(r.finalizeBlocked, false);
+    assert.equal(r.finalizeBlockMessage, null);
   });
 
   it("includes only demand-backed kept QC rejection in gross recovery", () => {
@@ -201,17 +201,16 @@ describe("final recovery 57 / 61 / 67 — no surplus-reject double count", () =>
 });
 
 describe("composeNoQtyRecoveryExcessView", () => {
-  it("uses item unit in finalize message", () => {
+  it("explains provisional pending QC without finalize lock message", () => {
     const view = composeNoQtyRecoveryExcessView({
       grossProductionShortageQty: 67,
       producedExcessPendingQcQty: 10,
       unit: "Nos",
     });
-    assert.equal(
-      view.finalizeBlockMessage,
-      "Final recovery cannot be confirmed until QC decides 10 Nos excess production.",
-    );
-    assert.match(view.provisionalNetRecoveryExplanation, /subject to QC/i);
+    assert.equal(view.finalizeBlockMessage, null);
+    assert.equal(view.finalizeBlocked, false);
+    assert.match(view.provisionalNetRecoveryExplanation, /Pending QC/i);
+    assert.match(view.provisionalNetRecoveryExplanation, /active cycle/i);
   });
 });
 
@@ -281,7 +280,7 @@ describe("loadNoQtyProducedExcessByItemForPriorCycles + finalize assert", () => 
     assert.equal(map.get(10).surplusProducedQty, 10);
   });
 
-  it("blocks finalize while excess relevant to recovery is pending QC", async () => {
+  it("allows finalize while excess relevant to recovery is pending QC", async () => {
     const lines = [
       {
         id: 1,
@@ -298,17 +297,13 @@ describe("loadNoQtyProducedExcessByItemForPriorCycles + finalize assert", () => 
         productions: [{ producedQty: 2005, qcEntries: [] }],
       },
     ];
-    await assert.rejects(
-      () =>
-        assertNoProducedExcessPendingQcForRecoveryOrThrow(mockDb(lines), {
-          salesOrderId: 1,
-          targetCycleId: 2,
-          recoveryByItem: new Map([[10, { productionShortfallQty: 67, qcFinalRejectionQty: 0, unit: "Nos" }]]),
-        }),
-      (err) =>
-        err.code === "PRODUCED_EXCESS_PENDING_QC" &&
-        /Final recovery cannot be confirmed until QC decides 10 Nos excess production/.test(err.message),
-    );
+    const result = await assertNoProducedExcessPendingQcForRecoveryOrThrow(mockDb(lines), {
+      salesOrderId: 1,
+      targetCycleId: 2,
+      recoveryByItem: new Map([[10, { productionShortfallQty: 67, qcFinalRejectionQty: 0, unit: "Nos" }]]),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.blockers.length, 0);
   });
 
   it("allows finalize after full QC acceptance of excess", async () => {

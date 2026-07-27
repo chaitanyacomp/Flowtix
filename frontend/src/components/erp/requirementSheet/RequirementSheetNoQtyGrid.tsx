@@ -46,6 +46,8 @@ export type RequirementSheetNoQtyGridLine = {
   provisionalNetRecoveryExplanation?: string | null;
   producedExcessPendingQcBlocksFinalize?: boolean | null;
   producedExcessPendingQcFinalizeMessage?: string | null;
+  carriedQcAcceptedExcessCreditQty?: number | null;
+  unappliedQcAcceptedExcessCreditQty?: number | null;
   qcStockNote?: string | null;
 };
 
@@ -359,10 +361,20 @@ export function RequirementSheetNoQtyGrid({
                         {fmtPlan(provisionalNetRecovery, unit)}
                         {provisionalSubjectToQc ? (
                           <div className="mt-0.5 text-[10px] font-medium leading-snug text-amber-800">
-                            Subject to QC
+                            Pending QC
                             {producedExcessPendingQc > PLAN_EPS
-                              ? ` (${fmtPlan(producedExcessPendingQc, unit)} excess pending)`
+                              ? ` (${fmtPlan(producedExcessPendingQc, unit)} excess)`
                               : ""}
+                          </div>
+                        ) : null}
+                        {safeNum(l.carriedQcAcceptedExcessCreditQty) > PLAN_EPS ? (
+                          <div className="mt-0.5 text-[10px] font-medium leading-snug text-sky-800">
+                            Carried QC credit: {fmtPlan(safeNum(l.carriedQcAcceptedExcessCreditQty), unit)}
+                          </div>
+                        ) : null}
+                        {safeNum(l.unappliedQcAcceptedExcessCreditQty) > PLAN_EPS ? (
+                          <div className="mt-0.5 text-[10px] font-medium leading-snug text-sky-800">
+                            Unapplied QC credit: {fmtPlan(safeNum(l.unappliedQcAcceptedExcessCreditQty), unit)}
                           </div>
                         ) : null}
                       </div>

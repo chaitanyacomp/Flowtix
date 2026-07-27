@@ -341,7 +341,7 @@ export function ProductionWastageWoReportPage() {
           <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
         </ReportFilterField>
         <ReportFilterField label="WO no.">
-          <Input className="h-8" value={woNumber} onChange={(e) => setWoNumber(e.target.value)} placeholder="WO-26-" />
+          <Input className="h-8" value={woNumber} onChange={(e) => setWoNumber(e.target.value)} placeholder="WO-R-26- / WO-26-" />
         </ReportFilterField>
         <ReportFilterField label="Customer">
           <select className={selectClass} value={customerId} onChange={(e) => patch({ customerId: e.target.value })}>

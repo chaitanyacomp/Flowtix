@@ -17,6 +17,10 @@ const CREATE_PURCHASE_REQUEST_ACTION = "Create Purchase Request";
 const CREATE_PURCHASE_REQUEST_REGULAR_SO_ACTION = "Create Purchase Request — Regular SO";
 const APPROVE_MATERIAL_REQUIREMENT_ACTION = "Approve Material Requirement";
 
+function isNoQtyOrderType(orderType) {
+  return String(orderType ?? "").trim().toUpperCase() === "NO_QTY";
+}
+
 function isCreatePurchaseRequestAction(action) {
   const label = String(action ?? "").trim();
   return label === CREATE_PURCHASE_REQUEST_ACTION || label === CREATE_PURCHASE_REQUEST_REGULAR_SO_ACTION;
@@ -27,10 +31,19 @@ function isDraftOrPendingApprovalMrStatus(status) {
   return s === "DRAFT" || s === "PENDING_APPROVAL";
 }
 
+/**
+ * Regular SO Create-PR labeling — requires explicit Regular demand pool/source
+ * and must never treat NO_QTY (SO/RS flow) as Regular, even when common stock was used.
+ */
 function isRegularSoProcurementStage(stageOrMeta) {
+  if (isNoQtyOrderType(stageOrMeta?.orderType ?? stageOrMeta?.salesOrderOrderType)) {
+    return false;
+  }
   const pool = String(stageOrMeta?.procurementDemandPool ?? "").trim().toUpperCase();
   if (pool === "REGULAR_SO") return true;
+  if (pool === "MPRS") return false;
   const sourceType = String(stageOrMeta?.sourceType ?? "").trim().toUpperCase();
+  if (sourceType === "MONTHLY_PLAN") return false;
   return sourceType === "SALES_ORDER" || sourceType === "WORK_ORDER_PLANNING";
 }
 
@@ -320,6 +333,15 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
     (queueType === "PMR_WAITING_ISSUE" && netShortage > QUEUE_EPS && stage.prLineCount === 0);
 
   if (needsCreatePr && stage.prLineCount === 0 && !procurementDone) {
+    // NO_QTY procurement is Monthly Planning / MPRS — never emit Regular Create PR.
+    if (isNoQtyOrderType(meta?.orderType ?? meta?.salesOrderOrderType ?? stage.orderType)) {
+      return {
+        action: null,
+        href: buildRmControlCenterHref(stage, rmItemId),
+        excludeFromPendingActions: true,
+      };
+    }
+
     const mrStatus = String(meta?.mrStatus ?? meta?.requisitionStatus ?? "").trim();
     if (isDraftOrPendingApprovalMrStatus(mrStatus) && stage.materialRequirementId > 0) {
       return {
@@ -328,7 +350,7 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
       };
     }
 
-    const regularSo = isRegularSoProcurementStage(stage);
+    const regularSo = isRegularSoProcurementStage({ ...stage, ...meta, orderType: meta?.orderType ?? stage.orderType });
     const hasPurchaseVisibleMr =
       Boolean(meta?.hasOpenMr) ||
       (stage.materialRequirementId > 0 && !isDraftOrPendingApprovalMrStatus(mrStatus));
@@ -350,7 +372,7 @@ function resolveRmRiskPendingAction(meta, queueHints = {}, role = "STORE") {
     }
 
     return {
-      action: createPurchaseRequestActionLabel(stage),
+      action: createPurchaseRequestActionLabel({ ...stage, ...meta }),
       href: buildProcurementWorkspaceHref(stage),
     };
   }
@@ -392,6 +414,7 @@ module.exports = {
   resolveRmRiskStorePendingAction,
   isPurchaseRole,
   isCreatePurchaseRequestAction,
+  isNoQtyOrderType,
   isRegularSoProcurementStage,
   createPurchaseRequestActionLabel,
 };

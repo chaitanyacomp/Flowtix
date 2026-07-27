@@ -248,6 +248,15 @@ async function advanceNoQtyCycleForNextRequirementSheetIfEligible(tx, salesOrder
     reason: null,
   });
 
+  // Consume any QC excess adjustments that arrived while no ACTIVE cycle existed.
+  const {
+    consumeUnappliedNoQtyQcExcessAdjustmentsForCycle,
+  } = require("./noQtyQcExcessCycleAdjustmentService");
+  await consumeUnappliedNoQtyQcExcessAdjustmentsForCycle(tx, {
+    salesOrderId: soId,
+    cycleId: created.id,
+  });
+
   return {
     advanced: true,
     currentCycleId: created.id,

@@ -349,7 +349,10 @@ export function resolveQcSaveInspectionStatus(input: {
   inspectingQty: number | null;
   checkedQtyValid: boolean;
   rejectedQty: number | null;
-  reasonTrimmed: string;
+  /** @deprecated Prefer rejectionReasonComplete. */
+  reasonTrimmed?: string;
+  /** When rejectedQty > 0, true only if catalog reason (+ Other details) is valid. */
+  rejectionReasonComplete?: boolean;
   inlineValidationMsg: string | null;
   readyQtyLabel: string;
 }): string {
@@ -357,8 +360,12 @@ export function resolveQcSaveInspectionStatus(input: {
   if (!input.checkedQtyValid || input.inspectingQty == null || !(input.inspectingQty > EPS)) {
     return "Enter a valid inspection quantity";
   }
-  if (input.rejectedQty != null && input.rejectedQty > EPS && !input.reasonTrimmed) {
-    return "Rejected quantity requires a reason";
+  if (input.rejectedQty != null && input.rejectedQty > EPS) {
+    const reasonOk =
+      input.rejectionReasonComplete != null
+        ? input.rejectionReasonComplete
+        : Boolean(input.reasonTrimmed?.trim());
+    if (!reasonOk) return "Rejected quantity requires a reason";
   }
   if (input.canSubmit) {
     return `${input.readyQtyLabel} ready to save`;

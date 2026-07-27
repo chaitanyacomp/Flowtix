@@ -7,6 +7,7 @@
 import type { ProductionRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
 import type { DashboardProductionStatusSource } from "./dashboardProductionStatus";
 import type { ProductionConciseRmLabel } from "./productionRmConciseStatus";
+import { resolveProductionEntryCapacityPhase } from "./productionEntryCapacityUx";
 import type { ProductionWorkspaceStatusBucket } from "./productionWorkspaceStatusCards";
 
 const EPS = 1e-6;
@@ -112,16 +113,19 @@ export function deriveConciseRmLabelFromQueueRow(
   row: DashboardProductionStatusSource | null | undefined,
 ): ProductionConciseRmLabel | null {
   if (!row || !hasQueueRmReadinessFields(row)) return null;
-  if (row.rmReadyForProduction === true) {
-    return n(row.rmProductionAllowedNowQty) > EPS ? "READY" : "WAITING RM";
-  }
-  if (row.rmReadyForProduction === false) return "WAITING RM";
-  const gate = upper(row.rmReadinessGate);
-  if (gate === "READY_FOR_PRODUCTION") {
-    return n(row.rmProductionAllowedNowQty) > EPS ? "READY" : "WAITING RM";
-  }
-  if (gate) return "WAITING RM";
-  return null;
+  const gate = normalizeQueueGate(row);
+  const phase = resolveProductionEntryCapacityPhase({
+    gate,
+    productionAllowedNowQty: row.rmProductionAllowedNowQty,
+    maxAdditionalQty: row.rmProductionAllowedNowQty,
+    woQty: row.requiredQty,
+    woRemainingQty: row.balanceQty,
+    approvedProducedQty: row.producedQty,
+  });
+  if (phase === "QUANTITY_COMPLETED") return "COMPLETE";
+  if (phase === "WAITING_RM") return "WAITING RM";
+  if (row.rmReadyForProduction === true || gate === "READY_FOR_PRODUCTION") return "READY";
+  return "WAITING RM";
 }
 
 const KNOWN_GATES = new Set([
@@ -158,6 +162,7 @@ export function buildReadinessSeedFromQueueRow(
     fgUnit: row.itemUnit ?? "",
     woQty: n(row.requiredQty),
     woRemainingQty: n(row.balanceQty),
+    approvedProducedQty: n(row.producedQty),
     productionAllowedNowQty: allowedNow,
     maxAdditionalQty: allowedNow,
     latestPmrId: null,

@@ -14,6 +14,7 @@ Follow FT-DEP-001 §18 / §19. Prefer Batch 9 setup or Batch 10 installer for fi
 - [ ] MySQL database + user ready (empty or known baseline)
 - [ ] `shared\.env` prepared for first install (or already present for update)
 - [ ] Rollback owner named (Admin + Business Owner)
+- [ ] Confirm WO numbering migration `20260727180000_work_order_flow_doc_numbering` is in the package (extends `DocSequence` enum; does **not** renumber existing WOs — see `docs/DOCUMENT_NUMBERING_WORK_ORDERS.md`)
 
 ## First install (Batch 9 / 10)
 

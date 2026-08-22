@@ -231,10 +231,75 @@ async function computeRegularSoWorkOrderDemandCoverage(tx, workOrderId) {
   };
 }
 
+/**
+ * Pure gate: additional REGULAR_SO production is forbidden once SO demand is covered
+ * or End Production has parked the mandatory Production Report.
+ * @param {{ reportPending?: boolean; soDemandCovered?: boolean; lines?: Array<{ workOrderLineId: number; soDemandCovered?: boolean }> } | null | undefined} coverage
+ * @param {number} workOrderLineId
+ * @returns {{ code: string; message: string } | null}
+ */
+function regularSoAdditionalProductionBlock(coverage, workOrderLineId) {
+  if (!coverage) return null;
+  if (coverage.reportPending) {
+    return {
+      code: "REGULAR_SO_PRODUCTION_LOCKED_REPORT_PENDING",
+      message: "Production entry is locked while the Production Report is pending.",
+    };
+  }
+  const line = (coverage.lines || []).find((l) => Number(l.workOrderLineId) === Number(workOrderLineId));
+  const covered = line ? Boolean(line.soDemandCovered) : Boolean(coverage.soDemandCovered);
+  if (covered) {
+    return {
+      code: "REGULAR_SO_DEMAND_COVERED",
+      message:
+        "SO demand is already covered by finalized production. End production and continue to the Production Report — additional production is not allowed.",
+    };
+  }
+  return null;
+}
+
+/**
+ * Reject new REGULAR_SO production after finalized produced qty covers SO demand.
+ * No-op for NO_QTY / Green Level / RS-linked work orders.
+ * @param {import('@prisma/client').Prisma.TransactionClient | import('@prisma/client').PrismaClient} tx
+ * @param {number} workOrderLineId
+ */
+async function assertRegularSoAdditionalProductionAllowed(tx, workOrderLineId) {
+  const wol = await tx.workOrderLine.findUnique({
+    where: { id: workOrderLineId },
+    select: {
+      id: true,
+      workOrderId: true,
+      workOrder: {
+        select: {
+          id: true,
+          requirementSheetId: true,
+          sourceType: true,
+          salesOrder: { select: { id: true, orderType: true } },
+        },
+      },
+    },
+  });
+  if (!wol?.workOrder) return;
+  const wo = wol.workOrder;
+  if (String(wo.sourceType ?? "").toUpperCase() === "GREEN_LEVEL_REPLENISHMENT") return;
+  if (!isRegularWorkOrderRecord(wo, wo.salesOrder)) return;
+
+  const coverage = await computeRegularSoWorkOrderDemandCoverage(tx, wo.id);
+  const block = regularSoAdditionalProductionBlock(coverage, wol.id);
+  if (!block) return;
+  const err = new Error(block.message);
+  err.statusCode = 409;
+  err.code = block.code;
+  throw err;
+}
+
 module.exports = {
   EPS,
   evaluateRegularSoLineDemandCoverage,
   loadRegularSoDemandQtyForItem,
   loadApprovedProducedOnOtherRegularWos,
   computeRegularSoWorkOrderDemandCoverage,
+  regularSoAdditionalProductionBlock,
+  assertRegularSoAdditionalProductionAllowed,
 };

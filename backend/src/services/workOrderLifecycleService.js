@@ -554,7 +554,7 @@ async function requestRegularEndProduction(tx, workOrderId, input) {
     }
   } else if (!coverage.hasSoShortage) {
     const err = new Error(
-      "No SO-demand shortage. Use End Production & Complete Report when SO demand is already covered.",
+      "No SO-demand shortage. Use End Production & Continue to Report when SO demand is already covered.",
     );
     err.statusCode = 409;
     err.code = "NO_SO_SHORTAGE";

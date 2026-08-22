@@ -66,10 +66,12 @@ export function regularSoDemandCoveredStatusMessage(coverage: Pick<
 }
 
 export function shouldOfferRegularEndProductionCovered(
-  coverage: Pick<RegularSoDemandCoverage, "canEndProductionWithWoRemainder" | "reportPending"> | null | undefined,
+  coverage: Pick<RegularSoDemandCoverage, "soDemandCovered" | "canEndProductionWithWoRemainder" | "reportPending"> | null | undefined,
 ): boolean {
   if (!coverage) return false;
-  return Boolean(coverage.canEndProductionWithWoRemainder && !coverage.reportPending);
+  if (coverage.reportPending) return false;
+  // SO covered (including exact SO qty) — WO-plan remainder is optional and must not keep the entry form open.
+  return Boolean(coverage.soDemandCovered || coverage.canEndProductionWithWoRemainder);
 }
 
 export function shouldOfferRegularEndProductionShortage(
@@ -79,8 +81,17 @@ export function shouldOfferRegularEndProductionShortage(
   return Boolean(coverage.hasSoShortage && Number(coverage.producedQty) > EPS && !coverage.reportPending);
 }
 
+/** Hide Date / Produced Qty / fill helpers / Save once SO demand is covered or report is pending. */
 export function shouldHideRegularProductionEntryForReport(
-  coverage: Pick<RegularSoDemandCoverage, "reportPending"> | null | undefined,
+  coverage: Pick<RegularSoDemandCoverage, "reportPending" | "soDemandCovered"> | null | undefined,
 ): boolean {
-  return Boolean(coverage?.reportPending);
+  return Boolean(coverage?.reportPending || coverage?.soDemandCovered);
+}
+
+/** Continue Later is only for unmet SO demand — never after SO coverage. */
+export function shouldOfferRegularContinueLater(
+  coverage: Pick<RegularSoDemandCoverage, "hasSoShortage" | "producedQty" | "reportPending" | "soDemandCovered"> | null | undefined,
+): boolean {
+  if (!coverage || coverage.soDemandCovered || coverage.reportPending) return false;
+  return shouldOfferRegularEndProductionShortage(coverage);
 }

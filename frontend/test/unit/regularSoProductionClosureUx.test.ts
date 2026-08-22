@@ -3,6 +3,7 @@ import {
   formatRegularSoClosureQty,
   regularSoDemandCoveredStatusMessage,
   shouldHideRegularProductionEntryForReport,
+  shouldOfferRegularContinueLater,
   shouldOfferRegularEndProductionCovered,
   shouldOfferRegularEndProductionShortage,
 } from "../../src/lib/regularSoProductionClosureUx";
@@ -11,25 +12,61 @@ import { shouldShowScopedProductionReport } from "../../src/lib/productionScoped
 describe("regularSoProductionClosureUx", () => {
   const covered = {
     soDemandCovered: true,
-    woTargetBalance: 13,
-    expectedExcessBeforeQc: 87,
+    woTargetBalance: 75,
+    expectedExcessBeforeQc: 25,
     canEndProductionWithWoRemainder: true,
     reportPending: false,
     hasSoShortage: false,
-    producedQty: 10087,
+    producedQty: 10025,
+  };
+
+  const equalToSo = {
+    soDemandCovered: true,
+    woTargetBalance: 100,
+    expectedExcessBeforeQc: 0,
+    canEndProductionWithWoRemainder: true,
+    reportPending: false,
+    hasSoShortage: false,
+    producedQty: 10000,
+  };
+
+  const belowSo = {
+    soDemandCovered: false,
+    woTargetBalance: 200,
+    expectedExcessBeforeQc: 0,
+    canEndProductionWithWoRemainder: false,
+    reportPending: false,
+    hasSoShortage: true,
+    producedQty: 9900,
   };
 
   it("shows SO demand covered status with excess before QC", () => {
     expect(regularSoDemandCoveredStatusMessage(covered, "Nos")).toBe(
-      "SO demand covered — 87 Nos produced above SO demand.",
+      "SO demand covered — 25 Nos produced above SO demand.",
     );
     expect(shouldOfferRegularEndProductionCovered(covered)).toBe(true);
     expect(shouldOfferRegularEndProductionShortage(covered)).toBe(false);
+    expect(shouldOfferRegularContinueLater(covered)).toBe(false);
+    expect(shouldHideRegularProductionEntryForReport(covered)).toBe(true);
+  });
+
+  it("hides entry and Continue Later when produced equals SO qty", () => {
+    expect(shouldHideRegularProductionEntryForReport(equalToSo)).toBe(true);
+    expect(shouldOfferRegularEndProductionCovered(equalToSo)).toBe(true);
+    expect(shouldOfferRegularContinueLater(equalToSo)).toBe(false);
+  });
+
+  it("keeps the production entry form when produced is below SO qty", () => {
+    expect(shouldHideRegularProductionEntryForReport(belowSo)).toBe(false);
+    expect(shouldOfferRegularEndProductionCovered(belowSo)).toBe(false);
+    expect(shouldOfferRegularEndProductionShortage(belowSo)).toBe(true);
+    expect(shouldOfferRegularContinueLater(belowSo)).toBe(true);
   });
 
   it("hides entry while report pending", () => {
     expect(shouldHideRegularProductionEntryForReport({ reportPending: true })).toBe(true);
     expect(shouldOfferRegularEndProductionCovered({ ...covered, reportPending: true })).toBe(false);
+    expect(shouldOfferRegularContinueLater({ ...belowSo, reportPending: true })).toBe(false);
   });
 
   it("offers shortage end when produced below SO demand", () => {
@@ -43,7 +80,7 @@ describe("regularSoProductionClosureUx", () => {
   });
 
   it("formats quantities with unit", () => {
-    expect(formatRegularSoClosureQty(10087, "Nos")).toBe("10087 Nos");
+    expect(formatRegularSoClosureQty(10025, "Nos")).toBe("10025 Nos");
   });
 });
 
@@ -55,7 +92,7 @@ describe("shouldShowScopedProductionReport — REGULAR SO", () => {
         hasApprovedProductionOnWorkOrder: true,
         navigateNoQtyContext: false,
         executionSummary: null,
-        regularSo: { enabled: true, reportPending: true, woTargetBalance: 13 },
+        regularSo: { enabled: true, reportPending: true, woTargetBalance: 75 },
       }),
     ).toBe(true);
   });
@@ -67,7 +104,7 @@ describe("shouldShowScopedProductionReport — REGULAR SO", () => {
         hasApprovedProductionOnWorkOrder: true,
         navigateNoQtyContext: false,
         executionSummary: null,
-        regularSo: { enabled: true, reportPending: false, woTargetBalance: 13 },
+        regularSo: { enabled: true, reportPending: false, woTargetBalance: 75 },
       }),
     ).toBe(false);
   });

@@ -32,6 +32,7 @@ const {
   assertProductionRmReadiness,
 } = require("./productionRmReadinessService");
 const { assertProductionEntryWoQtyTolerance } = require("./workOrderLifecycleService");
+const { assertRegularSoAdditionalProductionAllowed } = require("./regularSoProductionClosure");
 
 /**
  * @typedef {object} ProductionEntryGateContext
@@ -164,6 +165,9 @@ async function assertProductionEntryAllowed(tx, input) {
       so: ctx.so,
     });
   }
+
+  // 3b. REGULAR_SO: no additional production after finalized produced qty covers SO demand.
+  await assertRegularSoAdditionalProductionAllowed(tx, workOrderLineId);
 
   // 4. NO_QTY / Green execution validation
   if (ctx.orderType === "NO_QTY" && ctx.wo.sourceType !== GREEN_LEVEL_WO_SOURCE_TYPE) {

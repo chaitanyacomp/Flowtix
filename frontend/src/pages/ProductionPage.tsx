@@ -2616,6 +2616,7 @@ export function ProductionPage() {
       !productionQuantityCompleted &&
       !woProductionLifecycleBlocked &&
       !regularCreateFormLockedByDraft &&
+      !shouldHideRegularProductionEntryForReport(regularSoCoverage) &&
       !(navigateNoQtyContext && noQtyBlockProductionEntry),
   );
 
@@ -3714,6 +3715,14 @@ export function ProductionPage() {
       setError(PRODUCTION_QUANTITY_COMPLETED_MESSAGE);
       return;
     }
+    if (shouldHideRegularProductionEntryForReport(regularSoCoverage)) {
+      setError(
+        regularSoCoverage?.reportPending
+          ? "Production entry is locked while the Production Report is pending."
+          : "SO demand is already covered. End production and continue to the Production Report.",
+      );
+      return;
+    }
     if (
       (showRegularRmReadiness || showNoQtyRmStatus) &&
       rmEntryQtyCap != null &&
@@ -3773,6 +3782,14 @@ export function ProductionPage() {
     }
     if (productionQuantityCompleted) {
       setError(PRODUCTION_QUANTITY_COMPLETED_MESSAGE);
+      return;
+    }
+    if (shouldHideRegularProductionEntryForReport(regularSoCoverage)) {
+      setError(
+        regularSoCoverage?.reportPending
+          ? "Production entry is locked while the Production Report is pending."
+          : "SO demand is already covered. End production and continue to the Production Report.",
+      );
       return;
     }
     if (
@@ -7006,6 +7023,11 @@ export function ProductionPage() {
                 ) : regularSoCoverage?.reportPending ? (
                   <p className="text-[12px] text-amber-900" data-testid="regular-entry-locked-report-pending">
                     Production entry locked while Production Report is pending.
+                  </p>
+                ) : regularSoCoverage?.soDemandCovered ? (
+                  <p className="text-[12px] text-emerald-950" data-testid="regular-entry-locked-so-covered">
+                    SO demand is covered. Use End Production &amp; Continue to Report — further production entry is not
+                    allowed.
                   </p>
                 ) : (
                   <p className="text-[11px] text-slate-600">Waiting for RM readiness…</p>

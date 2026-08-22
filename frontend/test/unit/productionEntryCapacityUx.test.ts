@@ -64,6 +64,9 @@ describe("resolveProductionEntryCapacityPhase", () => {
       shouldHideRegularProductionEntryForReport({ reportPending: true }),
     ).toBe(true);
     expect(
+      shouldHideRegularProductionEntryForReport({ soDemandCovered: true, reportPending: false }),
+    ).toBe(true);
+    expect(
       resolveProductionEntryCapacityPhase({
         gate: "READY_FOR_PRODUCTION",
         woQty: 22,

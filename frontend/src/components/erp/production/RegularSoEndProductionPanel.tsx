@@ -5,6 +5,7 @@ import { Button } from "../../ui/button";
 import {
   formatRegularSoClosureQty,
   regularSoDemandCoveredStatusMessage,
+  shouldOfferRegularContinueLater,
   shouldOfferRegularEndProductionCovered,
   shouldOfferRegularEndProductionShortage,
   type RegularSoDemandCoverage,
@@ -32,6 +33,7 @@ export function RegularSoEndProductionPanel({
   const coveredMsg = regularSoDemandCoveredStatusMessage(coverage, unit);
   const offerCovered = shouldOfferRegularEndProductionCovered(coverage);
   const offerShortage = shouldOfferRegularEndProductionShortage(coverage);
+  const offerContinueLater = Boolean(onContinueLater) && shouldOfferRegularContinueLater(coverage);
 
   if (coverage.reportPending) {
     return (
@@ -113,7 +115,7 @@ export function RegularSoEndProductionPanel({
             onClick={onEndCovered}
             data-testid="regular-so-end-production-covered-btn"
           >
-            {busy ? "Working…" : "End Production & Complete Report"}
+            {busy ? "Working…" : "End Production & Continue to Report"}
           </Button>
         ) : null}
         {offerShortage ? (
@@ -129,7 +131,7 @@ export function RegularSoEndProductionPanel({
             {busy ? "Working…" : "Permanently Close WO with Shortage"}
           </Button>
         ) : null}
-        {onContinueLater ? (
+        {offerContinueLater ? (
           <Button
             type="button"
             size="sm"
@@ -145,8 +147,8 @@ export function RegularSoEndProductionPanel({
       </div>
       {offerCovered ? (
         <p className="text-[11px] text-slate-600">
-          Use Remaining Qty is optional. Ending production opens the mandatory Production Report — do not enter artificial
-          quantity for the WO-plan balance.
+          Production entry is closed because SO demand is covered. Ending production opens the mandatory Production
+          Report. QC inspects the full produced quantity; dispatch stays capped at remaining SO quantity.
         </p>
       ) : null}
     </div>

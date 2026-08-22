@@ -10,6 +10,7 @@ import {
   FileUp,
   HardDrive,
   Cog,
+  Clock,
 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import {
@@ -68,6 +69,13 @@ const CARDS: MasterCard[] = [
     title: "Operators",
     description: "Production operator register. Soft activate/deactivate only.",
     icon: <Users className="h-5 w-5" />,
+    roles: ["ADMIN", "PRODUCTION"],
+  },
+  {
+    to: "/shifts",
+    title: "Shifts",
+    description: "Production shift templates (code, window, break). Soft activate/deactivate only.",
+    icon: <Clock className="h-5 w-5" />,
     roles: ["ADMIN", "PRODUCTION"],
   },
   {

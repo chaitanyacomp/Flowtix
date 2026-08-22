@@ -3360,6 +3360,23 @@ model Operator {
   @@index([isActive, operatorName])
 }
 
+/// Production Shift Master (Step 3). Soft-deactivate only; times stored as HH:mm (no timezone).
+model Shift {
+  id                   Int      @id @default(autoincrement())
+  shiftCode            String   @unique @db.VarChar(32)
+  shiftName            String   @db.VarChar(120)
+  /// Time-of-day HH:mm (24h); never convert via browser/server timezone.
+  startTime            String   @db.VarChar(8)
+  endTime              String   @db.VarChar(8)
+  plannedBreakMinutes  Int      @default(0)
+  remarks              String?  @db.VarChar(500)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([isActive, shiftName])
+}
+
 /// Per-report wastage classification rows (stored separately for analytics).
 model ProductionWorkOrderReportWastageDetail {
   id                 Int     @id @default(autoincrement())

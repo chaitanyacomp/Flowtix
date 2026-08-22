@@ -76,4 +76,23 @@ describe("MySQL Prisma migration SQL compatibility", () => {
     assert.doesNotMatch(sql, /ALTER\s+TABLE\s+"/i);
     assert.doesNotMatch(sql, /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS/i);
   });
+
+  it("shift master migration creates Shift with MySQL backticks and HH:mm columns", () => {
+    const file = path.join(MIGRATIONS_DIR, "20260822140000_shift_master", "migration.sql");
+    assert.ok(fs.existsSync(file), "shift master migration.sql missing");
+    const raw = fs.readFileSync(file, "utf8");
+    const sql = stripSqlComments(raw);
+    assert.match(sql, /CREATE\s+TABLE\s+`Shift`/i);
+    assert.match(sql, /`shiftCode`\s+VARCHAR\(32\)\s+NOT\s+NULL/i);
+    assert.match(sql, /`startTime`\s+VARCHAR\(8\)\s+NOT\s+NULL/i);
+    assert.match(sql, /`endTime`\s+VARCHAR\(8\)\s+NOT\s+NULL/i);
+    assert.match(sql, /`plannedBreakMinutes`\s+INTEGER\s+NOT\s+NULL\s+DEFAULT\s+0/i);
+    assert.match(sql, /UNIQUE\s+INDEX\s+`Shift_shiftCode_key`/i);
+    assert.doesNotMatch(sql, /CREATE\s+TABLE\s+"/i);
+    // Time-of-day stored as VARCHAR, not MySQL TIME/TIMESTAMP column types.
+    assert.doesNotMatch(sql, /`startTime`\s+TIME\b/i);
+    assert.doesNotMatch(sql, /`endTime`\s+TIME\b/i);
+    assert.doesNotMatch(sql, /`startTime`\s+TIMESTAMP\b/i);
+    assert.doesNotMatch(sql, /`endTime`\s+TIMESTAMP\b/i);
+  });
 });

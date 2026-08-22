@@ -149,6 +149,7 @@ const navGroups: NavGroup[] = [
       { to: "/opening-stock", navKey: "opening-stock", label: "Opening Stock", roles: ["ADMIN", "STORE"], icon: <Boxes className="h-4 w-4 shrink-0" /> },
       { to: "/units", navKey: "units", label: "Units", roles: ["ADMIN", "STORE"], icon: <Ruler className="h-4 w-4 shrink-0" /> },
       { to: "/machines", navKey: "machines", label: "Machines", roles: ["ADMIN", "PRODUCTION"], icon: <Cog className="h-4 w-4 shrink-0" /> },
+      { to: "/operators", navKey: "operators", label: "Operators", roles: ["ADMIN", "PRODUCTION"], icon: <Users className="h-4 w-4 shrink-0" /> },
       { to: "/locations", navKey: "locations", label: "Locations", roles: ["ADMIN", "STORE"], icon: <Boxes className="h-4 w-4 shrink-0" /> },
       { to: "/masters/tally-import", navKey: "tally-import", label: "Tally import", roles: ["ADMIN"], icon: <FileUp className="h-4 w-4 shrink-0" /> },
       { to: "/suppliers", navKey: "supp", label: "Suppliers", roles: [...SUPPLIER_VIEW_ROLES], icon: <Building2 className="h-4 w-4 shrink-0" /> },
@@ -405,6 +406,7 @@ function groupDefaultOpen(pathname: string, group: NavGroup): boolean {
       pathname === "/items" ||
       pathname === "/units" ||
       pathname === "/machines" ||
+      pathname === "/operators" ||
       pathname === "/locations" ||
       pathname === "/suppliers" ||
       pathname === "/boms" ||

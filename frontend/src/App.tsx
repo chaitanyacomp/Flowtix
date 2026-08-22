@@ -30,6 +30,7 @@ import { OpeningStockPage } from "./pages/OpeningStockPage";
 import { UnitsPage } from "./pages/UnitsPage";
 import { WastageTypesPage } from "./pages/WastageTypesPage";
 import { MachinesPage } from "./pages/MachinesPage";
+import { OperatorsPage } from "./pages/OperatorsPage";
 import { LocationsPage } from "./pages/LocationsPage";
 import { StockPage } from "./pages/StockPage";
 import { StockItemDetailPage } from "./pages/StockItemDetailPage";
@@ -569,6 +570,14 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION"]}>
               <MachinesPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/operators"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION"]}>
+              <OperatorsPage />
             </ProtectedRoute>
           }
         />

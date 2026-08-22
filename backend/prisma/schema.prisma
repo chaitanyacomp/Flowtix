@@ -3344,6 +3344,22 @@ model Machine {
   @@index([machineType, isActive])
 }
 
+/// Production Operator Master (Step 2). Soft-deactivate only; shop-floor workers (not uniquely linked to ERP users).
+model Operator {
+  id               Int      @id @default(autoincrement())
+  operatorCode     String   @unique @db.VarChar(32)
+  operatorName     String   @db.VarChar(120)
+  employeeNumber   String?  @unique @db.VarChar(64)
+  department       String?  @db.VarChar(120)
+  designationSkill String?  @db.VarChar(120)
+  remarks          String?  @db.VarChar(500)
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([isActive, operatorName])
+}
+
 /// Per-report wastage classification rows (stored separately for analytics).
 model ProductionWorkOrderReportWastageDetail {
   id                 Int     @id @default(autoincrement())

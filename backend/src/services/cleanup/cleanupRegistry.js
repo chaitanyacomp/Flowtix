@@ -49,6 +49,7 @@ const PRESERVED_MASTER_MODELS = Object.freeze([
   "DocSequence",
   "WastageType",
   "Machine",
+  "Operator",
   "State",
 ]);
 
@@ -81,6 +82,7 @@ const FULL_DEMO_PRESERVED_MODELS = Object.freeze([
   "ActivityLog",
   "WastageType",
   "Machine",
+  "Operator",
 ]);
 
 /**

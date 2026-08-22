@@ -64,6 +64,13 @@ const CARDS: MasterCard[] = [
     roles: ["ADMIN", "PRODUCTION"],
   },
   {
+    to: "/operators",
+    title: "Operators",
+    description: "Production operator register. Soft activate/deactivate only.",
+    icon: <Users className="h-5 w-5" />,
+    roles: ["ADMIN", "PRODUCTION"],
+  },
+  {
     to: "/locations",
     title: "Locations",
     description: "Store and warehouse locations for stock movements.",

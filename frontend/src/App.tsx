@@ -29,6 +29,7 @@ import { MastersLandingPage } from "./pages/MastersLandingPage";
 import { OpeningStockPage } from "./pages/OpeningStockPage";
 import { UnitsPage } from "./pages/UnitsPage";
 import { WastageTypesPage } from "./pages/WastageTypesPage";
+import { MachinesPage } from "./pages/MachinesPage";
 import { LocationsPage } from "./pages/LocationsPage";
 import { StockPage } from "./pages/StockPage";
 import { StockItemDetailPage } from "./pages/StockItemDetailPage";
@@ -560,6 +561,14 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={["ADMIN"]}>
               <WastageTypesPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/machines"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION"]}>
+              <MachinesPage />
             </ProtectedRoute>
           }
         />

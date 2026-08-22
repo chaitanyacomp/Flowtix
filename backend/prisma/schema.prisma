@@ -126,6 +126,19 @@ enum WastageTypeCategory {
   MISC
 }
 
+/// Machine Master type / category (Step 1 — production equipment register).
+enum MachineType {
+  INJECTION_MOULDING
+  BLOW_MOULDING
+  EXTRUSION
+  ASSEMBLY
+  CNC
+  PRESS
+  PACKAGING
+  UTILITY
+  OTHER
+}
+
 /// Production → Store RM request (PMR); fulfilled via Material Issue Note (MIN).
 enum ProductionMaterialRequestStatus {
   DRAFT
@@ -3310,6 +3323,25 @@ model WastageType {
 
   @@index([isActive, sortOrder])
   @@index([category, isActive])
+}
+
+/// Production Machine Master (Step 1). Soft-deactivate only; not assigned to production yet.
+model Machine {
+  id                 Int         @id @default(autoincrement())
+  machineCode        String      @unique @db.VarChar(32)
+  machineName        String      @db.VarChar(120)
+  machineType        MachineType
+  make               String?     @db.VarChar(120)
+  model              String?     @db.VarChar(120)
+  serialNumber       String?     @db.VarChar(120)
+  departmentLocation String?     @db.VarChar(120)
+  description        String?     @db.VarChar(500)
+  isActive           Boolean     @default(true)
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  @@index([isActive, machineName])
+  @@index([machineType, isActive])
 }
 
 /// Per-report wastage classification rows (stored separately for analytics).

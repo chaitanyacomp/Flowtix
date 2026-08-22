@@ -9,6 +9,7 @@ import {
   Network,
   FileUp,
   HardDrive,
+  Cog,
 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import {
@@ -54,6 +55,13 @@ const CARDS: MasterCard[] = [
     description: "Units of measure used across items and documents.",
     icon: <Ruler className="h-5 w-5" />,
     roles: ["ADMIN", "STORE"],
+  },
+  {
+    to: "/machines",
+    title: "Machines",
+    description: "Production machine register (code, type, make/model). Soft activate/deactivate only.",
+    icon: <Cog className="h-5 w-5" />,
+    roles: ["ADMIN", "PRODUCTION"],
   },
   {
     to: "/locations",

@@ -40,6 +40,7 @@ const { searchRouter } = require("./routes/search");
 const { statesRouter } = require("./routes/states");
 const { unitsRouter } = require("./routes/units");
 const { wastageTypesRouter } = require("./routes/wastageTypes");
+const { machinesRouter } = require("./routes/machines");
 const { locationsRouter } = require("./routes/locations");
 const { adminDatabaseCleanupRouter } = require("./routes/adminDatabaseCleanup");
 const { adminBackupsRouter } = require("./routes/adminBackups");
@@ -190,6 +191,7 @@ function createApp(options = {}) {
   app.use("/api/states", statesRouter);
   app.use("/api/units", unitsRouter);
   app.use("/api/wastage-types", wastageTypesRouter);
+  app.use("/api/machines", machinesRouter);
   app.use("/api/locations", locationsRouter);
   app.use("/api/scrap", scrapRouter);
   app.use("/api/activity", activityRouter);

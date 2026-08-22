@@ -11,10 +11,12 @@ import { DemoSafeToastBridge } from "./components/demo/DemoSafeToastBridge";
 import { applyBrandIdentity } from "./components/branding/Branding";
 import { installErpModalEscapeListener } from "./lib/erpModalEscape";
 import { installAuthHistoryGuard } from "./lib/authSession";
+import { installNumberInputGuards } from "./lib/numberInputGuards";
 
 applyBrandIdentity();
 installErpModalEscapeListener();
 installAuthHistoryGuard();
+installNumberInputGuards();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

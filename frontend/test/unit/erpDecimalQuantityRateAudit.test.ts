@@ -27,6 +27,9 @@ function walkTsx(dir: string, out: string[] = []): string[] {
 const ALLOWED_TYPE_NUMBER = new Set([
   // Integer admin reverse-window days/hours — not a qty/rate commercial field
   relative(srcRoot, join(srcRoot, "pages/AdminSettingsPage.tsx")).replace(/\\/g, "/"),
+  // Production masters — integer/decimal capacity fields; spinners/wheel blocked globally
+  relative(srcRoot, join(srcRoot, "pages/ShiftsPage.tsx")).replace(/\\/g, "/"),
+  relative(srcRoot, join(srcRoot, "pages/FgProductionStandardsPage.tsx")).replace(/\\/g, "/"),
 ]);
 
 describe("ERP decimal Quantity/Rate audit", () => {
@@ -38,6 +41,7 @@ describe("ERP decimal Quantity/Rate audit", () => {
     for (const file of files) {
       const rel = relative(srcRoot, file).replace(/\\/g, "/");
       if (rel === "lib/keyboardDecimalInput.ts") continue;
+      if (rel === "lib/numberInputGuards.ts") continue;
       const text = readFileSync(file, "utf8");
       const lines = text.split(/\r?\n/);
       lines.forEach((line, i) => {

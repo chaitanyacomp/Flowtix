@@ -11,6 +11,7 @@ import {
   HardDrive,
   Cog,
   Clock,
+  Gauge,
 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import {
@@ -76,6 +77,13 @@ const CARDS: MasterCard[] = [
     title: "Shifts",
     description: "Production shift templates (code, window, break). Soft activate/deactivate only.",
     icon: <Clock className="h-5 w-5" />,
+    roles: ["ADMIN", "PRODUCTION"],
+  },
+  {
+    to: "/fg-production-standards",
+    title: "FG Production Standards",
+    description: "FG capacity on a machine (cycle time, cavities, efficiency). Soft activate/deactivate only.",
+    icon: <Gauge className="h-5 w-5" />,
     roles: ["ADMIN", "PRODUCTION"],
   },
   {

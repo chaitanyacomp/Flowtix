@@ -32,6 +32,7 @@ import { WastageTypesPage } from "./pages/WastageTypesPage";
 import { MachinesPage } from "./pages/MachinesPage";
 import { OperatorsPage } from "./pages/OperatorsPage";
 import { ShiftsPage } from "./pages/ShiftsPage";
+import { FgProductionStandardsPage } from "./pages/FgProductionStandardsPage";
 import { LocationsPage } from "./pages/LocationsPage";
 import { StockPage } from "./pages/StockPage";
 import { StockItemDetailPage } from "./pages/StockItemDetailPage";
@@ -587,6 +588,14 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION"]}>
               <ShiftsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/fg-production-standards"
+          element={
+            <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION"]}>
+              <FgProductionStandardsPage />
             </ProtectedRoute>
           }
         />

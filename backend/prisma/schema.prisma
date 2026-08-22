@@ -919,6 +919,7 @@ model Item {
   monthlyProductionPlanRevisionLinesAsFg MonthlyProductionPlanRevisionLine[] @relation("MppRevisionLineFgItem")
   monthlyPlanRequirementCoveragesAsFg MonthlyPlanRequirementCoverage[] @relation("MppRequirementCoverageFgItem")
   rmPlanLinesAsRm                 RmPlanLine[]                     @relation("RmPlanLineRmItem")
+  fgProductionStandards           FgProductionStandard[]
 
   @@index([itemType])
   @@index([isActive])
@@ -3340,6 +3341,8 @@ model Machine {
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
 
+  fgProductionStandards FgProductionStandard[]
+
   @@index([isActive, machineName])
   @@index([machineType, isActive])
 }
@@ -3375,6 +3378,31 @@ model Shift {
   updatedAt            DateTime @updatedAt
 
   @@index([isActive, shiftName])
+}
+
+/// FG Production Standard Master (Step 4). Capacity of an FG on a machine. Soft-deactivate only.
+/// Preview Shift is never stored; used only for expected-qty calculation in UI/API preview.
+model FgProductionStandard {
+  id                         Int      @id @default(autoincrement())
+  itemId                     Int
+  machineId                  Int
+  /// Cycle time in seconds (decimal allowed).
+  cycleTimeSeconds           Decimal  @db.Decimal(18, 3)
+  /// Pieces produced per cycle / cavities (positive whole number).
+  piecesPerCycle             Int      @default(1)
+  /// Standard efficiency percent (0 exclusive … 100 inclusive). Default 95.
+  standardEfficiencyPercent  Decimal  @default(95) @db.Decimal(5, 2)
+  remarks                    String?  @db.VarChar(500)
+  isActive                   Boolean  @default(true)
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  item    Item    @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  machine Machine @relation(fields: [machineId], references: [id], onDelete: Restrict)
+
+  @@unique([itemId, machineId])
+  @@index([isActive, itemId])
+  @@index([machineId, isActive])
 }
 
 /// Per-report wastage classification rows (stored separately for analytics).

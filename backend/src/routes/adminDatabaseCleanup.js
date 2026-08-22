@@ -1655,6 +1655,17 @@ async function runFullDemoResetDeletes(tx, deleted) {
       async () =>
         tryOptionalTableDelete(tx, deleted, ["ratecontract", "RateContract"], "rateContract", () => tx.rateContract.deleteMany({})),
     ],
+    [
+      "fgProductionStandard",
+      async () =>
+        tryOptionalTableDelete(
+          tx,
+          deleted,
+          ["fgproductionstandard", "FgProductionStandard"],
+          "fgProductionStandard",
+          () => tx.fgProductionStandard.deleteMany({}),
+        ),
+    ],
     ["item", async () => addDeleteCount(deleted, "item", () => tx.item.deleteMany({}))],
     ["supplier", async () => addDeleteCount(deleted, "supplier", () => tx.supplier.deleteMany({}))],
     ["customer", async () => addDeleteCount(deleted, "customer", () => tx.customer.deleteMany({}))],

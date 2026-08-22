@@ -95,4 +95,19 @@ describe("MySQL Prisma migration SQL compatibility", () => {
     assert.doesNotMatch(sql, /`startTime`\s+TIMESTAMP\b/i);
     assert.doesNotMatch(sql, /`endTime`\s+TIMESTAMP\b/i);
   });
+
+  it("fg production standard migration creates unique FG+Machine and Restrict FKs", () => {
+    const file = path.join(MIGRATIONS_DIR, "20260822150000_fg_production_standard", "migration.sql");
+    assert.ok(fs.existsSync(file), "fg production standard migration.sql missing");
+    const sql = stripSqlComments(fs.readFileSync(file, "utf8"));
+    assert.match(sql, /CREATE\s+TABLE\s+`FgProductionStandard`/i);
+    assert.match(sql, /`cycleTimeSeconds`\s+DECIMAL\(18,\s*3\)\s+NOT\s+NULL/i);
+    assert.match(sql, /`piecesPerCycle`\s+INTEGER\s+NOT\s+NULL\s+DEFAULT\s+1/i);
+    assert.match(sql, /`standardEfficiencyPercent`\s+DECIMAL\(5,\s*2\)\s+NOT\s+NULL\s+DEFAULT\s+95/i);
+    assert.match(sql, /UNIQUE\s+INDEX\s+`FgProductionStandard_itemId_machineId_key`/i);
+    assert.match(sql, /REFERENCES\s+`Item`\(`id`\)\s+ON\s+DELETE\s+RESTRICT/i);
+    assert.match(sql, /REFERENCES\s+`Machine`\(`id`\)\s+ON\s+DELETE\s+RESTRICT/i);
+    assert.doesNotMatch(sql, /CREATE\s+TABLE\s+"/i);
+    assert.doesNotMatch(sql, /previewShift/i);
+  });
 });

@@ -51,6 +51,7 @@ const PRESERVED_MASTER_MODELS = Object.freeze([
   "Machine",
   "Operator",
   "Shift",
+  "FgProductionStandard",
   "State",
 ]);
 
@@ -69,6 +70,8 @@ const FULL_DEMO_WIPED_MASTERS = Object.freeze([
   "RateContractLine",
   "CustomerPO",
   "CustomerPOLine",
+  /// FG standards Restrict→Item; wipe before Item on Full Demo (transaction reset still preserves).
+  "FgProductionStandard",
 ]);
 
 /**

@@ -981,6 +981,8 @@ model Bom {
   /// Runner/sprue weight produced per mould shot, expressed in fgWeightUnit.
   /// It is engineering material consumption and is not part of delivered FG weight.
   runnerWeight     Decimal @default(0) @db.Decimal(18, 4)
+  /// Standard purging quantity per setup (grams). Master data only — not wired to RM/production yet.
+  standardPurgingQtyGrams Decimal @default(0) @db.Decimal(18, 4)
   /// Number of FG units this BOM represents (default 1 Nos).
   outputQty            Decimal @default(1) @db.Decimal(18, 3)
   /// Legacy compatibility only. Engineering BOM calculations ignore these fields.

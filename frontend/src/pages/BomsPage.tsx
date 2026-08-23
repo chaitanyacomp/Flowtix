@@ -73,6 +73,7 @@ type BomRow = {
   fgWeightUnit?: UnitRow | null;
   outputQty?: string;
   runnerWeight?: string;
+  standardPurgingQtyGrams?: string | number | null;
   /** Legacy response fields; not editable and ignored by engineering calculations. */
   processLossPercent?: string;
   qcLossPercent?: string;
@@ -89,6 +90,7 @@ type HeaderDraft = {
   fgWeightUnitId: number | "";
   outputQty: string;
   runnerWeight: string;
+  standardPurgingQtyGrams: string;
   bomType: BomType;
   effectiveFrom: string;
   remarks: string;
@@ -186,15 +188,21 @@ function BomCell({
   label,
   children,
   className,
+  hint,
+  error,
 }: {
   label: string;
   children: React.ReactNode;
   className?: string;
+  hint?: string;
+  error?: string | null;
 }) {
   return (
     <label className={cn("bom-cell min-w-0", className)}>
       <span className="bom-cell__label">{label}</span>
       {children}
+      {error ? <span className="mt-0.5 block text-[10px] font-medium text-red-600">{error}</span> : null}
+      {!error && hint ? <span className="mt-0.5 block text-[10px] text-slate-500">{hint}</span> : null}
     </label>
   );
 }
@@ -205,6 +213,7 @@ function defaultHeaderDraft(): HeaderDraft {
     fgWeightUnitId: "",
     outputQty: "1",
     runnerWeight: "0",
+    standardPurgingQtyGrams: "0",
     bomType: "STANDARD",
     effectiveFrom: "",
     remarks: "",
@@ -215,12 +224,14 @@ function headerFromBom(b: BomRow): HeaderDraft {
   const fw = b.fgWeight != null ? Number(b.fgWeight) : NaN;
   const oq = b.outputQty != null ? Number(b.outputQty) : 1;
   const rw = Number(b.runnerWeight ?? 0);
+  const purge = Number(b.standardPurgingQtyGrams ?? 0);
   const eff = b.effectiveFrom ? String(b.effectiveFrom).slice(0, 10) : "";
   return {
     fgWeight: Number.isFinite(fw) && fw > 0 ? String(fw) : "",
     fgWeightUnitId: b.fgWeightUnitId ?? "",
     outputQty: Number.isFinite(oq) && oq > 0 ? String(oq) : "1",
     runnerWeight: Number.isFinite(rw) && rw >= 0 ? String(rw) : "0",
+    standardPurgingQtyGrams: Number.isFinite(purge) && purge >= 0 ? String(purge) : "0",
     bomType: b.bomType ?? "STANDARD",
     effectiveFrom: eff,
     remarks: b.remarks ?? "",
@@ -249,7 +260,19 @@ function headerNums(h: HeaderDraft) {
     fgWeightUnitId: h.fgWeightUnitId === "" ? null : Number(h.fgWeightUnitId),
     outputQty: h.outputQty === "" ? 1 : Number(h.outputQty),
     runnerWeight: h.runnerWeight === "" ? 0 : Number(h.runnerWeight),
+    standardPurgingQtyGrams: h.standardPurgingQtyGrams === "" ? 0 : Number(h.standardPurgingQtyGrams),
   };
+}
+
+function standardPurgingQtyError(raw: string): string | null {
+  if (raw.trim() === "") return null;
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(raw.trim())) {
+    return "Enter a valid non-negative number in grams.";
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return "Enter a valid non-negative number in grams.";
+  if (n < 0) return "Cannot be negative.";
+  return null;
 }
 
 function mixPercentError(l: LineDraft, strict = true): string | null {
@@ -461,6 +484,10 @@ function BomSummaryPanel({
         <BomSummaryRow label="RM per FG" value={summary.rmPerFg != null ? `${fmt3(summary.rmPerFg)} ${summary.weightUnitLabel}` : "—"} />
         <BomSummaryRow label="FG per KG" value={summary.weightConfigured && summary.possibleFgPerKg != null ? `${fmtIntish(summary.possibleFgPerKg)} Nos` : "—"} />
         <BomSummaryRow label="Output qty" value={`${fmt3(nums.outputQty)} ${fgUnit}`} />
+        <BomSummaryRow
+          label="Standard Purging Qty per Setup"
+          value={`${fmt3(nums.standardPurgingQtyGrams)} g`}
+        />
         {summarySfg > 0 ? (
           <BomSummaryRow label="Child BOMs linked" value={String(childLinked)} />
         ) : null}
@@ -496,6 +523,7 @@ function BomCompactForm({
   fgSelectRef?: React.Ref<HTMLSelectElement>;
   readOnly?: boolean;
 }) {
+  const purgingError = standardPurgingQtyError(header.standardPurgingQtyGrams);
   return (
     <BomSectionCard title="Recipe details" tone="primary">
       <div className="bom-compact-grid">
@@ -589,6 +617,20 @@ function BomCompactForm({
             value={header.runnerWeight}
             readOnly={readOnly}
             onValueChange={(next) => setHeader((h) => ({ ...h, runnerWeight: next }))}
+          />
+        </BomCell>
+        <BomCell
+          label="Standard Purging Qty per Setup"
+          error={purgingError}
+          hint={!purgingError ? "Master data only — grams per setup" : undefined}
+        >
+          <DecimalInput
+            data-testid="bom-standard-purging-qty"
+            className={cn(opInputClass, "w-full text-right")}
+            value={header.standardPurgingQtyGrams}
+            readOnly={readOnly}
+            unit="g"
+            onValueChange={(next) => setHeader((h) => ({ ...h, standardPurgingQtyGrams: next }))}
           />
         </BomCell>
         <BomCell label="Notes" className="bom-compact-span-3">
@@ -1284,6 +1326,11 @@ export function BomsPage() {
     }
     if (!Number.isFinite(nums.outputQty) || nums.outputQty <= 0) return "Output qty must be greater than 0";
     if (!Number.isFinite(nums.runnerWeight) || nums.runnerWeight < 0) return "Runner weight cannot be negative";
+    const purgeErr = standardPurgingQtyError(h.standardPurgingQtyGrams);
+    if (purgeErr) return `Standard Purging Qty per Setup: ${purgeErr}`;
+    if (!Number.isFinite(nums.standardPurgingQtyGrams) || nums.standardPurgingQtyGrams < 0) {
+      return "Standard Purging Qty per Setup cannot be negative";
+    }
     return null;
   }
 
@@ -1324,6 +1371,7 @@ export function BomsPage() {
       fgWeightUnitId: nums.fgWeightUnitId,
       outputQty: nums.outputQty,
       runnerWeight: nums.runnerWeight,
+      standardPurgingQtyGrams: nums.standardPurgingQtyGrams,
       bomType: h.bomType,
       effectiveFrom: h.effectiveFrom.trim() ? h.effectiveFrom.trim() : null,
       remarks: h.remarks.trim() || null,
@@ -1344,17 +1392,46 @@ export function BomsPage() {
 
   async function approveBom(id: number) {
     setError(null);
-    const v = validateBeforeApprove(header);
-    if (v) {
-      setError(v);
+    const approvingOpenDraft =
+      workspaceMode === "edit" && editingBomId === id && editingBom?.status === "DRAFT";
+
+    // Approving the open draft must persist current workspace values atomically with approve.
+    // Never toast success if save/approve fails.
+    if (approvingOpenDraft) {
+      const v = validateBeforeApprove(header);
+      if (v) {
+        setError(v);
+        return;
+      }
+      try {
+        const result = await apiFetch<BomRow & { approvalWarnings?: string[] }>(`/api/boms/${id}/approve`, {
+          method: "POST",
+          body: JSON.stringify(bomPayload(header, lines)),
+        });
+        await load();
+        resetWorkspaceToIdle();
+        toast.showSuccess("BOM approved successfully");
+        if (result.approvalWarnings?.length) {
+          for (const w of result.approvalWarnings) toast.showInfo(w);
+        }
+      } catch (err) {
+        setError(bomApiError(err));
+      }
       return;
     }
+
+    // List Approve must not silently discard an open dirty draft of the same BOM.
+    if (isDirty && editingBomId === id) {
+      setError("Save Draft before Approve, or Approve from the open editor so changes are kept.");
+      return;
+    }
+
     try {
       const result = await apiFetch<BomRow & { approvalWarnings?: string[] }>(`/api/boms/${id}/approve`, {
         method: "POST",
       });
       await load();
-      resetWorkspaceToIdle();
+      if (editingBomId === id || selectedBomId === id) resetWorkspaceToIdle();
       toast.showSuccess("BOM approved successfully");
       if (result.approvalWarnings?.length) {
         for (const w of result.approvalWarnings) toast.showInfo(w);
@@ -1602,6 +1679,9 @@ export function BomsPage() {
                   <th className="w-[4.5rem] text-right text-[10px] font-extrabold uppercase tracking-wide text-slate-600">
                     Runner
                   </th>
+                  <th className="w-[5rem] text-right text-[10px] font-extrabold uppercase tracking-wide text-slate-600">
+                    Purge (g)
+                  </th>
                   <th className="w-[4rem] text-right text-[10px] font-extrabold uppercase tracking-wide text-slate-600">
                     Shot wt.
                   </th>
@@ -1620,7 +1700,7 @@ export function BomsPage() {
               <tbody>
                 {visibleRows.length === 0 ? (
                   <tr>
-                    <td colSpan={isAdmin ? 10 : 9} className="py-2 text-center text-[11px] text-slate-500">
+                    <td colSpan={isAdmin ? 11 : 10} className="py-2 text-center text-[11px] text-slate-500">
                       {rows.length === 0 ? "No saved BOMs yet." : "No visible BOMs. Enable Show inactive revisions to inspect history."}
                     </td>
                   </tr>
@@ -1655,6 +1735,11 @@ export function BomsPage() {
                         <td className="text-[11px] text-slate-600">{bomTypeLabel(b.bomType)}</td>
                         <td className="text-right tabular-nums text-[12px] text-slate-800">{fgWt}</td>
                         <td className="text-right tabular-nums text-[12px] text-slate-700">{Number(b.runnerWeight ?? 0) > 0 ? `${fmt3(Number(b.runnerWeight))} ${wtLabel}` : "—"}</td>
+                        <td className="text-right tabular-nums text-[12px] text-slate-700">
+                          {Number(b.standardPurgingQtyGrams ?? 0) > 0
+                            ? `${fmt3(Number(b.standardPurgingQtyGrams))} g`
+                            : "—"}
+                        </td>
                         <td className="text-right tabular-nums text-[12px] text-slate-700">{b.planning?.shotWeight != null ? `${fmt3(b.planning.shotWeight)} ${wtLabel}` : "—"}</td>
                         <td className="text-right tabular-nums text-[12px] font-medium text-slate-900">
                           {b.componentSummary

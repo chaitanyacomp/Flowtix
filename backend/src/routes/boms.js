@@ -22,6 +22,7 @@ const {
   loadApprovedChildBomByFgIds,
   summarizeComponentLines,
 } = require("../services/bomComponentService");
+const { parseStandardPurgingQtyGrams, STANDARD_PURGING_QTY_LABEL } = require("../services/bomUtils");
 
 const bomRouter = express.Router();
 
@@ -42,10 +43,24 @@ const bomInclude = {
 
 const bomTypeSchema = z.enum(["STANDARD", "APPROXIMATE", "CUSTOMER_SPECIFIC"]);
 
+/** Blank/null/omitted → 0; reject negative / non-numeric / NaN / Infinity (no silent coerce). */
+const standardPurgingQtyGramsSchema = z.any().transform((value, ctx) => {
+  try {
+    return parseStandardPurgingQtyGrams(value === undefined ? null : value);
+  } catch (e) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: e?.message || `${STANDARD_PURGING_QTY_LABEL} must be a valid number.`,
+    });
+    return z.NEVER;
+  }
+});
+
 const headerSchema = z.object({
   fgWeight: z.number().positive().optional().nullable(),
   fgWeightUnitId: z.number().int().positive().optional().nullable(),
   runnerWeight: z.number().min(0).optional().default(0),
+  standardPurgingQtyGrams: standardPurgingQtyGramsSchema,
   outputQty: z.number().positive().optional().default(1),
   bomType: bomTypeSchema.optional().default("STANDARD"),
   effectiveFrom: z
@@ -71,10 +86,14 @@ function normalizeBomHeaderInput(h) {
   const fgWeightUnitId =
     h.fgWeightUnitId != null && h.fgWeightUnitId !== "" ? Number(h.fgWeightUnitId) : null;
   const effectiveFrom = h.effectiveFrom instanceof Date ? h.effectiveFrom : null;
+  const standardPurgingQtyGrams = parseStandardPurgingQtyGrams(
+    h.standardPurgingQtyGrams === undefined ? null : h.standardPurgingQtyGrams,
+  );
   return {
     fgWeight: fgWeight != null && Number.isFinite(fgWeight) && fgWeight > 0 ? String(fgWeight) : null,
     fgWeightUnitId: fgWeightUnitId != null && Number.isFinite(fgWeightUnitId) ? fgWeightUnitId : null,
     runnerWeight: String(Math.max(0, Number(h.runnerWeight ?? 0))),
+    standardPurgingQtyGrams: String(standardPurgingQtyGrams),
     outputQty: String(Math.max(0.001, Number(h.outputQty ?? 1))),
     processLossPercent: "0",
     qcLossPercent: "0",
@@ -110,6 +129,7 @@ async function mapBomResponse(row, tx = prisma) {
   const withComponents = await enrichBomRowWithComponents(tx, planning);
   return {
     ...withComponents,
+    standardPurgingQtyGrams: Number(withComponents.standardPurgingQtyGrams ?? 0),
     revisionLabel: `R${withComponents.revisionNo ?? 1}`,
   };
 }
@@ -130,6 +150,7 @@ async function mapBomListResponse(rows) {
       ...planning,
       lines,
       componentSummary,
+      standardPurgingQtyGrams: Number(planning.standardPurgingQtyGrams ?? 0),
       revisionLabel: `R${planning.revisionNo ?? 1}`,
     };
   });
@@ -325,6 +346,7 @@ bomRouter.post("/:id/revise", requireAuth, requireRole(["ADMIN"], BOM_EDIT_FORBI
         fgWeightUnitId: source.fgWeightUnitId,
         outputQty: Number(source.outputQty ?? 1),
         runnerWeight: Number(source.runnerWeight ?? 0),
+        standardPurgingQtyGrams: Number(source.standardPurgingQtyGrams ?? 0),
         bomType: source.bomType,
         effectiveFrom: source.effectiveFrom,
         remarks: source.remarks,
@@ -379,6 +401,48 @@ bomRouter.post("/:id/revise", requireAuth, requireRole(["ADMIN"], BOM_EDIT_FORBI
   }
 });
 
+/**
+ * Resolve header (+ optional lines) for approval.
+ * When the client sends a draft body (header + lines), persist those values
+ * in the same transaction as approval so Approve cannot discard unsaved edits.
+ */
+function resolveApproveDraft(existing, rawBody) {
+  const hasDraftBody =
+    rawBody &&
+    typeof rawBody === "object" &&
+    !Array.isArray(rawBody) &&
+    Array.isArray(rawBody.lines);
+  if (hasDraftBody) {
+    const body = updateBomSchema.parse(rawBody);
+    if (!ensureUniqueRm(body.lines)) {
+      const err = new Error("Duplicate component item in BOM lines");
+      err.statusCode = 400;
+      throw err;
+    }
+    const header = normalizeBomHeaderInput(body);
+    assertEffectiveFromForApproval(header);
+    return { header, lines: body.lines, persistDraft: true };
+  }
+
+  if (!existing.lines?.length) {
+    const err = new Error("Add at least one component line before approval.");
+    err.statusCode = 400;
+    throw err;
+  }
+  const header = normalizeBomHeaderInput({
+    fgWeight: existing.fgWeight != null ? Number(existing.fgWeight) : null,
+    fgWeightUnitId: existing.fgWeightUnitId,
+    outputQty: Number(existing.outputQty ?? 1),
+    runnerWeight: Number(existing.runnerWeight ?? 0),
+    standardPurgingQtyGrams: Number(existing.standardPurgingQtyGrams ?? 0),
+    bomType: existing.bomType,
+    effectiveFrom: existing.effectiveFrom,
+    remarks: existing.remarks,
+  });
+  assertEffectiveFromForApproval(header);
+  return { header, lines: null, persistDraft: false };
+}
+
 bomRouter.post("/:id/approve", requireAuth, requireRole(["ADMIN"], BOM_EDIT_FORBIDDEN), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -401,25 +465,16 @@ bomRouter.post("/:id/approve", requireAuth, requireRole(["ADMIN"], BOM_EDIT_FORB
       err.statusCode = 400;
       throw err;
     }
-    if (!existing.lines?.length) {
-      const err = new Error("Add at least one component line before approval.");
-      err.statusCode = 400;
-      throw err;
-    }
 
-    const header = normalizeBomHeaderInput({
-      fgWeight: existing.fgWeight != null ? Number(existing.fgWeight) : null,
-      fgWeightUnitId: existing.fgWeightUnitId,
-      outputQty: Number(existing.outputQty ?? 1),
-      runnerWeight: Number(existing.runnerWeight ?? 0),
-      bomType: existing.bomType,
-      effectiveFrom: existing.effectiveFrom,
-      remarks: existing.remarks,
-    });
-    assertEffectiveFromForApproval(header);
+    const { header, lines, persistDraft } = resolveApproveDraft(existing, req.body);
 
     const now = new Date();
     const updated = await prisma.$transaction(async (tx) => {
+      if (persistDraft) {
+        await assertBomLinesValid(tx, existing.fgItemId, lines);
+        await replaceBomLines(tx, id, lines, header);
+      }
+
       await tx.bom.updateMany({
         where: {
           fgItemId: existing.fgItemId,
@@ -435,6 +490,12 @@ bomRouter.post("/:id/approve", requireAuth, requireRole(["ADMIN"], BOM_EDIT_FORB
       return tx.bom.update({
         where: { id },
         data: {
+          ...(persistDraft
+            ? {
+                ...header,
+                normalizationMode: "PER_PIECE",
+              }
+            : {}),
           status: BomStatus.APPROVED,
           isLocked: true,
           lockedAt: now,
@@ -454,7 +515,6 @@ bomRouter.post("/:id/approve", requireAuth, requireRole(["ADMIN"], BOM_EDIT_FORB
     return next(e);
   }
 });
-
 bomRouter.post("/:id/deactivate", requireAuth, requireRole(["ADMIN"], BOM_EDIT_FORBIDDEN), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -608,4 +668,11 @@ bomRouter.post("/", requireAuth, requireRole(["ADMIN"], BOM_CREATE_FORBIDDEN), a
   }
 });
 
-module.exports = { bomRouter };
+module.exports = {
+  bomRouter,
+  normalizeBomHeaderInput,
+  headerSchema,
+  createBomSchema,
+  updateBomSchema,
+  resolveApproveDraft,
+};

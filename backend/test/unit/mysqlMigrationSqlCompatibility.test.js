@@ -110,4 +110,17 @@ describe("MySQL Prisma migration SQL compatibility", () => {
     assert.doesNotMatch(sql, /CREATE\s+TABLE\s+"/i);
     assert.doesNotMatch(sql, /previewShift/i);
   });
+
+  it("bom standard purging qty migration adds non-negative grams column with default 0", () => {
+    const file = path.join(MIGRATIONS_DIR, "20260823100000_bom_standard_purging_qty_grams", "migration.sql");
+    assert.ok(fs.existsSync(file), "bom standard purging qty migration.sql missing");
+    const sql = stripSqlComments(fs.readFileSync(file, "utf8"));
+    assert.match(sql, /ALTER\s+TABLE\s+`Bom`/i);
+    assert.match(
+      sql,
+      /ADD\s+COLUMN\s+`standardPurgingQtyGrams`\s+DECIMAL\(18,\s*4\)\s+NOT\s+NULL\s+DEFAULT\s+0/i,
+    );
+    assert.doesNotMatch(sql, /ALTER\s+TABLE\s+"/i);
+    assert.doesNotMatch(sql, /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS/i);
+  });
 });

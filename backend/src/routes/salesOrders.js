@@ -8,6 +8,7 @@ const {
   SO_READ_ROLES,
   SO_DETAIL_READ_ROLES,
   WO_PLAN_PREP_ROLES,
+  WO_MACHINE_RUN_WRITE_ROLES,
   NEXT_RS_WRITE_ROLES,
   NO_QTY_FLOW_STATE_READ_ROLES,
   DISPATCH_WRITE_ROLES,
@@ -24,6 +25,7 @@ const {
   buildRegularSoPlanningSnapshotView,
   regularSoPlanningSnapshotToDto,
   upsertRegularSoPlanningSnapshot,
+  reopenRegularSoMachinePlanning,
   resolveSuggestedFgPlanningBufferPercentForSalesOrder,
 } = require("../services/regularSoPlanningSnapshotService");
 const { getStrictInventoryControl } = require("../services/appSettings");
@@ -1469,6 +1471,13 @@ function parsePlanQtyByLineIdFromQuery(query) {
   return out;
 }
 
+function parsePlannedSetupCountFromQuery(query) {
+  const raw = query.plannedSetupCount ?? query.setupCount;
+  if (raw == null || String(raw).trim() === "") return undefined;
+  const { parsePlannedSetupCount } = require("../services/bomPurgingRmPlanningService");
+  return parsePlannedSetupCount(raw, { allowDefault: false });
+}
+
 salesOrderRouter.get(
   "/:id/production-planning-snapshot",
   requireAuth,
@@ -1482,6 +1491,10 @@ salesOrderRouter.get(
         salesOrderId: view.salesOrderId,
         orderType: view.orderType,
         bufferPercent: view.bufferPercent,
+        plannedSetupCount: view.plannedSetupCount ?? 1,
+        plannedPurgeCount: view.plannedPurgeCount ?? 0,
+        productionRunCount: view.productionRunCount ?? 0,
+        productionRuns: view.productionRuns ?? [],
         suggestedFgPlanningBufferPercent,
         snapshotId: view.snapshotId,
         snapshotUpdatedAt: view.snapshotUpdatedAt,
@@ -1505,15 +1518,65 @@ salesOrderRouter.put(
       const schema = z.object({
         bufferPercent: z.number().min(0).max(10).optional(),
         bufferReason: z.string().max(500).optional(),
+        /** @deprecated Ignored except to reject mismatch vs derived run count. */
+        plannedSetupCount: z.number().int().min(1).max(9999).optional(),
+        /** draft = incomplete OK; complete = full validation before Store queue. */
+        machinePlanningMode: z.enum(["draft", "complete"]).optional(),
+        productionRuns: z
+          .array(
+            z.object({
+              fgItemId: z.coerce.number().int().positive(),
+              runSequence: z.coerce.number().int().positive().optional(),
+              machineId: z.coerce.number().int().positive(),
+              plannedQty: z.coerce.number().positive(),
+              plannedDate: z.string().optional().nullable(),
+              shiftId: z.coerce.number().int().positive().optional().nullable(),
+            }),
+          )
+          .optional(),
       });
       const body = schema.parse(req.body ?? {});
       const snapshot = await upsertRegularSoPlanningSnapshot(
         {
           salesOrderId: soId,
           bufferPercent: body.bufferPercent ?? 0,
+          // Client plannedSetupCount is not accepted — purge/setup derived from detection.
+          productionRuns: body.productionRuns,
+          machinePlanningMode: body.machinePlanningMode ?? null,
           createdByUserId: req.user?.userId ?? null,
           actorRole: req.user?.role ?? null,
           bufferReason: body.bufferReason ?? null,
+        },
+        prisma,
+      );
+      return res.json({
+        ok: true,
+        snapshot: regularSoPlanningSnapshotToDto(snapshot),
+      });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+salesOrderRouter.post(
+  "/:id/machine-planning/reopen",
+  requireAuth,
+  requireRole([...WO_MACHINE_RUN_WRITE_ROLES]),
+  async (req, res, next) => {
+    try {
+      const soId = Number(req.params.id);
+      const schema = z.object({
+        reason: z.string().min(3).max(500),
+      });
+      const body = schema.parse(req.body ?? {});
+      const snapshot = await reopenRegularSoMachinePlanning(
+        {
+          salesOrderId: soId,
+          reason: body.reason,
+          createdByUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
+          user: req.user ?? null,
         },
         prisma,
       );
@@ -1535,6 +1598,7 @@ salesOrderRouter.get(
     try {
       const soId = Number(req.params.id);
       const planQtyByLineId = parsePlanQtyByLineIdFromQuery(req.query);
+      // plannedSetupCount query param is ignored (derived from snapshot production runs).
       const data = await rmCheckForSalesOrder(soId, { planQtyByLineId });
       const strict = await getStrictInventoryControl();
       const materialOk = Boolean(data.canCreateWorkOrder);
@@ -1542,6 +1606,53 @@ salesOrderRouter.get(
         ...data,
         strictInventoryControl: strict,
         /** REGULAR WO prepare: material planning engine gates work-order creation. */
+        proceedAllowed: materialOk,
+        blockMessage: data.woBlockReason ?? null,
+      });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/** Live RM + purging preview with optional in-progress productionRuns (not yet saved). */
+salesOrderRouter.post(
+  "/:id/rm-check",
+  requireAuth,
+  requireRole(WO_PLAN_PREP_ROLES),
+  async (req, res, next) => {
+    try {
+      const soId = Number(req.params.id);
+      const schema = z.object({
+        planQtyByLineId: z.record(z.string(), z.coerce.number().nonnegative()).optional(),
+        productionRuns: z
+          .array(
+            z.object({
+              fgItemId: z.coerce.number().int().positive(),
+              runSequence: z.coerce.number().int().positive().optional(),
+              machineId: z.coerce.number().int().positive(),
+              plannedQty: z.coerce.number().positive(),
+              plannedDate: z.string().optional().nullable(),
+              shiftId: z.coerce.number().int().positive().optional().nullable(),
+            }),
+          )
+          .optional(),
+      });
+      const body = schema.parse(req.body ?? {});
+      const planQtyByLineId = {};
+      for (const [k, v] of Object.entries(body.planQtyByLineId ?? {})) {
+        const lineId = Number(k);
+        if (Number.isFinite(lineId) && lineId > 0) planQtyByLineId[lineId] = Number(v);
+      }
+      const data = await rmCheckForSalesOrder(soId, {
+        planQtyByLineId,
+        productionRuns: body.productionRuns,
+      });
+      const strict = await getStrictInventoryControl();
+      const materialOk = Boolean(data.canCreateWorkOrder);
+      return res.json({
+        ...data,
+        strictInventoryControl: strict,
         proceedAllowed: materialOk,
         blockMessage: data.woBlockReason ?? null,
       });

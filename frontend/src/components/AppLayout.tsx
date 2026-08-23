@@ -83,7 +83,12 @@ import {
 } from "../config/erpRoles";
 import { isStoreNavItemVisible } from "../lib/storeNavFilter";
 import { isPurchaseNavItemVisible } from "../lib/purchaseNavFilter";
-import { isProductionNavItemVisible } from "../lib/productionNavFilter";
+import {
+  isProductionNavItemVisible,
+  isRequirementCyclePlanningNavActive,
+  isWorkOrderRegisterNavActive,
+  REQUIREMENT_CYCLE_PLANNING_HREF,
+} from "../lib/productionNavFilter";
 import { isQaNavItemVisible } from "../lib/qaNavFilter";
 
 type NavItem = {
@@ -289,7 +294,7 @@ const navGroups: NavGroup[] = [
     icon: <Factory className="h-4 w-4 shrink-0" />,
     collapsible: true,
     items: [
-      { to: "/planning-dashboard", navKey: "plan-dash", label: "Requirement & Cycle Planning", roles: [...PLANNING_DASHBOARD_ROLES], icon: <BarChart3 className="h-4 w-4 shrink-0" /> },
+      { to: REQUIREMENT_CYCLE_PLANNING_HREF, navKey: "plan-dash", label: "Requirement & Cycle Planning", roles: [...PLANNING_DASHBOARD_ROLES], icon: <BarChart3 className="h-4 w-4 shrink-0" /> },
       {
         to: "/no-qty-agreements",
         navKey: "no-qty-agreements",
@@ -297,7 +302,7 @@ const navGroups: NavGroup[] = [
         roles: [...PLANNING_DASHBOARD_ROLES],
         icon: <FileSpreadsheet className="h-4 w-4 shrink-0" />,
       },
-      { to: "/work-orders?flow=REGULAR_SO", navKey: "wo", label: "Work Order", roles: ["ADMIN", "STORE", "PRODUCTION"], icon: <Factory className="h-4 w-4 shrink-0" /> },
+      { to: "/work-orders?flow=REGULAR_SO", navKey: "wo", label: "Work Order", roles: ["ADMIN", "STORE", "PRODUCTION"], icon: <Factory className="h-4 w-4 shrink-0" />, end: true },
       { to: "/production", navKey: "prod", label: "Production Workspace", roles: ["ADMIN", "PRODUCTION"], icon: <GitBranch className="h-4 w-4 shrink-0" /> },
       {
         to: "/production/material-requests",
@@ -428,9 +433,15 @@ function groupDefaultOpen(pathname: string, group: NavGroup): boolean {
       pathname.startsWith(p),
     );
   if (group.key === "production-flow")
-    return ["/planning-dashboard", "/work-orders", "/rm-check", "/production", "/qc-entry", "/qc-report"].some((p) =>
-      pathname.startsWith(p),
-    );
+    return [
+      "/planning-dashboard",
+      "/work-orders",
+      "/rm-check",
+      "/production",
+      "/qc-entry",
+      "/qc-report",
+      "/no-qty-agreements",
+    ].some((p) => pathname.startsWith(p));
   if (group.key === "settings")
     return (
       pathname.startsWith("/admin/settings") ||
@@ -447,7 +458,7 @@ export function AppLayout() {
   const auth = useAuth();
   useErpCacheLifecycle();
   const demo = useDemoMode();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const { flags } = useFeatureFlags();
   const role = auth.user?.role || "";
   const pageTitle =
@@ -461,7 +472,10 @@ export function AppLayout() {
             ? "Quality Inspection Dashboard"
             : pathname === "/dashboard" && role === "ADMIN"
               ? "Operations"
-              : getPageTitle(pathname);
+              : (pathname.startsWith("/work-orders/prepare") || pathname === "/rm-check") &&
+                  role === "PRODUCTION"
+                ? "Machine Run Planning"
+                : getPageTitle(pathname, search);
 
   const [aboutOpen, setAboutOpen] = React.useState(false);
   const [aboutVersion, setAboutVersion] = React.useState<string | null>(null);
@@ -581,7 +595,15 @@ export function AppLayout() {
                       to={item.to}
                       end={item.end === true}
                       title={item.navHint ?? (sidebarCollapsed ? item.label : undefined)}
-                      className={({ isActive }) => cn("erp-nav-link text-[13px] leading-snug", isActive ? "erp-nav-link-active" : "")}
+                      className={({ isActive }) => {
+                        const active =
+                          item.navKey === "plan-dash"
+                            ? isRequirementCyclePlanningNavActive(pathname)
+                            : item.navKey === "wo"
+                              ? isWorkOrderRegisterNavActive(pathname)
+                              : isActive;
+                        return cn("erp-nav-link text-[13px] leading-snug", active ? "erp-nav-link-active" : "");
+                      }}
                     >
                       {item.icon}
                       {!sidebarCollapsed ? <span className="min-w-0 truncate">{item.label}</span> : null}

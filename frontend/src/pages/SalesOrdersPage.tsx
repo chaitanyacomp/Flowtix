@@ -32,7 +32,7 @@ import {
 import { Button } from "../components/ui/button";
 import { ErpModal } from "../components/erp/ErpModal";
 import { REGULAR_TERMS } from "../lib/flowTerminology";
-import { woPreparePositionLabel, woPreparePrimaryCta, type WoPrepareOperational } from "../lib/woPrepareOperationalStage";
+import { woPreparePositionLabel, woPreparePrimaryCta, woPreparePrepareHref, type WoPrepareOperational } from "../lib/woPrepareOperationalStage";
 import { formatProcessStageDisplayLabel } from "../lib/operationalErrorPresentation";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
@@ -338,6 +338,12 @@ function processStageBadgeVariant(
   woPrepareKey?: string | null,
 ): "default" | "success" | "warning" | "info" {
   if (woPrepareKey === "READY_FOR_WO") return "success";
+  if (
+    woPrepareKey === "MACHINE_PLANNING_PENDING" ||
+    woPrepareKey === "MACHINE_PLANNING_IN_PROGRESS"
+  ) {
+    return "warning";
+  }
   if (woPrepareKey === "PURCHASE_GRN_PENDING" || woPrepareKey === "RM_SHORTAGE") return "warning";
   if (key === "COMPLETED") return "info";
   if (key === "NO_QTY_BILLING_COMPLETE" || key === "NO_QTY_READY_TO_CLOSE") return "success";
@@ -585,11 +591,68 @@ function getPrimaryCta(so: SoRow, role: string): { label: string; to: string; st
   if (so.orderType === "NO_QTY") return null;
   const stage = so.processStage?.key;
   const sid = encodeURIComponent(String(so.id));
-  const canWoFromSo = hasErpRole(role, [...SO_WRITE_ROLES, ...WO_PLAN_PREP_ROLES]) && role !== "PRODUCTION";
+  const op = so.woPrepareOperational ?? null;
+  const canPlanMachines = hasErpRole(role, ["ADMIN", "PRODUCTION"]);
+  const canCreateWo =
+    hasErpRole(role, ["ADMIN", "STORE"]) &&
+    (op?.nextActionKey === "CREATE_WO" || role === "ADMIN");
   switch (stage) {
-    case "WO_PENDING":
-      if (!canWoFromSo) return null;
-      return { ...woPreparePrimaryCta(so.id, so.woPrepareOperational ?? null), state: { from: "sales-orders" } };
+    case "WO_PENDING": {
+      if (op?.nextActionKey === "PLAN_MACHINE_RUNS") {
+        if (!canPlanMachines && role === "STORE") {
+          return {
+            label: "Machine allocation pending",
+            to: woPreparePrepareHref(so.id),
+            state: { from: "sales-orders" },
+          };
+        }
+        if (!canPlanMachines) return null;
+        return {
+          ...woPreparePrimaryCta(so.id, op, role),
+          state: { from: "sales-orders" },
+        };
+      }
+      if (op?.nextActionKey === "CREATE_WO") {
+        if (role === "STORE" || role === "ADMIN") {
+          return {
+            ...woPreparePrimaryCta(so.id, op, role),
+            state: { from: "sales-orders" },
+          };
+        }
+        if (role === "PRODUCTION") {
+          return {
+            label: "View machine planning",
+            to: woPreparePrepareHref(so.id, { intent: "machine-planning" }),
+            state: { from: "sales-orders" },
+          };
+        }
+        return null;
+      }
+      if (role === "PRODUCTION") {
+        return {
+          ...woPreparePrimaryCta(so.id, op, role),
+          state: { from: "sales-orders" },
+        };
+      }
+      if (!canCreateWo && role === "STORE" && op?.nextActionKey !== "CREATE_WO") {
+        // Store may still open prepare for RM review when machine planning is done but not READY_FOR_WO.
+        if (op?.machinePlanningComplete) {
+          return {
+            ...woPreparePrimaryCta(so.id, op, role),
+            state: { from: "sales-orders" },
+          };
+        }
+        return {
+          label: "Machine allocation pending",
+          to: woPreparePrepareHref(so.id),
+          state: { from: "sales-orders" },
+        };
+      }
+      if (hasErpRole(role, [...SO_WRITE_ROLES, ...WO_PLAN_PREP_ROLES]) && role !== "PRODUCTION") {
+        return { ...woPreparePrimaryCta(so.id, op, role), state: { from: "sales-orders" } };
+      }
+      return null;
+    }
     case "PRODUCTION_PENDING":
       if (!hasErpRole(role, PRODUCTION_WRITE_ROLES)) return null;
       return {

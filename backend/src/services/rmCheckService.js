@@ -89,6 +89,10 @@ async function rmCheckForSalesOrder(soId, opts = {}, db = prisma) {
     fgLines,
     planQtyByLineId: opts.planQtyByLineId,
     planQtyByFgItemId: opts.planQtyByFgItemId,
+    // Client counts are not trusted; purge count comes only from run detection.
+    productionRuns: opts.productionRuns,
+    plannedPurgeCount: opts.plannedPurgeCount,
+    purgeCountByFgItemId: opts.purgeCountByFgItemId,
   }, db);
 
   const rmSummary = readiness.rmSummary.map((r) => ({
@@ -96,6 +100,8 @@ async function rmCheckForSalesOrder(soId, opts = {}, db = prisma) {
     itemName: r.itemName,
     unit: r.unit,
     requiredQty: r.requiredQty,
+    productionRequiredQty: r.productionRequiredQty ?? r.requiredQty,
+    purgingRequiredQty: r.purgingRequiredQty ?? 0,
     availableQty: r.availableQty,
     shortage: r.shortageQty,
     shortageQty: r.shortageQty,
@@ -106,6 +112,7 @@ async function rmCheckForSalesOrder(soId, opts = {}, db = prisma) {
   return {
     fgLines,
     rmSummary,
+    purgingPlanning: readiness.purgingPlanning ?? null,
     allRmEnough: readiness.materialReadiness.allRmAvailable,
     allFgEnough,
     materialReadiness: readiness.materialReadiness,
@@ -114,6 +121,7 @@ async function rmCheckForSalesOrder(soId, opts = {}, db = prisma) {
     pendingMaterialRequirements: readiness.pendingMaterialRequirements,
     fgSummary: readiness.fgSummary,
     suggestedFgPlanningBufferPercent,
+    machinePlanning: readiness.machinePlanning ?? null,
   };
 }
 

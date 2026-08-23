@@ -63,6 +63,8 @@ export const DISPATCH_READ_ROLES = ["ADMIN", "STORE"] as const;
 export const GRN_WRITE_ROLES = ["ADMIN", "STORE"] as const;
 export const MATERIAL_ISSUE_ROLES = ["ADMIN", "STORE"] as const;
 export const STORE_DASHBOARD_ROLES = ["ADMIN", "STORE"] as const;
+/** Carry Forward Pending pool on planning hub — Store consumes; Production creates via finish, does not list. */
+export const CARRY_FORWARD_PENDING_ROLES = ["ADMIN", "STORE"] as const;
 
 export const CUSTOMER_RETURN_CREATE_ROLES = ["ADMIN", "STORE"] as const;
 export const CUSTOMER_RETURN_APPROVE_ROLES = ["ADMIN"] as const;
@@ -74,6 +76,10 @@ export const NO_QTY_FLOW_STATE_READ_ROLES = ["ADMIN", "STORE", "PRODUCTION", "QA
 /** STORE owns Regular WO prepare/placement (ownership matrix); PRODUCTION may open prepare. */
 export const WO_WRITE_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
 export const WO_PLAN_PREP_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
+/** ADMIN + PRODUCTION edit machine production-run allocations; STORE is read-only on runs. */
+export const WO_MACHINE_RUN_WRITE_ROLES = ["ADMIN", "PRODUCTION"] as const;
+/** REGULAR_SO WO create after machine planning — Store primary; Admin secondary. */
+export const REGULAR_SO_WO_CREATE_ROLES = ["ADMIN", "STORE"] as const;
 /** STORE — Green Level replenishment WO placement (monthly plan handoff) */
 export const GREEN_LEVEL_WO_PLACEMENT_ROLES = ["ADMIN", "STORE"] as const;
 export const PRODUCTION_WRITE_ROLES = ["ADMIN", "PRODUCTION"] as const;

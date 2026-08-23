@@ -1,6 +1,18 @@
 const { prisma } = require("../utils/prisma");
 const { computePlannedQtyFromCustomerBuffer } = require("./regularSoBufferQty");
 const { getItemStockQty, usableStockDisplayQty } = require("./stockService");
+const {
+  validateAndEnrichProductionRuns,
+  replaceRegularSoSnapshotProductionRuns,
+  mapPersistedRunRow,
+  RUN_INCLUDE,
+} = require("./woProductionRunAllocationService");
+const { WO_MACHINE_RUN_WRITE_ROLES } = require("../constants/erpRoles");
+
+function canWriteMachineRuns(role) {
+  const r = String(role ?? "").trim().toUpperCase();
+  return WO_MACHINE_RUN_WRITE_ROLES.includes(r);
+}
 
 function n(v) {
   const x = typeof v === "number" ? v : Number(v);
@@ -153,6 +165,10 @@ async function loadRegularSoPlanningSnapshot(salesOrderId, db = prisma) {
         },
         orderBy: { id: "asc" },
       },
+      productionRuns: {
+        include: RUN_INCLUDE,
+        orderBy: [{ fgItemId: "asc" }, { runSequence: "asc" }],
+      },
     },
   });
 }
@@ -184,6 +200,19 @@ async function buildRegularSoPlanningSnapshotView(salesOrderId, db = prisma) {
   const orderType = so.orderType ?? "NORMAL";
   const fgLines = (so.lines ?? []).filter((line) => line.item?.itemType === "FG");
   const bufferPercent = snapshot ? clampBufferPercent(snapshot.bufferPercent) : 0;
+  const productionRuns = (snapshot?.productionRuns ?? []).map(mapPersistedRunRow).filter(Boolean);
+  const productionRunCount =
+    productionRuns.length > 0
+      ? productionRuns.length
+      : snapshot?.productionRunCount ?? 0;
+  const plannedPurgeCount =
+    productionRuns.length > 0
+      ? productionRuns.filter((r) => r.purgingRequired).length
+      : snapshot?.plannedPurgeCount != null
+        ? Number(snapshot.plannedPurgeCount)
+        : 0;
+  // Legacy physical-setup field only — never used as purging multiplier.
+  const plannedSetupCount = snapshot?.plannedSetupCount ?? 1;
   const lines = [];
 
   for (const line of fgLines) {
@@ -225,6 +254,12 @@ async function buildRegularSoPlanningSnapshotView(salesOrderId, db = prisma) {
     salesOrderId: soId,
     orderType,
     bufferPercent,
+    plannedSetupCount,
+    plannedPurgeCount,
+    productionRunCount,
+    productionRuns,
+    machinePlanningCompleted: Boolean(snapshot?.machinePlanningCompleted),
+    machinePlanningCompletedAt: snapshot?.machinePlanningCompletedAt ?? null,
     snapshotId: snapshot?.id ?? null,
     snapshotUpdatedAt: snapshot?.updatedAt ?? null,
     lines,
@@ -237,10 +272,14 @@ async function upsertRegularSoPlanningSnapshot(
   {
     salesOrderId,
     bufferPercent = 0,
+    plannedSetupCount,
+    productionRuns,
     createdByUserId = null,
     actorRole = null,
     bufferReason = null,
     skipBufferApprovalSupersede = false,
+    /** `draft` = allow incomplete/stale qty rows; `complete` = full validation (default when runs sent). */
+    machinePlanningMode = null,
   },
   db = prisma,
 ) {
@@ -265,6 +304,28 @@ async function upsertRegularSoPlanningSnapshot(
   if ((so.orderType ?? "NORMAL") === "NO_QTY") {
     const err = new Error("Production planning snapshot is not available for NO_QTY sales orders.");
     err.statusCode = 400;
+    throw err;
+  }
+
+  const existingEarly = await db.regularSoPlanningSnapshot.findUnique({
+    where: { salesOrderId: soId },
+    select: { machinePlanningCompleted: true },
+  });
+  if (
+    existingEarly?.machinePlanningCompleted &&
+    (productionRuns != null ||
+      String(machinePlanningMode ?? "")
+        .trim()
+        .toLowerCase() === "draft" ||
+      String(machinePlanningMode ?? "")
+        .trim()
+        .toLowerCase() === "complete")
+  ) {
+    const err = new Error(
+      "Machine planning is handed to Store. Reopen planning before editing allocations.",
+    );
+    err.statusCode = 409;
+    err.code = "MACHINE_PLANNING_HANDED_OFF";
     throw err;
   }
 
@@ -299,6 +360,11 @@ async function upsertRegularSoPlanningSnapshot(
     throw err;
   }
   const normalizedBufferPercent = bufferGate.bufferPercent;
+  // Client-submitted plannedSetupCount is rejected when present (backend derives counts).
+  if (plannedSetupCount != null && plannedSetupCount !== "") {
+    const { assertClientSetupCountMatchesDerived } = require("./woProductionRunAllocationService");
+    assertClientSetupCountMatchesDerived(plannedSetupCount);
+  }
 
   const fgStockRows = await Promise.all(
     fgLines.map(async (line) => {
@@ -316,14 +382,101 @@ async function upsertRegularSoPlanningSnapshot(
   const run = async (tx) => {
     const existing = await tx.regularSoPlanningSnapshot.findUnique({
       where: { salesOrderId: soId },
-      select: { id: true, createdByUserId: true },
+      select: { id: true, createdByUserId: true, plannedSetupCount: true },
     });
+
+    // Build line metrics first so run qty can be validated against planned production qty.
+    const plannedLineMetrics = fgLines.map((line) => {
+      const fgStock = fgStockByLineId.get(line.id) ?? 0;
+      const customerCommittedQty = n(line.customerPoQty ?? line.qty);
+      const rawPlanned = computePlannedQtyFromCustomerBuffer(customerCommittedQty, normalizedBufferPercent);
+      const plannedProductionQty = applyFgUomPrecisionToPlannedQty(rawPlanned, 0);
+      const productionBufferQty = Math.max(0, plannedProductionQty - customerCommittedQty);
+      const fgStockAdjustmentQty = Math.max(0, n(fgStock));
+      const rmPlanningQty = plannedProductionQty;
+      return {
+        salesOrderLineId: line.id,
+        fgItemId: line.itemId,
+        fgName: line.item?.itemName ?? `FG ${line.itemId}`,
+        customerCommittedQty,
+        productionBufferQty,
+        plannedProductionQty,
+        fgStockAdjustmentQty,
+        rmPlanningQty,
+      };
+    });
+
+    let derivedPurgeCount = null;
+    let derivedRunCount = null;
+    let enrichedRuns = null;
+    let handoffPatch = {};
+    if (productionRuns !== undefined) {
+      if (!canWriteMachineRuns(actorRole)) {
+        const err = new Error(
+          "Only Admin or Production may create or edit machine production-run allocations.",
+        );
+        err.statusCode = 403;
+        err.code = "PRODUCTION_RUNS_FORBIDDEN";
+        throw err;
+      }
+      const mode = String(machinePlanningMode ?? "").trim().toLowerCase();
+      const allowIncomplete = mode === "draft";
+      const requireComplete = mode === "complete";
+      const validated = await validateAndEnrichProductionRuns(
+        tx,
+        productionRuns,
+        plannedLineMetrics.map((l) => ({
+          fgItemId: l.fgItemId,
+          plannedQty: l.plannedProductionQty,
+          fgName: l.fgName,
+        })),
+        {
+          requireRuns: requireComplete || (Array.isArray(productionRuns) && productionRuns.length > 0 && !allowIncomplete),
+          allowIncomplete,
+          actorRole,
+        },
+      );
+      if (requireComplete && (!validated.enriched?.length || validated.incomplete)) {
+        const err = new Error(
+          "Complete machine planning requires valid allocations that equal planned WO quantity for every FG.",
+        );
+        err.statusCode = 400;
+        err.code = "MACHINE_PLANNING_INCOMPLETE";
+        throw err;
+      }
+      enrichedRuns = validated.enriched;
+      derivedPurgeCount = validated.plannedPurgeCount;
+      derivedRunCount = validated.productionRunCount;
+
+      // Explicit handoff: only `complete` with valid runs marks Store-ready machine planning.
+      // Draft / incomplete edits revoke Store handoff until Complete is clicked again.
+      if (requireComplete && enrichedRuns?.length && !validated.incomplete) {
+        handoffPatch = {
+          machinePlanningCompleted: true,
+          machinePlanningCompletedAt: new Date(),
+          machinePlanningCompletedByUserId: createdByUserId ?? null,
+        };
+      } else {
+        handoffPatch = {
+          machinePlanningCompleted: false,
+          machinePlanningCompletedAt: null,
+          machinePlanningCompletedByUserId: null,
+        };
+      }
+    }
 
     const snapshot = existing
       ? await tx.regularSoPlanningSnapshot.update({
           where: { salesOrderId: soId },
           data: {
             bufferPercent: String(normalizedBufferPercent),
+            ...(derivedPurgeCount != null
+              ? {
+                  plannedPurgeCount: derivedPurgeCount,
+                  productionRunCount: derivedRunCount ?? 0,
+                }
+              : {}),
+            ...handoffPatch,
             ...(createdByUserId != null ? { updatedByUserId: createdByUserId } : {}),
           },
         })
@@ -331,6 +484,12 @@ async function upsertRegularSoPlanningSnapshot(
           data: {
             salesOrderId: soId,
             bufferPercent: String(normalizedBufferPercent),
+            plannedSetupCount: 1,
+            plannedPurgeCount: derivedPurgeCount ?? 0,
+            productionRunCount: derivedRunCount ?? 0,
+            machinePlanningCompleted: Boolean(handoffPatch.machinePlanningCompleted),
+            machinePlanningCompletedAt: handoffPatch.machinePlanningCompletedAt ?? null,
+            machinePlanningCompletedByUserId: handoffPatch.machinePlanningCompletedByUserId ?? null,
             createdByUserId,
             updatedByUserId: createdByUserId,
           },
@@ -340,28 +499,23 @@ async function upsertRegularSoPlanningSnapshot(
       where: { salesOrderId: soId },
     });
 
-    const rows = fgLines.map((line) => {
-      const fgStock = fgStockByLineId.get(line.id) ?? 0;
-      const customerCommittedQty = n(line.customerPoQty ?? line.qty);
-      const rawPlanned = computePlannedQtyFromCustomerBuffer(customerCommittedQty, normalizedBufferPercent);
-      const plannedProductionQty = applyFgUomPrecisionToPlannedQty(rawPlanned, 0);
-      const productionBufferQty = Math.max(0, plannedProductionQty - customerCommittedQty);
-      const fgStockAdjustmentQty = Math.max(0, n(fgStock));
-      const rmPlanningQty = plannedProductionQty;
-      return {
-        snapshotId: snapshot.id,
-        salesOrderId: soId,
-        salesOrderLineId: line.id,
-        customerCommittedQty: String(customerCommittedQty),
-        productionBufferPercent: String(normalizedBufferPercent),
-        productionBufferQty: String(productionBufferQty),
-        plannedProductionQty: String(plannedProductionQty),
-        fgStockAdjustmentQty: String(fgStockAdjustmentQty),
-        rmPlanningQty: String(rmPlanningQty),
-      };
-    });
+    const rows = plannedLineMetrics.map((line) => ({
+      snapshotId: snapshot.id,
+      salesOrderId: soId,
+      salesOrderLineId: line.salesOrderLineId,
+      customerCommittedQty: String(line.customerCommittedQty),
+      productionBufferPercent: String(normalizedBufferPercent),
+      productionBufferQty: String(line.productionBufferQty),
+      plannedProductionQty: String(line.plannedProductionQty),
+      fgStockAdjustmentQty: String(line.fgStockAdjustmentQty),
+      rmPlanningQty: String(line.rmPlanningQty),
+    }));
 
     await tx.regularSoPlanningSnapshotLine.createMany({ data: rows });
+
+    if (enrichedRuns != null) {
+      await replaceRegularSoSnapshotProductionRuns(tx, snapshot.id, enrichedRuns);
+    }
 
     if (!skipBufferApprovalSupersede) {
       const roleUpper = String(actorRole ?? "").trim().toUpperCase();
@@ -393,6 +547,10 @@ async function upsertRegularSoPlanningSnapshot(
             salesOrderLine: { include: { item: true } },
           },
           orderBy: { id: "asc" },
+        },
+        productionRuns: {
+          include: RUN_INCLUDE,
+          orderBy: [{ fgItemId: "asc" }, { runSequence: "asc" }],
         },
       },
     });
@@ -466,10 +624,25 @@ async function resolveSuggestedFgPlanningBufferPercentForSalesOrder(salesOrderId
 
 function regularSoPlanningSnapshotToDto(snapshot) {
   if (!snapshot) return null;
+  const productionRuns = (snapshot.productionRuns ?? []).map(mapPersistedRunRow).filter(Boolean);
+  const productionRunCount =
+    productionRuns.length > 0 ? productionRuns.length : snapshot.productionRunCount ?? 0;
+  const plannedPurgeCount =
+    productionRuns.length > 0
+      ? productionRuns.filter((r) => r.purgingRequired).length
+      : snapshot.plannedPurgeCount != null
+        ? Number(snapshot.plannedPurgeCount)
+        : 0;
   return {
     id: snapshot.id,
     salesOrderId: snapshot.salesOrderId,
     bufferPercent: n(snapshot.bufferPercent),
+    plannedSetupCount: snapshot.plannedSetupCount ?? 1,
+    plannedPurgeCount,
+    productionRunCount,
+    productionRuns,
+    machinePlanningCompleted: Boolean(snapshot.machinePlanningCompleted),
+    machinePlanningCompletedAt: snapshot.machinePlanningCompletedAt ?? null,
     createdByUserId: snapshot.createdByUserId ?? null,
     updatedByUserId: snapshot.updatedByUserId ?? null,
     createdAt: snapshot.createdAt,
@@ -489,12 +662,120 @@ function regularSoPlanningSnapshotToDto(snapshot) {
   };
 }
 
+/**
+ * Clear Store handoff so Production can edit machine runs again.
+ * Blocked when any Work Order already exists for the sales order.
+ * @param {{
+ *   salesOrderId: number,
+ *   reason: string,
+ *   createdByUserId?: number|null,
+ *   actorRole?: string|null,
+ *   user?: object|null,
+ * }} input
+ */
+async function reopenRegularSoMachinePlanning(input, db = prisma) {
+  const soId = Number(input?.salesOrderId);
+  const reason = String(input?.reason ?? "").trim();
+  if (!Number.isFinite(soId) || soId <= 0) {
+    const err = new Error("Invalid salesOrderId");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (reason.length < 3) {
+    const err = new Error("A reopen reason is required (at least 3 characters).");
+    err.statusCode = 400;
+    err.code = "REOPEN_REASON_REQUIRED";
+    throw err;
+  }
+
+  const role = String(input?.actorRole ?? "").trim().toUpperCase();
+  if (role !== "ADMIN" && role !== "PRODUCTION") {
+    const err = new Error("Only Production or Admin may reopen machine planning.");
+    err.statusCode = 403;
+    err.code = "REOPEN_FORBIDDEN";
+    throw err;
+  }
+
+  const existingWo = await db.workOrder.findFirst({
+    where: { salesOrderId: soId },
+    select: { id: true, docNo: true },
+    orderBy: { id: "desc" },
+  });
+  if (existingWo) {
+    const err = new Error(
+      `Cannot reopen machine planning after a Work Order exists (${existingWo.docNo || `#${existingWo.id}`}).`,
+    );
+    err.statusCode = 409;
+    err.code = "MACHINE_PLANNING_WO_EXISTS";
+    throw err;
+  }
+
+  const snapshot = await db.regularSoPlanningSnapshot.findUnique({
+    where: { salesOrderId: soId },
+  });
+  if (!snapshot) {
+    const err = new Error("No production planning snapshot to reopen.");
+    err.statusCode = 404;
+    err.code = "SNAPSHOT_NOT_FOUND";
+    throw err;
+  }
+  if (!snapshot.machinePlanningCompleted) {
+    const err = new Error("Machine planning is not completed — nothing to reopen.");
+    err.statusCode = 409;
+    err.code = "MACHINE_PLANNING_NOT_COMPLETED";
+    throw err;
+  }
+
+  const updated = await db.regularSoPlanningSnapshot.update({
+    where: { salesOrderId: soId },
+    data: {
+      machinePlanningCompleted: false,
+      machinePlanningCompletedAt: null,
+      machinePlanningCompletedByUserId: null,
+      ...(input?.createdByUserId != null ? { updatedByUserId: input.createdByUserId } : {}),
+    },
+    include: {
+      salesOrder: { select: { id: true, docNo: true } },
+      productionRuns: true,
+      lines: { include: { salesOrderLine: { include: { item: true } } } },
+    },
+  });
+
+  try {
+    const { logActivity } = require("./activityLogService");
+    const { ACTIVITY_MODULES, ACTIVITY_ACTIONS, ACTIVITY_ENTITY_TYPES } = require("../constants/activityLogConstants");
+    await logActivity({
+      user: input?.user ?? null,
+      module: ACTIVITY_MODULES.PRODUCTION,
+      entityType: ACTIVITY_ENTITY_TYPES.SALES_ORDER,
+      entityId: soId,
+      docNo: updated.salesOrder?.docNo ?? null,
+      action: ACTIVITY_ACTIONS.REOPENED,
+      subAction: "MACHINE_PLANNING_REOPENED",
+      message: "Machine Run Planning reopened — Store readiness invalidated until Complete again.",
+      reason,
+      metadata: {
+        salesOrderId: soId,
+        previousCompletedAt: snapshot.machinePlanningCompletedAt
+          ? new Date(snapshot.machinePlanningCompletedAt).toISOString()
+          : null,
+        previousCompletedByUserId: snapshot.machinePlanningCompletedByUserId ?? null,
+      },
+    });
+  } catch {
+    // Activity log must not block reopen.
+  }
+
+  return updated;
+}
+
 module.exports = {
   buildRegularSoPlanningSnapshotView,
   fgDemandInputFromPlanningView,
   fgShortageDemandInputFromPlanningView,
   loadRegularSoPlanningSnapshot,
   regularSoPlanningSnapshotToDto,
+  reopenRegularSoMachinePlanning,
   resolveSuggestedFgPlanningBufferPercentForSalesOrder,
   snapshotLineFromSalesOrderLine,
   upsertRegularSoPlanningSnapshot,

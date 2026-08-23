@@ -353,6 +353,18 @@ describe("controlTowerRowNormalizer", () => {
     assert.equal(row.metadata.sourceStageKey, "WO_PENDING");
   });
 
+  it("normalizeWoPlanningRow maps MACHINE_PLANNING_PENDING to PRODUCTION owner", () => {
+    const row = normalizeWoPlanningRow({
+      salesOrderId: 14,
+      salesOrderDocNo: "SO-14",
+      operationalKey: "MACHINE_PLANNING_PENDING",
+      operationalLabel: "Machine planning pending",
+      nextActionKey: "PLAN_MACHINE_RUNS",
+    });
+    assert.equal(row.currentOwner, VISIBLE_OWNERS.PRODUCTION);
+    assert.equal(row.nextAction, "Plan Machine Runs");
+  });
+
   it("normalizeWoPlanningRow maps RM_SHORTAGE blocker to STORE owner", () => {
     const row = normalizeWoPlanningRow({
       salesOrderId: 13,

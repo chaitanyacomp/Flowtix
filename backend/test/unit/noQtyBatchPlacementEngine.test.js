@@ -111,18 +111,21 @@ function createPlacementTx({
       create: async ({ data }) => {
         const id = nextWoId++;
         const docNo = data.docNo ?? `WO-${String(id).padStart(4, "0")}`;
+        const lines = (data.lines?.create || []).map((line, index) => ({
+          id: id * 100 + index + 1,
+          fgItemId: line.fgItemId,
+          qty: line.qty,
+          plannedQty: line.plannedQty,
+        }));
         workOrders.push({
           id,
           docNo,
           cycleId: data.cycleId,
           status: data.status,
-          lines: (data.lines?.create || []).map((line) => ({
-            fgItemId: line.fgItemId,
-            qty: line.qty,
-            plannedQty: line.plannedQty,
-          })),
+          plannedSetupCount: data.plannedSetupCount,
+          lines,
         });
-        return { id, docNo };
+        return { id, docNo, lines };
       },
       update: async () => ({}),
     },
@@ -198,7 +201,58 @@ describe("noQtyBatchPlacementEngine", () => {
       .filter((line) => line.suggestedExecutableQty > 0)
       .map((line) => ({ itemId: line.itemId, qty: line.suggestedExecutableQty }));
 
-    const res = await createNoQtyWorkOrderFromLockedSheet(tx, sheet, { requestedLines });
+    const productionRuns = requestedLines.flatMap((line, index) => [
+      {
+        fgItemId: line.itemId,
+        runSequence: 1,
+        machineId: 900 + index,
+        plannedQty: line.qty,
+      },
+    ]);
+
+    // Stub FG Production Standards + machines for allocation validation.
+    tx.machine = {
+      findMany: async ({ where }) =>
+        (where?.id?.in ?? []).map((id) => ({
+          id,
+          machineCode: `M${id}`,
+          machineName: `Machine ${id}`,
+          isActive: true,
+        })),
+    };
+    tx.shift = { findMany: async () => [] };
+    tx.fgProductionStandard = {
+      findMany: async ({ where }) => {
+        const itemIds = where?.itemId?.in ?? [];
+        const machineIds = where?.machineId?.in ?? [];
+        const rows = [];
+        for (const itemId of itemIds) {
+          for (const machineId of machineIds) {
+            rows.push({
+              itemId,
+              machineId,
+              cycleTimeSeconds: 10,
+              piecesPerCycle: 1,
+              standardEfficiencyPercent: 95,
+              isActive: true,
+            });
+          }
+        }
+        return rows;
+      },
+    };
+    tx.workOrderProductionRunAllocation = {
+      createMany: async () => ({ count: 0 }),
+    };
+    tx.requirementSheetPlannedRunAllocation = {
+      findMany: async () => [],
+      deleteMany: async () => ({ count: 0 }),
+    };
+
+    const res = await createNoQtyWorkOrderFromLockedSheet(tx, sheet, {
+      requestedLines,
+      productionRuns,
+    });
     assert.equal(res.created, true);
     assert.equal(tx.__workOrders.length, requestedLines.length);
   });

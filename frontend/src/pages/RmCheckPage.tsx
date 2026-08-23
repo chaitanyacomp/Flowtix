@@ -45,6 +45,41 @@ import { WoPrepareWorkOrderBlockedCard } from "../components/erp/WoPrepareWorkOr
 import { WoPrepareWorkflowProgress } from "../components/erp/WoPrepareWorkflowProgress";
 import { OperationalSystemErrorCard } from "../components/erp/OperationalSystemErrorCard";
 import { WoPrepareProductionPlanningPanel } from "../components/erp/WoPrepareProductionPlanningPanel";
+import { WoPreparePurgingPlanningPanel } from "../components/erp/WoPreparePurgingPlanningPanel";
+import { WoPrepareProductionRunAllocationPanel } from "../components/erp/WoPrepareProductionRunAllocationPanel";
+import {
+  buildWoPrepareBlockedCardModel,
+  buildWoPrepareGuidedStripModel,
+  buildWoPrepareReadinessChecklist,
+  deriveWoPrepareWorkflowState,
+  deriveWoPrepareWorkflowStepLabel,
+  formatGuidedStripOwner,
+} from "../lib/woPrepareWorkflowGuidance";
+import { REGULAR_SO_WO_CREATE_ROLES, WO_MACHINE_RUN_WRITE_ROLES, hasErpRole } from "../config/erpRoles";
+import {
+  machinePlanningStageBadge,
+  summarizeAuthoritativeRmReadiness,
+} from "../lib/machinePlanningRmReadiness";
+import {
+  MachineRunCombinedRmSummary,
+  MachineRunPlanningActionBar,
+  MachineRunPlanningContextStrip,
+  MachineRunPlanningHandoffStrip,
+  MachineRunPlanningQtyStrip,
+  MachineRunPlanningSoChangeControl,
+} from "../components/erp/MachineRunPlanningCompact";
+import { fetchMachines, type MachineRow } from "../lib/machineApi";
+import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
+import { fetchFgProductionStandards, type FgProductionStandardRow } from "../lib/fgProductionStandardApi";
+import { fetchShifts, type ShiftRow } from "../lib/shiftApi";
+import {
+  allocationQtyError,
+  derivePlannedSetupCountFromRuns,
+  mapApiRunsToDraft,
+  runsToApiPayload,
+  type ProductionRunDraft,
+} from "../lib/woProductionRunAllocation";
+import { type PurgingPlanningSummary } from "../lib/woPlanningPurging";
 import { WoPrepareRmReadinessTable } from "../components/erp/WoPrepareRmReadinessTable";
 import { NextStepStrip } from "../components/erp/NextStepStrip";
 import { PageContainer } from "../components/PageHeader";
@@ -55,7 +90,6 @@ import {
   regularSoCreateWoSuccessToast,
   shouldReuseExistingRegularWo,
 } from "../lib/regularSoPrepareWoCreateHandoff";
-import { WO_WRITE_ROLES, hasErpRole } from "../config/erpRoles";
 import { useAuth } from "../hooks/useAuth";
 import type { ProductionRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
 import { isProductionBlockedByRmReadiness } from "../components/erp/ProductionRmReadinessStrip";
@@ -84,13 +118,6 @@ import {
   presentPlanningInitFailure,
   type OperationalErrorPresentation,
 } from "../lib/operationalErrorPresentation";
-import {
-  buildWoPrepareBlockedCardModel,
-  buildWoPrepareGuidedStripModel,
-  buildWoPrepareReadinessChecklist,
-  deriveWoPrepareWorkflowState,
-  deriveWoPrepareWorkflowStepLabel,
-} from "../lib/woPrepareWorkflowGuidance";
 
 type SoRow = {
   id: number;
@@ -124,6 +151,8 @@ type RmRow = {
   itemName: string;
   unit?: string;
   requiredQty: number;
+  productionRequiredQty?: number;
+  purgingRequiredQty?: number;
   availableQty: number;
   shortage: number;
   shortageQty?: number;
@@ -159,6 +188,8 @@ type FgRow = {
 type RmCheckResponse = {
   fgLines: FgRow[];
   rmSummary: RmRow[];
+  purgingPlanning?: PurgingPlanningSummary | null;
+  productionRunCount?: number;
   allRmEnough: boolean;
   allFgEnough: boolean;
   materialReadiness?: MaterialReadiness;
@@ -169,6 +200,15 @@ type RmCheckResponse = {
   strictInventoryControl?: boolean;
   proceedAllowed?: boolean;
   blockMessage?: string | null;
+  machinePlanning?: {
+    key?: string;
+    label?: string;
+    machinePlanningComplete?: boolean;
+    issues?: string[];
+    approvedBomRevision?: string | null;
+    primaryFgName?: string | null;
+    plannedProductionQty?: number;
+  } | null;
 };
 
 function buildPlanLineQtyQuery(planQtyByLineId: Record<number, string>): string {
@@ -229,14 +269,82 @@ function applyCustomerTrackingShortfallToPlanDefaults(
 }
 
 
+class WoPreparePageErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; message: string | null }
+> {
+  state = { hasError: false, message: null as string | null };
+
+  static getDerivedStateFromError(err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { hasError: true, message: msg };
+  }
+
+  componentDidCatch(err: unknown) {
+    // eslint-disable-next-line no-console
+    console.error("[WO_PREPARE_RENDER_CRASH]", err);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          className="mx-auto max-w-lg space-y-3 p-4"
+          data-testid="wo-prepare-page-error-fallback"
+          role="alert"
+        >
+          <Card className="border-red-200 bg-red-50/80 shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base text-red-950">Work Order preparation failed to render</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm text-slate-800">
+              <p>Something went wrong while loading this page. Your data was not changed.</p>
+              <p className="text-xs text-red-800">{this.state.message ?? "Unknown render error"}</p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button type="button" size="sm" onClick={() => this.setState({ hasError: false, message: null })}>
+                  Try again
+                </Button>
+                <Link
+                  to="/work-orders"
+                  className={cn(buttonVariants({ variant: "outline", size: "sm" }), "no-underline")}
+                >
+                  Back to Work Orders
+                </Link>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export function RmCheckPage() {
+  return (
+    <WoPreparePageErrorBoundary>
+      <RmCheckPageContent />
+    </WoPreparePageErrorBoundary>
+  );
+}
+
+function RmCheckPageContent() {
   const nav = useNavigate();
   const toast = useToast();
   const auth = useAuth();
   const [searchParams] = useSearchParams();
   const isAdmin = useIsAdmin();
-  const canCreateWoRole = hasErpRole(auth.user?.role, WO_WRITE_ROLES);
+  const canCreateWoRole = hasErpRole(auth.user?.role, REGULAR_SO_WO_CREATE_ROLES);
+  const canEditMachineRuns = hasErpRole(auth.user?.role, WO_MACHINE_RUN_WRITE_ROLES);
   const urlSoId = Number(searchParams.get("salesOrderId")) || Number(searchParams.get("soId")) || 0;
+  const machinePlanningIntent = (searchParams.get("intent") ?? "") === "machine-planning";
+  const roleUpper = String(auth.user?.role ?? "").trim().toUpperCase();
+  /** Production always uses compact Machine Run Planning on this route (no Store WO chrome). */
+  const useCompactMachinePlanning = machinePlanningIntent || roleUpper === "PRODUCTION";
+  const [savingMachinePlanning, setSavingMachinePlanning] = React.useState(false);
+  const [completingMachinePlanning, setCompletingMachinePlanning] = React.useState(false);
+  const [reopeningMachinePlanning, setReopeningMachinePlanning] = React.useState(false);
+  const machinePlanningCompleteInFlightRef = React.useRef(false);
   const customerTrackingShortfallQty = Number(searchParams.get("shortfallQty") ?? 0);
   const fromCustomerTracking = (searchParams.get("from") ?? "") === "customer-tracking";
   const [orders, setOrders] = React.useState<SoRow[]>([]);
@@ -246,6 +354,11 @@ export function RmCheckPage() {
   const [errorPresentation, setErrorPresentation] = React.useState<OperationalErrorPresentation | null>(null);
   const [initializingPlanning, setInitializingPlanning] = React.useState(false);
   const [fgBufferPercentInput, setFgBufferPercentInput] = React.useState("0");
+  const [productionRuns, setProductionRuns] = React.useState<ProductionRunDraft[]>([]);
+  const [machines, setMachines] = React.useState<MachineRow[]>([]);
+  const [fgStandards, setFgStandards] = React.useState<FgProductionStandardRow[]>([]);
+  const [shifts, setShifts] = React.useState<ShiftRow[]>([]);
+  const [runAllocationError, setRunAllocationError] = React.useState<string | null>(null);
   const [fgBufferReason, setFgBufferReason] = React.useState("");
   const [suggestedFgPlanningBufferPercent, setSuggestedFgPlanningBufferPercent] = React.useState<number | null>(null);
   const [savingBuffer, setSavingBuffer] = React.useState(false);
@@ -262,6 +375,8 @@ export function RmCheckPage() {
   const [planQtyByLineId, setPlanQtyByLineId] = React.useState<Record<number, string>>({});
   const didAutoRunRef = React.useRef(false);
   const [allowSoChange, setAllowSoChange] = React.useState(false);
+  const [planningRunsDirty, setPlanningRunsDirty] = React.useState(false);
+  const [planningBufferDirty, setPlanningBufferDirty] = React.useState(false);
   const [noQtyGate, setNoQtyGate] = React.useState<"loading" | "no_qty" | "ok">("ok");
   const [hasExistingWorkOrder, setHasExistingWorkOrder] = React.useState(false);
   const [existingWoContext, setExistingWoContext] = React.useState<{ woId: number; wolId: number } | null>(null);
@@ -354,6 +469,8 @@ export function RmCheckPage() {
     setAllowSoChange(false);
     setFgBufferPercentInput("0");
     setFgBufferReason("");
+    setProductionRuns([]);
+    setRunAllocationError(null);
   }, [urlSoId]);
 
   React.useEffect(() => {
@@ -361,6 +478,16 @@ export function RmCheckPage() {
       .then((r) => setStrictInventory(!!r.strictInventoryControl))
       .catch(() => setStrictInventory(false));
   }, []);
+
+  function plannedPurgeCountForDisplay(): number {
+    const fromServer = Number(data?.purgingPlanning?.plannedPurgeCount);
+    if (Number.isFinite(fromServer) && fromServer >= 0) return fromServer;
+    return productionRuns.filter((r) => r.purgingRequired === true).length;
+  }
+
+  function productionRunsPayload() {
+    return runsToApiPayload(productionRuns);
+  }
 
   function bufferPercentForSnapshot(): number {
     const parsed = parseRegularSoBufferPercentInput(fgBufferPercentInput);
@@ -416,6 +543,35 @@ export function RmCheckPage() {
 
   function markBufferFieldsTouched() {
     bufferFieldsTouchedRef.current = true;
+    setPlanningBufferDirty(true);
+  }
+
+  const planningWorkspaceDirty = planningRunsDirty || planningBufferDirty;
+  const { confirmLeave: confirmLeavePlanning } = useUnsavedChangesGuard({
+    isDirty: planningWorkspaceDirty && useCompactMachinePlanning,
+    message: "You have unsaved machine planning changes. Leave this page and discard them?",
+    enabled: useCompactMachinePlanning,
+  });
+
+  function clearPlanningDirty() {
+    setPlanningRunsDirty(false);
+    setPlanningBufferDirty(false);
+    bufferFieldsTouchedRef.current = false;
+  }
+
+  function switchSalesOrder(nextId: number) {
+    didAutoRunRef.current = false;
+    clearPlanningDirty();
+    setData(null);
+    setAllowSoChange(false);
+    if (urlSoId > 0 || useCompactMachinePlanning) {
+      const p = new URLSearchParams(searchParams);
+      p.set("salesOrderId", String(nextId));
+      if (useCompactMachinePlanning) p.set("intent", "machine-planning");
+      nav(`/work-orders/prepare?${p.toString()}`);
+      return;
+    }
+    setSoId(nextId);
   }
 
   async function handleRequestBufferApproval() {
@@ -451,6 +607,94 @@ export function RmCheckPage() {
     }
   }
 
+  async function persistMachinePlanning(mode: "draft" | "complete"): Promise<boolean> {
+    if (!soId || !canEditMachineRuns) return false;
+    if (mode === "complete" && machinePlanningCompleteInFlightRef.current) return false;
+    const normalized = bufferPercentForSnapshot();
+    const gate = bufferPersistAllowed(normalized);
+    if (!gate.ok) {
+      toast.showError(gate.message);
+      return false;
+    }
+    if (mode === "complete") {
+      machinePlanningCompleteInFlightRef.current = true;
+      setCompletingMachinePlanning(true);
+    } else {
+      setSavingMachinePlanning(true);
+    }
+    setRunAllocationError(null);
+    try {
+      await apiFetch(`/api/sales-orders/${soId}/production-planning-snapshot`, {
+        method: "PUT",
+        body: JSON.stringify({
+          bufferPercent: normalized,
+          productionRuns: productionRunsPayload(),
+          machinePlanningMode: mode,
+          ...(classifyRegularSoBufferPercent(normalized) === "REQUIRES_ADMIN_APPROVAL"
+            ? { bufferReason: fgBufferReason.trim() || effectiveBufferReason }
+            : {}),
+        }),
+      });
+      if (mode === "complete") {
+        toast.showSuccess("Machine planning completed and handed to Store.");
+        clearPlanningDirty();
+        if (useCompactMachinePlanning) {
+          nav("/planning-dashboard");
+          return true;
+        }
+        await runCheck(undefined, { skipPlanInit: false });
+        return true;
+      }
+      toast.showSuccess("Machine planning draft saved.");
+      clearPlanningDirty();
+      await runCheck(undefined, { skipPlanInit: false });
+      return true;
+    } catch (e) {
+      const presented = presentOperationalError(e);
+      setRunAllocationError(presented.userMessage);
+      toast.showError(presented.userMessage);
+      setErrorPresentation(presented);
+      return false;
+    } finally {
+      if (mode === "complete") {
+        machinePlanningCompleteInFlightRef.current = false;
+        setCompletingMachinePlanning(false);
+      } else {
+        setSavingMachinePlanning(false);
+      }
+    }
+  }
+
+  async function reopenMachinePlanning(): Promise<void> {
+    if (!soId || !canEditMachineRuns || hasExistingWorkOrder) return;
+    const reason = window.prompt(
+      "Reopen machine planning? Store readiness will be invalidated and Work Order creation stays blocked until you Complete again.\n\nEnter reason:",
+    );
+    if (reason == null) return;
+    const trimmed = reason.trim();
+    if (trimmed.length < 3) {
+      toast.showError("A reopen reason of at least 3 characters is required.");
+      return;
+    }
+    if (!window.confirm("Confirm reopen planning? This hands the SO back to Production for edits.")) {
+      return;
+    }
+    setReopeningMachinePlanning(true);
+    try {
+      await apiFetch(`/api/sales-orders/${soId}/machine-planning/reopen`, {
+        method: "POST",
+        body: JSON.stringify({ reason: trimmed }),
+      });
+      toast.showSuccess("Machine planning reopened — complete again before Store can create the WO.");
+      await runCheck(undefined, { skipPlanInit: false });
+    } catch (e) {
+      const presented = presentOperationalError(e);
+      toast.showError(presented.userMessage);
+    } finally {
+      setReopeningMachinePlanning(false);
+    }
+  }
+
   async function tryInitializePlanningSnapshot(): Promise<
     { ok: true } | { ok: false; error: unknown }
   > {
@@ -463,6 +707,7 @@ export function RmCheckPage() {
         method: "PUT",
         body: JSON.stringify({
           bufferPercent: normalized,
+          ...(canEditMachineRuns ? { productionRuns: productionRunsPayload() } : {}),
           ...(classifyRegularSoBufferPercent(normalized) === "REQUIRES_ADMIN_APPROVAL"
             ? { bufferReason: fgBufferReason.trim() || effectiveBufferReason }
             : {}),
@@ -489,6 +734,7 @@ export function RmCheckPage() {
         method: "PUT",
         body: JSON.stringify({
           bufferPercent: normalized,
+          ...(canEditMachineRuns ? { productionRuns: productionRunsPayload() } : {}),
           ...(classifyRegularSoBufferPercent(normalized) === "REQUIRES_ADMIN_APPROVAL"
             ? { bufferReason: fgBufferReason.trim() || effectiveBufferReason }
             : {}),
@@ -553,12 +799,22 @@ export function RmCheckPage() {
     const plan = planOverride ?? planQtyByLineId;
     try {
       const planQs = buildPlanLineQtyQuery(plan);
-      const [res, so] = await Promise.all([
-        apiFetch<RmCheckResponse>(`/api/sales-orders/${soId}/rm-check${planQs ? `?${planQs.slice(1)}` : ""}`),
+      const [res, so, snap] = await Promise.all([
+        apiFetch<RmCheckResponse & { productionRuns?: ProductionRunDraft[] }>(
+          `/api/sales-orders/${soId}/rm-check${planQs ? `?${planQs.slice(1)}` : ""}`,
+        ),
         apiFetch<SoDetail>(`/api/sales-orders/${soId}`),
+        apiFetch<{ productionRuns?: ProductionRunDraft[] }>(
+          `/api/sales-orders/${soId}/production-planning-snapshot`,
+        ).catch(() => ({ productionRuns: [] })),
       ]);
       setData(res);
       setSoDetail(so);
+      if (Array.isArray(snap.productionRuns)) {
+        setProductionRuns(mapApiRunsToDraft(snap.productionRuns as any));
+      }
+      clearPlanningDirty();
+      setAllowSoChange(false);
       const suggested = res.suggestedFgPlanningBufferPercent ?? null;
       setSuggestedFgPlanningBufferPercent(suggested);
       syncBufferInputFromFgLines(res.fgLines, suggested);
@@ -689,13 +945,29 @@ export function RmCheckPage() {
       return;
     }
 
+    const runsPayload = productionRunsPayload();
+    if (!runsPayload.length) {
+      setErrorPresentation({
+        userMessage: "Machine allocation pending — Production action required.",
+        technicalDetail: "Work Order creation requires completed machine production-run allocations.",
+        isPlanningSetupIncomplete: true,
+        canRetryInitializePlanning: false,
+      });
+      // Inline error only — toast reserved for action results.
+      return;
+    }
+
     createWoInFlightRef.current = true;
     setCreatingWo(true);
     setErrorPresentation(null);
     try {
       const wo = await apiFetch<{ id: number; docNo?: string | null }>("/api/production/work-orders", {
         method: "POST",
-        body: JSON.stringify({ salesOrderId: soId, lines }),
+        body: JSON.stringify({
+          salesOrderId: soId,
+          lines,
+          productionRuns: runsPayload,
+        }),
       });
       if (!(Number(wo?.id) > 0)) {
         throw new Error("Work Order was created but no id was returned.");
@@ -720,7 +992,16 @@ export function RmCheckPage() {
   }
 
   const hasRmDemand = Boolean(data && data.rmSummary && data.rmSummary.length > 0);
-  const hasRmShortage = Boolean(data && (data.rmSummary || []).some((rm) => Number(rm.shortage) > 0));
+  /** Same shortage source as RM Summary table (shortageQty ?? shortage) — never invent from WO gates. */
+  const authoritativeRm = React.useMemo(
+    () =>
+      summarizeAuthoritativeRmReadiness(data?.rmSummary, {
+        machinePlanningComplete: Boolean(data?.machinePlanning?.machinePlanningComplete),
+        storeCanCreateWorkOrder: Boolean(data?.canCreateWorkOrder),
+      }),
+    [data?.rmSummary, data?.machinePlanning?.machinePlanningComplete, data?.canCreateWorkOrder],
+  );
+  const hasRmShortage = authoritativeRm.hasShortage;
   const pendingWoPlanningMrs = data?.pendingMaterialRequirements ?? [];
   const hasPendingWoPlanningMr = pendingWoPlanningMrs.length > 0;
   const pendingMrLabel = hasPendingWoPlanningMr ? formatPendingMrRefs(pendingWoPlanningMrs) : "";
@@ -822,6 +1103,11 @@ export function RmCheckPage() {
 
   function renderWorkflowContinuityNav() {
     if (!soId) return null;
+    if (useCompactMachinePlanning) {
+      // Sticky action bar owns hub navigation — avoid duplicate bottom links.
+      return null;
+    }
+    const hideSalesOrdersBack = roleUpper === "PRODUCTION";
     return (
       <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-2">
         <Link
@@ -830,12 +1116,14 @@ export function RmCheckPage() {
         >
           {REGULAR_TERMS.BACK_TO_WORK_ORDERS}
         </Link>
-        <Link
-          to={`/sales-orders?salesOrderId=${encodeURIComponent(String(soId))}`}
-          className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-8 text-[11px] text-slate-700 no-underline")}
-        >
-          {REGULAR_TERMS.BACK_TO_SALES_ORDERS}
-        </Link>
+        {!hideSalesOrdersBack ? (
+          <Link
+            to={`/sales-orders?salesOrderId=${encodeURIComponent(String(soId))}`}
+            className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-8 text-[11px] text-slate-700 no-underline")}
+          >
+            {REGULAR_TERMS.BACK_TO_SALES_ORDERS}
+          </Link>
+        ) : null}
       </div>
     );
   }
@@ -934,6 +1222,10 @@ export function RmCheckPage() {
     (bufferApprovalUiStatus === "approved" &&
       (bufferApprovalMatches || (!bufferFieldsTouchedRef.current && bufferApproval?.status === "APPROVED")));
 
+  const machineAllocationPending =
+    Boolean(data?.fgLines?.some((f) => !f.note && Number(f.plannedProductionQty ?? f.rmPlanningQty ?? f.toProduce) > 0)) &&
+    derivePlannedSetupCountFromRuns(productionRuns) < 1;
+
   const woCreateDisabled =
     !canStartWo ||
     loading ||
@@ -942,7 +1234,9 @@ export function RmCheckPage() {
     fgBufferInputInvalid ||
     creatingWo ||
     !canCreateWoRole ||
-    !bufferApprovalSatisfiedForCreate;
+    !canCreateWoMaterial ||
+    !bufferApprovalSatisfiedForCreate ||
+    machineAllocationPending;
 
   const productionPlanningPrimaryLine = React.useMemo(() => {
     if (!primaryFgLine || primaryFgLine.note) return null;
@@ -1030,6 +1324,60 @@ export function RmCheckPage() {
     loading,
   ]);
 
+  React.useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [m, s, sh] = await Promise.all([
+          fetchMachines(false),
+          fetchFgProductionStandards(false),
+          fetchShifts(false).catch(() => [] as ShiftRow[]),
+        ]);
+        if (!cancelled) {
+          setMachines(m);
+          setFgStandards(s);
+          setShifts(sh);
+        }
+      } catch {
+        /* masters optional for Store read-only view */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!soId || !data || loading) return;
+    const runsPayload = productionRunsPayload();
+    if (!runsPayload.length) return;
+    const serverRuns = Number(data.purgingPlanning?.productionRunCount ?? data.productionRunCount ?? 0);
+    const localRuns = derivePlannedSetupCountFromRuns(productionRuns);
+    if (localRuns === serverRuns && localRuns > 0) return;
+    const t = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const planQtyByLineIdBody: Record<string, number> = {};
+          for (const [k, v] of Object.entries(planQtyByLineId)) {
+            planQtyByLineIdBody[String(k)] = Number(v) || 0;
+          }
+          const res = await apiFetch<RmCheckResponse>(`/api/sales-orders/${soId}/rm-check`, {
+            method: "POST",
+            body: JSON.stringify({
+              planQtyByLineId: planQtyByLineIdBody,
+              productionRuns: runsPayload,
+            }),
+          });
+          setData(res);
+        } catch {
+          /* keep prior readiness — never crash the page on 401/403/incomplete payload */
+        }
+      })();
+    }, 450);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productionRuns, soId, loading]);
+
   const soDisplayLabel = displaySalesOrderNo(soId, soDetail?.docNo ?? null) || "Select sales order";
   const contextFgFromDetail = soDetail?.lines?.find((l) => l.item?.itemName);
   const contextFgFromList = orders.find((o) => o.id === soId)?.lines?.[0];
@@ -1052,6 +1400,8 @@ export function RmCheckPage() {
       allFgEnough: Boolean(data.allFgEnough),
       pendingPoStatus: procurementQueueCtx?.pendingPoStatus,
       pendingGrnStatus: procurementQueueCtx?.pendingGrnStatus,
+      machinePlanningKey: data.machinePlanning?.key ?? null,
+      machinePlanningComplete: Boolean(data.machinePlanning?.machinePlanningComplete),
     });
   }, [
     data,
@@ -1136,6 +1486,7 @@ export function RmCheckPage() {
       woCreateDisabled,
       loading,
       resumeWorkOrder,
+      allowCreateWorkOrderAction: canCreateWoRole,
       onRaiseMr: () => {},
       onCreateWo: () => {
         void createWorkOrder();
@@ -1144,6 +1495,9 @@ export function RmCheckPage() {
         void createWorkOrder();
       },
       onRefreshAvailability: refreshStockCheck,
+      onCompleteMachinePlanning: () => {
+        void persistMachinePlanning("complete");
+      },
     });
   }, [
     data,
@@ -1157,6 +1511,7 @@ export function RmCheckPage() {
     creatingWo,
     nextStepHint,
     planQtyByLineId,
+    canCreateWoRole,
   ]);
 
   if (noQtyGate === "loading" && urlSoId > 0) {
@@ -1197,7 +1552,11 @@ export function RmCheckPage() {
   }
 
   const primaryCardHelp =
-    urlSoId > 0 ? REGULAR_TERMS.WORK_ORDER_PREPARE_SUBTITLE : REGULAR_TERMS.SELECT_SO_HELPER;
+    useCompactMachinePlanning
+      ? REGULAR_TERMS.MACHINE_RUN_PLANNING_SUBTITLE
+      : urlSoId > 0
+        ? REGULAR_TERMS.WORK_ORDER_PREPARE_SUBTITLE
+        : REGULAR_TERMS.SELECT_SO_HELPER;
 
   const soSelectorControl =
     !urlSoId || allowSoChange ? (
@@ -1205,9 +1564,12 @@ export function RmCheckPage() {
         className="h-8 min-w-[10rem] rounded border border-slate-300 bg-white px-2 text-xs font-medium"
         value={soId || ""}
         onChange={(e) => {
-          didAutoRunRef.current = false;
-          setSoId(Number(e.target.value));
-          setData(null);
+          const next = Number(e.target.value);
+          if (!next) return;
+          if (planningWorkspaceDirty && !window.confirm("You have unsaved changes. Switch sales order?")) {
+            return;
+          }
+          switchSalesOrder(next);
         }}
       >
         {orders.map((o) => (
@@ -1226,8 +1588,27 @@ export function RmCheckPage() {
       </button>
     );
 
+  const compactSoChangeControl = (
+    <MachineRunPlanningSoChangeControl
+      open={allowSoChange}
+      onOpenChange={setAllowSoChange}
+      currentSoId={soId}
+      orders={orders}
+      isDirty={planningWorkspaceDirty}
+      onSelectSo={switchSalesOrder}
+    />
+  );
+
   return (
-    <PageContainer className="erp-txn-workspace max-w-5xl">
+    <PageContainer
+      className={cn(
+        "erp-txn-workspace w-full min-w-0",
+        useCompactMachinePlanning ? "space-y-3 pb-3" : "max-w-5xl",
+      )}
+      data-testid="rm-check-workspace"
+      data-machine-planning-layout={useCompactMachinePlanning ? "compact" : undefined}
+      data-page-width={useCompactMachinePlanning ? "fluid" : "narrow"}
+    >
       {fromCustomerTracking && customerTrackingShortfallQty > 0 && soId > 0 ? (
         <div className="rounded-md border border-amber-400 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-950">
           <span className="font-bold">Customer Tracking shortfall:</span>{" "}
@@ -1237,10 +1618,14 @@ export function RmCheckPage() {
 
       {!data && !selectionMissing && !errorPresentation ? (
         <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
-          <div className="font-semibold text-slate-900">{REGULAR_TERMS.WORK_ORDER_PREPARE_TITLE}</div>
-          <p className="mt-0.5 text-xs text-slate-600">{primaryCardHelp}</p>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            {soSelectorControl}
+          {!useCompactMachinePlanning ? (
+            <>
+              <div className="font-semibold text-slate-900">{REGULAR_TERMS.WORK_ORDER_PREPARE_TITLE}</div>
+              <p className="mt-0.5 text-xs text-slate-600">{primaryCardHelp}</p>
+            </>
+          ) : null}
+          <div className={cn("flex flex-wrap items-center gap-2", useCompactMachinePlanning ? "" : "mt-2")}>
+            {useCompactMachinePlanning ? compactSoChangeControl : soSelectorControl}
             {!autoLoadSelected ? (
               <Button type="button" size="sm" onClick={() => void runCheck()} disabled={loading || !soId}>
                 {loading ? "Loading..." : REGULAR_TERMS.LOAD_RM_FG_BUTTON}
@@ -1316,8 +1701,12 @@ export function RmCheckPage() {
             }
             retryLoading={initializingPlanning}
             retryLabel={errorPresentation.canRetryInitializePlanning ? "Initialize planning" : "Retry"}
-            backHref="/sales-orders"
-            backLabel={REGULAR_TERMS.SIDEBAR_BACK_TO_SALES_ORDERS}
+            backHref={useCompactMachinePlanning || roleUpper === "PRODUCTION" ? "/planning-dashboard" : "/sales-orders"}
+            backLabel={
+              useCompactMachinePlanning || roleUpper === "PRODUCTION"
+                ? "Back to Planning Hub"
+                : REGULAR_TERMS.SIDEBAR_BACK_TO_SALES_ORDERS
+            }
           />
           {errorPresentation.canRetryInitializePlanning ? (
             <p className="mx-auto max-w-[620px] text-center text-xs leading-snug text-slate-500">
@@ -1328,6 +1717,149 @@ export function RmCheckPage() {
       ) : null}
 
       {data && workflowState && workflowStepLabel ? (
+        useCompactMachinePlanning ? (
+          (() => {
+            const handedOff =
+              Boolean(data.machinePlanning?.machinePlanningComplete) ||
+              data.machinePlanning?.key === "MACHINE_PLANNING_COMPLETE";
+            const canMutatePlanning = canEditMachineRuns && !handedOff && !hasExistingWorkOrder;
+            const stageBadge = machinePlanningStageBadge({
+              machinePlanningKey: data.machinePlanning?.key,
+              machinePlanningComplete: handedOff,
+            });
+            // Recompute with handoff so Ready for WO only after Complete + Store gates.
+            const rmReady = summarizeAuthoritativeRmReadiness(data.rmSummary, {
+              machinePlanningComplete: handedOff,
+              storeCanCreateWorkOrder: handedOff && canCreateWoMaterial,
+            });
+            const nextOwner = formatGuidedStripOwner(handedOff ? "Store Department" : "Production");
+            const plannedQtyDisplay =
+              productionPlanningMetrics?.plannedProductionQty ??
+              primaryFgLine?.plannedProductionQty ??
+              primaryFgLine?.rmPlanningQty ??
+              null;
+            const customerQtyDisplay =
+              productionPlanningMetrics?.customerCommittedQty ??
+              primaryFgLine?.customerCommittedQty ??
+              primaryFgLine?.orderQty ??
+              contextCustomerQty;
+
+            return (
+              <div className="space-y-2" data-testid="machine-run-planning-compact-workspace">
+                <MachineRunPlanningContextStrip
+                  soLabel={soDisplayLabel}
+                  fgName={primaryFgLine?.fgName ?? data.machinePlanning?.primaryFgName ?? contextFgName}
+                  customerQty={customerQtyDisplay}
+                  plannedQty={plannedQtyDisplay != null ? Number(plannedQtyDisplay) : null}
+                  bomRevision={data.machinePlanning?.approvedBomRevision ?? null}
+                  statusLabel={stageBadge.label}
+                  statusTone={stageBadge.tone}
+                  rmLabel={rmReady.rmLabel}
+                  nextOwner={nextOwner}
+                  soChange={compactSoChangeControl}
+                />
+
+                {handedOff ? (
+                  <MachineRunPlanningHandoffStrip
+                    nextOwner={nextOwner}
+                    rmState={rmReady.rmLabel}
+                    canReopen={canEditMachineRuns && !hasExistingWorkOrder}
+                    reopening={reopeningMachinePlanning}
+                    onReopen={() => void reopenMachinePlanning()}
+                  />
+                ) : null}
+
+                {productionPlanningPrimaryLine && productionPlanningMetrics ? (
+                  <MachineRunPlanningQtyStrip
+                    metrics={productionPlanningMetrics}
+                    bufferPercentInput={fgBufferPercentInput}
+                    onBufferPercentInputChange={(v) => {
+                      if (regularSoBufferPercentExceedsFractionDigits(v)) return;
+                      markBufferFieldsTouched();
+                      setFgBufferPercentInput(v);
+                    }}
+                    disabled={loading || initializingPlanning || !canMutatePlanning}
+                    readOnly={!canMutatePlanning}
+                  />
+                ) : null}
+
+                {data?.fgLines?.length ? (
+                  <WoPrepareProductionRunAllocationPanel
+                    className="mt-0"
+                    compactCapacity
+                    fgLines={(data.fgLines || [])
+                      .filter((f) => !f.note)
+                      .map((f) => ({
+                        fgItemId: f.fgItemId,
+                        fgName: f.fgName,
+                        plannedQty: Math.max(
+                          0,
+                          Number(f.plannedProductionQty ?? f.rmPlanningQty ?? f.toProduce) || 0,
+                        ),
+                      }))}
+                    runs={productionRuns}
+                    onChange={(next) => {
+                      if (!canMutatePlanning) return;
+                      setPlanningRunsDirty(true);
+                      setProductionRuns(next);
+                      setRunAllocationError(
+                        allocationQtyError(
+                          next,
+                          (data.fgLines || [])
+                            .filter((f) => !f.note)
+                            .map((f) => ({
+                              fgItemId: f.fgItemId,
+                              fgName: f.fgName,
+                              plannedQty: Math.max(
+                                0,
+                                Number(f.plannedProductionQty ?? f.rmPlanningQty ?? f.toProduce) || 0,
+                              ),
+                            })),
+                        ),
+                      );
+                    }}
+                    machines={machines}
+                    standards={fgStandards}
+                    shifts={shifts}
+                    readOnly={!canMutatePlanning}
+                    disabled={loading || initializingPlanning || !canMutatePlanning}
+                    error={
+                      !canEditMachineRuns && !handedOff
+                        ? "Machine allocation pending — Production action required."
+                        : runAllocationError
+                    }
+                    pendingActionMessage={
+                      !canEditMachineRuns && !handedOff
+                        ? "Machine allocation pending — Production action required."
+                        : null
+                    }
+                  />
+                ) : null}
+
+                {hasRmDemand && data ? (
+                  <MachineRunCombinedRmSummary
+                    rows={data.rmSummary}
+                    hasPendingMr={hasPendingWoPlanningMr}
+                    canCreateWorkOrder={canCreateWoMaterial}
+                    purgingPlanning={data.purgingPlanning}
+                    plannedPurgeCount={plannedPurgeCountForDisplay()}
+                    productionRunCount={derivePlannedSetupCountFromRuns(productionRuns)}
+                  />
+                ) : null}
+
+                <MachineRunPlanningActionBar
+                  showEditActions={canMutatePlanning}
+                  saving={savingMachinePlanning}
+                  completing={completingMachinePlanning}
+                  disabled={loading || initializingPlanning || savingBuffer}
+                  onSaveDraft={() => void persistMachinePlanning("draft")}
+                  onComplete={() => void persistMachinePlanning("complete")}
+                  onBackNavigate={() => confirmLeavePlanning()}
+                />
+              </div>
+            );
+          })()
+        ) : (
         <>
           <WoPrepareOperationalHeader
             soLabel={soDisplayLabel}
@@ -1352,6 +1884,30 @@ export function RmCheckPage() {
             }
             extraFgCount={extraFgLines.length}
           />
+
+          {guidedStripModel &&
+          !blockedCardModel &&
+          !woCreatedNextStep &&
+          workflowState !== "MACHINE_PLANNING_PENDING" &&
+          workflowState !== "MACHINE_PLANNING_IN_PROGRESS" &&
+          workflowState !== "MACHINE_PLANNING_AWAITING_COMPLETION" ? (
+            <WoPrepareGuidedStrip model={guidedStripModel} />
+          ) : null}
+
+          {/* Machine-planning stages: keep Production actions on run panel; avoid RM Control Center chrome. */}
+          {(workflowState === "MACHINE_PLANNING_PENDING" ||
+            workflowState === "MACHINE_PLANNING_IN_PROGRESS" ||
+            workflowState === "MACHINE_PLANNING_AWAITING_COMPLETION") &&
+          guidedStripModel ? (
+            <div
+              className="rounded-md border border-amber-200 bg-amber-50/80 px-2.5 py-1.5 text-[12px] text-amber-950"
+              data-testid="machine-planning-stage-banner"
+              role="status"
+            >
+              <span className="font-semibold">{guidedStripModel.headline}</span>
+              <span className="text-amber-900"> — {guidedStripModel.nextActionText}</span>
+            </div>
+          ) : null}
 
           {productionPlanningPrimaryLine && productionPlanningMetrics ? (
             <WoPrepareProductionPlanningPanel
@@ -1381,6 +1937,91 @@ export function RmCheckPage() {
               disabled={loading || initializingPlanning}
             />
           ) : null}
+
+          {data?.fgLines?.length ? (
+            <WoPrepareProductionRunAllocationPanel
+              className="mt-2"
+              fgLines={(data.fgLines || [])
+                .filter((f) => !f.note)
+                .map((f) => ({
+                  fgItemId: f.fgItemId,
+                  fgName: f.fgName,
+                  plannedQty: Math.max(
+                    0,
+                    Number(f.plannedProductionQty ?? f.rmPlanningQty ?? f.toProduce) || 0,
+                  ),
+                }))}
+              runs={productionRuns}
+              onChange={(next) => {
+                if (!canEditMachineRuns) return;
+                setProductionRuns(next);
+                setRunAllocationError(
+                  allocationQtyError(
+                    next,
+                    (data.fgLines || [])
+                      .filter((f) => !f.note)
+                      .map((f) => ({
+                        fgItemId: f.fgItemId,
+                        fgName: f.fgName,
+                        plannedQty: Math.max(
+                          0,
+                          Number(f.plannedProductionQty ?? f.rmPlanningQty ?? f.toProduce) || 0,
+                        ),
+                      })),
+                  ),
+                );
+              }}
+              machines={machines}
+              standards={fgStandards}
+              shifts={shifts}
+              readOnly={!canEditMachineRuns}
+              disabled={loading || initializingPlanning || !canEditMachineRuns}
+              error={
+                machineAllocationPending && !canEditMachineRuns
+                  ? "Machine allocation pending — Production action required."
+                  : runAllocationError
+              }
+              pendingActionMessage={
+                machineAllocationPending && !canEditMachineRuns
+                  ? "Machine allocation pending — Production action required."
+                  : null
+              }
+            />
+          ) : null}
+
+          {canEditMachineRuns &&
+          soId > 0 &&
+          !(
+            Boolean(data.machinePlanning?.machinePlanningComplete) ||
+            data.machinePlanning?.key === "MACHINE_PLANNING_COMPLETE"
+          ) ? (
+            <div className="flex flex-wrap items-center gap-2" data-testid="wo-machine-planning-actions">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={loading || initializingPlanning || savingMachinePlanning || completingMachinePlanning || savingBuffer}
+                onClick={() => void persistMachinePlanning("draft")}
+              >
+                {savingMachinePlanning ? "Saving…" : "Save Planning Draft"}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={loading || initializingPlanning || savingMachinePlanning || completingMachinePlanning || savingBuffer}
+                onClick={() => void persistMachinePlanning("complete")}
+              >
+                Complete Machine Planning
+              </Button>
+            </div>
+          ) : null}
+
+          <WoPreparePurgingPlanningPanel
+            purgingPlanning={data?.purgingPlanning ?? null}
+            plannedPurgeCount={plannedPurgeCountForDisplay()}
+            productionRunCount={derivePlannedSetupCountFromRuns(productionRuns)}
+            saving={savingBuffer}
+          />
 
           {hasRmDemand && data ? (
             <section className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 shadow-sm">
@@ -1421,7 +2062,10 @@ export function RmCheckPage() {
             </div>
           ) : null}
 
-          {blockedCardModel ? (
+          {blockedCardModel &&
+          workflowState !== "MACHINE_PLANNING_PENDING" &&
+          workflowState !== "MACHINE_PLANNING_IN_PROGRESS" &&
+          workflowState !== "MACHINE_PLANNING_AWAITING_COMPLETION" ? (
             <WoPrepareWorkOrderBlockedCard
               model={blockedCardModel}
               onRefresh={refreshStockCheck}
@@ -1452,13 +2096,14 @@ export function RmCheckPage() {
             />
           ) : null}
 
-          {guidedStripModel && !blockedCardModel && !woCreatedNextStep ? (
-            <WoPrepareGuidedStrip model={guidedStripModel} />
-          ) : null}
-
-          <WoPrepareWorkflowProgress activeStep={workflowStepLabel} />
-
-          {readinessItems.length > 0 ? <WoPrepareReadinessChecklist items={readinessItems} /> : null}
+          {workflowState === "MACHINE_PLANNING_PENDING" ||
+          workflowState === "MACHINE_PLANNING_IN_PROGRESS" ||
+          workflowState === "MACHINE_PLANNING_AWAITING_COMPLETION" ? null : (
+            <>
+              <WoPrepareWorkflowProgress activeStep={workflowStepLabel} />
+              {readinessItems.length > 0 ? <WoPrepareReadinessChecklist items={readinessItems} /> : null}
+            </>
+          )}
 
           {isAdmin && !strictInventory && hasRmShortage ? (
             <Button type="button" variant="ghost" size="sm" onClick={adjustStock} className="text-slate-700">
@@ -1467,6 +2112,7 @@ export function RmCheckPage() {
           ) : null}
           {renderWorkflowContinuityNav()}
         </>
+        )
       ) : null}
     </PageContainer>
   );

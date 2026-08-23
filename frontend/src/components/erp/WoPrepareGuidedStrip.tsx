@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { Button, buttonVariants } from "../ui/button";
 import { cn } from "../../lib/utils";
 import type { WoPrepareGuidedStripModel } from "../../lib/woPrepareWorkflowGuidance";
+import { formatGuidedStripOwner } from "../../lib/woPrepareWorkflowGuidance";
 
 const TONE_PANEL = {
   danger: "border-red-400 bg-red-50",
@@ -31,7 +32,7 @@ export function WoPrepareGuidedStrip({ model }: Props) {
       </p>
       <div className="mt-1 grid gap-0.5 text-[12px] sm:grid-cols-[auto_1fr] sm:gap-x-3">
         <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">Next owner</span>
-        <span className="font-semibold text-slate-950">{model.owner} Department</span>
+        <span className="font-semibold text-slate-950">{formatGuidedStripOwner(model.owner)}</span>
         <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">Next action</span>
         <span className="text-slate-800">{model.nextActionText}</span>
       </div>

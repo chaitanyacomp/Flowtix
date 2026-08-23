@@ -342,6 +342,24 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
     return resolveNoQtyPlanningWorkspaceHref(row);
   }
   if (rowType === ROW_TYPES.WO_PLANNING && salesOrderId > 0) {
+    const nextActionKey = String(meta.nextActionKey ?? "").trim().toUpperCase();
+    const operationalKey = String(meta.operationalKey ?? "").trim().toUpperCase();
+    // Production machine-planning handoff — same hub as Production Flow → Requirement & Cycle Planning.
+    if (
+      nextActionKey === "PLAN_MACHINE_RUNS" ||
+      nextActionKey === "COMPLETE_MACHINE_PLANNING" ||
+      operationalKey === "MACHINE_PLANNING_PENDING" ||
+      operationalKey === "MACHINE_PLANNING_IN_PROGRESS" ||
+      operationalKey === "MACHINE_PLANNING_AWAITING_COMPLETION"
+    ) {
+      const params = new URLSearchParams({
+        salesOrderId: String(salesOrderId),
+        from: "pending-actions",
+        focus: "machine-planning",
+        source: "regular_so_machine_planning",
+      });
+      return `/planning-dashboard?${params.toString()}`;
+    }
     const params = new URLSearchParams({
       salesOrderId: String(salesOrderId),
       source: "regular_so",

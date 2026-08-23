@@ -39,9 +39,20 @@ export type WoPrepareWorkflowState =
   | "READY_FOR_WO"
   | "WO_CREATED"
   | "FG_STOCK_COVERS"
-  | "REVIEW";
+  | "REVIEW"
+  | "MACHINE_PLANNING_PENDING"
+  | "MACHINE_PLANNING_IN_PROGRESS"
+  | "MACHINE_PLANNING_AWAITING_COMPLETION";
 
 export type WorkflowOwnerRole = "Store" | "Store Department" | "Purchase" | "Production" | "Store / GRN" | "Store / Purchase";
+
+/** Avoid “Store Department Department” when owner already includes Department. */
+export function formatGuidedStripOwner(owner: WorkflowOwnerRole | string): string {
+  const o = String(owner ?? "").trim();
+  if (!o) return "—";
+  if (/department$/i.test(o)) return o;
+  return `${o} Department`;
+}
 
 export function deriveWoPrepareWorkflowStepLabel(args: {
   workflowState: WoPrepareWorkflowState;
@@ -51,6 +62,17 @@ export function deriveWoPrepareWorkflowStepLabel(args: {
   hasExistingWorkOrder: boolean;
   allRmAvailable: boolean;
 }): WoPrepareWorkflowStepLabel {
+  if (
+    args.workflowState === "MACHINE_PLANNING_PENDING" ||
+    args.workflowState === "MACHINE_PLANNING_IN_PROGRESS" ||
+    args.workflowState === "MACHINE_PLANNING_AWAITING_COMPLETION"
+  ) {
+    // Store WO funnel steps are not active yet. Never highlight "RM Shortage" when stock is fine —
+    // machine planning owns the stage (progress strip should be hidden for this phase).
+    if (args.hasRmShortage) return "RM Shortage";
+    if (args.hasPendingMr) return "Waiting for RM Procurement";
+    return "RM Received in Store";
+  }
   if (args.hasExistingWorkOrder) return "Ready for WO";
   /** When WO creation is eligible, the active stage is Ready for WO (not the prior RM Received step). */
   if (args.canCreateWorkOrder) return "Ready for WO";
@@ -146,8 +168,21 @@ export function deriveWoPrepareWorkflowState(args: {
   allFgEnough: boolean;
   pendingPoStatus?: string;
   pendingGrnStatus?: string;
+  machinePlanningKey?: string | null;
+  /** When true, machine planning handoff is done (Store owns WO gates). */
+  machinePlanningComplete?: boolean;
 }): WoPrepareWorkflowState {
   if (args.hasExistingWorkOrder) return "WO_CREATED";
+  const mp = String(args.machinePlanningKey ?? "").trim().toUpperCase();
+  if (mp === "MACHINE_PLANNING_PENDING") return "MACHINE_PLANNING_PENDING";
+  if (mp === "MACHINE_PLANNING_IN_PROGRESS") return "MACHINE_PLANNING_IN_PROGRESS";
+  if (mp === "MACHINE_PLANNING_AWAITING_COMPLETION") return "MACHINE_PLANNING_AWAITING_COMPLETION";
+  const handedOff =
+    args.machinePlanningComplete === true || mp === "MACHINE_PLANNING_COMPLETE";
+  // Explicit incomplete handoff without a stage key — stay on Production planning.
+  if (args.machinePlanningComplete === false && !handedOff && mp === "") {
+    return "MACHINE_PLANNING_IN_PROGRESS";
+  }
   if (args.canCreateWorkOrder) {
     return args.allFgEnough ? "FG_STOCK_COVERS" : "READY_FOR_WO";
   }
@@ -187,6 +222,24 @@ export function workflowOperationalStatusPresentation(state: WoPrepareWorkflowSt
   stripClass: string;
 } {
   switch (state) {
+    case "MACHINE_PLANNING_PENDING":
+      return {
+        label: "Machine Planning Pending",
+        icon: "🟠",
+        stripClass: "border-amber-300 bg-amber-50",
+      };
+    case "MACHINE_PLANNING_IN_PROGRESS":
+      return {
+        label: "Machine Planning In Progress",
+        icon: "🟠",
+        stripClass: "border-amber-400 bg-amber-50",
+      };
+    case "MACHINE_PLANNING_AWAITING_COMPLETION":
+      return {
+        label: "Planning Valid — Awaiting Completion",
+        icon: "🟡",
+        stripClass: "border-yellow-400 bg-yellow-50",
+      };
     case "NO_MR":
       return {
         label: "RM Shortage",
@@ -243,14 +296,65 @@ export function buildWoPrepareGuidedStripModel(args: {
   woCreateDisabled: boolean;
   loading: boolean;
   resumeWorkOrder?: boolean;
+  /** When false, hide Create Work Order (Production never creates REGULAR WO). */
+  allowCreateWorkOrderAction?: boolean;
   onRaiseMr: () => void;
   onCreateWo: () => void;
   onResumeWo: () => void;
   onRefreshAvailability: () => void;
+  onCompleteMachinePlanning?: () => void;
 }): WoPrepareGuidedStripModel | null {
   const so = args.salesOrderId;
+  const allowCreate = args.allowCreateWorkOrderAction !== false;
 
   switch (args.state) {
+    case "MACHINE_PLANNING_PENDING":
+      return {
+        state: "MACHINE_PLANNING_PENDING",
+        tone: "warning",
+        headline: "Machine Planning Pending",
+        owner: "Production",
+        nextActionText: "Allocate machine production runs. Work Order creation is not available yet.",
+        primaryLabel: "Save Planning Draft",
+        primaryKind: "button",
+        onPrimaryClick: args.onRefreshAvailability,
+        primaryDisabled: args.loading,
+        showRefreshAvailability: true,
+        tertiaryLabel: "Refresh Status",
+        onTertiaryClick: args.onRefreshAvailability,
+      };
+    case "MACHINE_PLANNING_IN_PROGRESS":
+      return {
+        state: "MACHINE_PLANNING_IN_PROGRESS",
+        tone: "warning",
+        headline: "Machine Planning In Progress",
+        owner: "Production",
+        nextActionText:
+          "Finish valid allocations that equal planned WO quantity. Not Ready for WO until Complete Machine Planning.",
+        primaryLabel: "Save Planning Draft",
+        primaryKind: "button",
+        onPrimaryClick: args.onRefreshAvailability,
+        primaryDisabled: args.loading,
+        showRefreshAvailability: true,
+        tertiaryLabel: "Refresh Status",
+        onTertiaryClick: args.onRefreshAvailability,
+      };
+    case "MACHINE_PLANNING_AWAITING_COMPLETION":
+      return {
+        state: "MACHINE_PLANNING_AWAITING_COMPLETION",
+        tone: "caution",
+        headline: "Planning Valid — Awaiting Completion",
+        owner: "Production",
+        nextActionText:
+          "Allocations look valid. Click Complete Machine Planning to hand off to Store. Not Ready for WO yet.",
+        primaryLabel: "Complete Machine Planning",
+        primaryKind: "button",
+        onPrimaryClick: args.onCompleteMachinePlanning ?? args.onRefreshAvailability,
+        primaryDisabled: args.loading,
+        showRefreshAvailability: true,
+        tertiaryLabel: "Refresh Status",
+        onTertiaryClick: args.onRefreshAvailability,
+      };
     case "NO_MR":
       return {
         state: "NO_MR",
@@ -308,6 +412,24 @@ export function buildWoPrepareGuidedStripModel(args: {
         onTertiaryClick: args.onRefreshAvailability,
       };
     case "READY_FOR_WO":
+      if (!allowCreate) {
+        return {
+          state: "READY_FOR_WO",
+          tone: "success",
+          headline: "Handed to Store — Ready for Work Order",
+          owner: "Store Department",
+          nextActionText: "Store creates the Work Order when RM gates pass. Production does not create REGULAR WOs.",
+          primaryLabel: REGULAR_TERMS.OPEN_RM_CONTROL_CENTER,
+          primaryKind: "link",
+          primaryHref: rmControlCenterHref({
+            salesOrderId: so,
+            returnTo: "prepare-wo",
+          }),
+          showRefreshAvailability: true,
+          tertiaryLabel: "Refresh Status",
+          onTertiaryClick: args.onRefreshAvailability,
+        };
+      }
       return {
         state: "READY_FOR_WO",
         tone: "success",

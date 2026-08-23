@@ -6,7 +6,7 @@
 | **Volume** | 2 — Business Architecture |
 | **Chapter** | 2 — REGULAR Order Planning Pipeline |
 | **Title** | REGULAR Order Planning Pipeline |
-| **Version** | 1.0.0 |
+| **Version** | 1.0.4 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -26,6 +26,7 @@
 
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
+| 1.0.4 | 2026-08-23 | FT ERP Product Team | Machine Run Planning before Store WO; purging-profile detection; REGULAR vs NO_QTY separation; role ownership |
 | 1.0.3 | 2026-07-23 | FT ERP Product Team | Prepare WO RM Required uses buffered WO target (not SO qty); decimal production buffer |
 | 1.0.2 | 2026-07-22 | FT ERP Product Team | Interim — Prepare WO Ready-for-WO labels; create → Material Issue handoff; note execution closure is Ch. 4 |
 | 1.0.1 | 2026-07-22 | FT ERP Product Team | Interim — RM Control Center Create WO → Prepare WO deep-link; Ready for WO count |
@@ -128,8 +129,11 @@ The pipeline spans **commercial** documents (inherit REGULAR) and **planning** s
 | **Purchase Order (PO)** | Purchase | Supplier order |
 | **Goods Receipt (GRN)** | Store | RM into stock |
 | **RM available** | System Read Model | Updated availability after receipt |
-| **Work Order preparation** | Store | Readiness validation, suggested WO qty |
+| **Machine Run Planning** | Production (Admin override) | Allocate FG qty to machines / production runs; detect purging profile; Complete → Store handoff |
+| **Work Order preparation** | Store | Readiness validation, suggested WO qty (after machine planning complete) |
 | **Work Order creation** | Store | **Planning terminus** — execution starts next |
+
+*Canonical REGULAR_SO handoff:* **SO approval → Production machine planning → Store handoff → Store creates WO → Production execution.**
 
 *Note:* **Purchase review** in REGULAR means Purchase’s assessment of **procurement execution** (PR → PO), not Monthly Production Plan approval (NO_QTY only).
 
@@ -139,7 +143,7 @@ The pipeline spans **commercial** documents (inherit REGULAR) and **planning** s
 Establishes REGULAR inheritance and fixed FG lines. Customer Purchase Order may be recorded as **reference only** on Internal Sales Order— it does not start planning.
 
 **RM requirement calculation**  
-Explodes approved BOM for order FG quantities; compares required RM to free/available stock and incoming supply; identifies gaps. May use order production Planning Snapshot (buffered FG-to-produce intent) as planning input.
+Explodes approved BOM for order FG quantities; compares required RM to free/available stock and incoming supply; identifies gaps. May use order production Planning Snapshot (buffered FG-to-produce intent) as planning input. Planned purging RM (from machine-run detection) may increase required RM; it does **not** invent shortage from WO gates alone.
 
 **Material Requirement**  
 Store raises MR for consolidated RM shortage linked to Internal Sales Order / work order planning context. MR enters **REGULAR_SO** demand pool when approved for procurement.
@@ -150,8 +154,57 @@ Operational workspace for REGULAR RM **cases**—shortage, allocation, incoming 
 **Purchase review → PR → PO → GRN**  
 Store creates Purchase Requisition from MR; Purchase converts PR to PO; Store posts GRN. Availability Read Model updates for planning decisions.
 
+**Machine Run Planning → Store handoff**
+After SO approval, **Production** plans machine production runs on the REGULAR SO (Requirement & Cycle Planning / Machine Run Planning workspace). Completing machine planning marks the SO handed off to Store. **Store** then prepares and creates the Work Order; Production does **not** create REGULAR_SO Work Orders. See §6.2.
+
 **Work Order preparation → Work Order creation**  
 Store validates RM readiness, determines preparable quantity (full or proportional), creates Work Order. **Planning ends here.**
+
+### 6.2 Machine Run Planning (REGULAR_SO)
+
+Machine Run Planning is **REGULAR_SO-only**. It does **not** replace NO_QTY Requirement Sheet / Monthly Planning / WO placement. NO_QTY continues to use RS balance and Store WO placement; REGULAR uses fixed ISO qty → machine runs → Store WO.
+
+#### 6.2.1 Role ownership
+
+| Role | Authority |
+|------|-----------|
+| **Production** | Plans machines / production runs; completes machine planning (Store handoff). Never creates REGULAR_SO Work Orders. Never “Reopen Planning.” |
+| **Store** | After handoff: creates REGULAR_SO Work Order when RM gates pass. Machine runs are read-only. Never reopens machine planning. |
+| **Admin** | Full override; may reopen machine planning (reason + audit) when no WO yet exists. |
+
+#### 6.2.2 Planning stages and Store handoff
+
+| Stage | Meaning |
+|-------|---------|
+| **Pending** | SO approved; machine planning not started |
+| **In Progress** | Runs allocated / edited; not yet completed |
+| **Planning Valid — Awaiting Completion** | Plan valid for complete; operator has not pressed Complete Machine Planning |
+| **Complete** | `machinePlanningCompleted` set; Store may create WO |
+
+Completing machine planning is the **Store handoff**. While handed off, Production edits are rejected until Admin reopens (`MACHINE_PLANNING_HANDED_OFF`). Reopen is blocked if a Work Order already exists.
+
+#### 6.2.3 Production runs vs physical setups vs material purges
+
+| Concept | Meaning in planning |
+|---------|---------------------|
+| **Machine production run** | Planned allocation of FG qty to a machine (persisted run rows / allocations). |
+| **Physical setup** | Planned setup count informing capacity / purging planning (e.g. `plannedSetupCount`). Not the same as “one run = one purge.” |
+| **Material purge** | Planned purging RM derived from BOM standard purging qty × detected purge events. Detection is planning intent only. |
+
+**Purging-profile detection** compares planned run material profile to the machine’s last known material state. Rules (product standard):
+
+- Detect change / first load / unknown profile → plan purge where required.
+- **UNKNOWN** machine material state uses a **conservative purge** (purge planned; counted in RM readiness). UNKNOWN does **not** block Complete Machine Planning.
+
+**Future scope (not in this checkpoint):** actual purging consumption posting and shop-floor setup confirmation remain out of scope—planning detection and RM estimate only.
+
+#### 6.2.4 Applied schema migrations
+
+| Migration | Purpose |
+|-----------|---------|
+| `20260823110000_work_order_planned_setup_count` | Planned setup count on Work Order context |
+| `20260823120000_wo_production_run_allocations` | Persisted WO / SO production-run allocations |
+| `20260823130000_regular_so_machine_planning_completed` | SO machine-planning completed snapshot (`machinePlanningCompleted`, completed at/by) |
 
 ---
 
@@ -290,7 +343,7 @@ Suggestion is advisory; Store confirms on creation.
 
 ### 9.4 Store ownership
 
-**Work Order creation** is Store responsibility in Product Standard (Constitution Art. 10; configurable in future per Art. 20).
+**Work Order creation** is Store responsibility in Product Standard (Constitution Art. 10; configurable in future per Art. 20). Machine Run Planning completion (Production → Store handoff) is a **prerequisite** for Store create on REGULAR_SO (§6.2); Production still does not create the WO.
 
 ### 9.5 Planning ends after Work Order creation
 
@@ -372,6 +425,9 @@ Control Tower does not execute Store/Purchase actions; it escalates visibility.
 | **RPL-12** | Duplicate active MR for same procurement case is **consolidated**—not parallel PR paths. |
 | **RPL-13** | Pending Actions for planning **must** cite document reference and owner role. |
 | **RPL-14** | NO_QTY planning entry points **must not** appear as primary path for REGULAR orders. |
+| **RPL-15** | REGULAR_SO **Machine Run Planning** is Production-owned; **Store creates** the Work Order after handoff; **Admin** retains reopen/override authority. |
+| **RPL-16** | Machine **production runs**, **physical setups**, and **material purges** are distinct planning concepts; UNKNOWN material profile uses **conservative purge** without blocking Complete. |
+| **RPL-17** | Actual purging **consumption** and setup **confirmation** are future scope—detection and planned RM only in this checkpoint. |
 
 ---
 
@@ -406,10 +462,12 @@ flowchart TB
   end
 
   subgraph WOPlan["Work Order planning"]
-    PREP[Work Order preparation]
-    WO[Work Order created]
-    AVAIL --> PREP
-    RMCC --> PREP
+    MRP[Machine Run Planning — Production]
+    PREP[Work Order preparation — Store]
+    WO[Work Order created — Store]
+    AVAIL --> MRP
+    RMCC --> MRP
+    MRP -->|Complete / Store handoff| PREP
     PREP --> WO
   end
 
@@ -442,6 +500,7 @@ flowchart TB
 
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
+| 1.0.4 | 2026-08-23 | FT ERP Product Team | Machine Run Planning, purging detection, Store handoff, migrations 2026082311–130000 |
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial REGULAR Order planning pipeline |
 
 ---

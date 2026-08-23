@@ -123,4 +123,39 @@ describe("MySQL Prisma migration SQL compatibility", () => {
     assert.doesNotMatch(sql, /ALTER\s+TABLE\s+"/i);
     assert.doesNotMatch(sql, /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS/i);
   });
+
+  it("work order planned setup count migration defaults existing rows to 1 without retroactive RM recalc", () => {
+    const file = path.join(MIGRATIONS_DIR, "20260823110000_work_order_planned_setup_count", "migration.sql");
+    assert.ok(fs.existsSync(file), "work order planned setup count migration.sql missing");
+    const sql = stripSqlComments(fs.readFileSync(file, "utf8"));
+    assert.match(sql, /ALTER\s+TABLE\s+`WorkOrder`/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`plannedSetupCount`\s+INT\s+NOT\s+NULL\s+DEFAULT\s+1/i);
+    assert.match(sql, /ALTER\s+TABLE\s+`RegularSoPlanningSnapshot`/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`plannedSetupCount`\s+INT\s+NOT\s+NULL\s+DEFAULT\s+1/i);
+    assert.doesNotMatch(sql, /UPDATE\s+/i);
+    assert.doesNotMatch(sql, /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS/i);
+  });
+
+  it("production run allocation migration creates additive tables with MySQL backticks", () => {
+    const file = path.join(MIGRATIONS_DIR, "20260823120000_wo_production_run_allocations", "migration.sql");
+    assert.ok(fs.existsSync(file), "production run allocation migration.sql missing");
+    const sql = stripSqlComments(fs.readFileSync(file, "utf8"));
+    assert.match(sql, /CREATE\s+TABLE\s+`WorkOrderProductionRunAllocation`/i);
+    assert.match(sql, /CREATE\s+TABLE\s+`RegularSoPlanningRunAllocation`/i);
+    assert.match(sql, /CREATE\s+TABLE\s+`RequirementSheetPlannedRunAllocation`/i);
+    assert.match(sql, /CREATE\s+TABLE\s+`MachineMaterialState`/i);
+    assert.doesNotMatch(sql, /CREATE\s+TABLE\s+"/i);
+    assert.doesNotMatch(sql, /ALTER\s+TABLE\s+`WorkOrder`\s+.*plannedSetupCount/i);
+    // MySQL identifier limit is 64 characters.
+    const identifiers = [...sql.matchAll(/`([A-Za-z0-9_]+)`/g)].map((m) => m[1]);
+    const tooLong = [...new Set(identifiers)].filter((name) => name.length > 64);
+    assert.deepEqual(
+      tooLong,
+      [],
+      `MySQL identifiers exceed 64 chars:\n${tooLong.map((n) => `${n.length} ${n}`).join("\n")}`,
+    );
+    assert.match(sql, /UNIQUE\s+INDEX\s+`RegSoRunAlloc_snap_fg_seq_key`/i);
+    assert.match(sql, /UNIQUE\s+INDEX\s+`WoProdRunAlloc_wo_fg_seq_key`/i);
+    assert.match(sql, /UNIQUE\s+INDEX\s+`RsPlanRunAlloc_rs_fg_seq_key`/i);
+  });
 });

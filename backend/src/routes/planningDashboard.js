@@ -10,13 +10,16 @@ const { getProductionPlanningDashboard } = require("../services/productionPlanni
 const { getNoQtyPlanningInbox } = require("../services/noQtyPlanningInboxService");
 const { listCarryForwardPending, updatePlannedNextRsHint } = require("../services/carryForwardPendingService");
 
-const { PLANNING_DASHBOARD_ROLES } = require("../constants/erpRoles");
+const { PLANNING_DASHBOARD_ROLES, CARRY_FORWARD_PENDING_ROLES } = require("../constants/erpRoles");
 
 const planningDashboardRouter = express.Router();
 
 const PLANNING_DASHBOARD_ACCESS_DENIED =
   "Access denied. Only administrators, store, and production staff can view the planning dashboard.";
 const planningDashboardRoles = requireRole([...PLANNING_DASHBOARD_ROLES], PLANNING_DASHBOARD_ACCESS_DENIED);
+const CARRY_FORWARD_PENDING_ACCESS_DENIED =
+  "Access denied. Only administrators and store staff can view carry forward pending.";
+const carryForwardPendingRoles = requireRole([...CARRY_FORWARD_PENDING_ROLES], CARRY_FORWARD_PENDING_ACCESS_DENIED);
 
 planningDashboardRouter.get("/", requireAuth, planningDashboardRoles, async (req, res, next) => {
   try {
@@ -55,7 +58,7 @@ planningDashboardRouter.get("/no-qty-inbox", requireAuth, planningDashboardRoles
 planningDashboardRouter.get(
   "/carry-forward-pending",
   requireAuth,
-  requireRole(["ADMIN", "STORE"], "Access denied. Only administrators and store staff can view carry forward pending."),
+  carryForwardPendingRoles,
   async (req, res, next) => {
     try {
       const salesOrderId = req.query.salesOrderId != null ? Number(req.query.salesOrderId) : undefined;
@@ -72,7 +75,7 @@ planningDashboardRouter.get(
 planningDashboardRouter.patch(
   "/carry-forward-pending/:id/planned-next-rs",
   requireAuth,
-  requireRole(["ADMIN", "STORE"], "Access denied."),
+  carryForwardPendingRoles,
   async (req, res, next) => {
     try {
       const id = Number(req.params.id);

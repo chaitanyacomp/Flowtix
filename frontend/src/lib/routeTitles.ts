@@ -25,8 +25,9 @@ const TITLES: Record<string, string> = {
   "/sales-orders/no-qty/from-quotation": "Continue to Sales Order",
   "/sales-orders/requirements": "Requirement sheet",
   "/dispatch": "Dispatch Workspace",
-  "/rm-check": "Prepare work order",
-  "/work-orders/prepare": "Prepare work order",
+  "/rm-check": "Prepare Work Order",
+  "/work-orders/prepare": "Prepare Work Order",
+  "/work-orders/prepare?intent=machine-planning": "Machine Run Planning",
   "/stock": "Stock Summary",
   "/stock/items": "Item Stock",
   "/stock/movement-history": "Movement History",
@@ -81,11 +82,16 @@ const TITLES: Record<string, string> = {
   "/activity": "Activity",
 };
 
-export function getPageTitle(pathname: string): string {
+export function getPageTitle(pathname: string, search = ""): string {
   if (pathname.match(/^\/work-orders\/\d+/)) {
     return "Work order details";
   }
-  if (pathname.startsWith("/work-orders/prepare")) {
+  if (pathname.startsWith("/work-orders/prepare") || pathname === "/rm-check") {
+    const qs = search.startsWith("?") ? search.slice(1) : search;
+    const intent = new URLSearchParams(qs).get("intent");
+    if (intent === "machine-planning") {
+      return TITLES["/work-orders/prepare?intent=machine-planning"];
+    }
     return TITLES["/work-orders/prepare"];
   }
   if (pathname.startsWith("/planning-dashboard")) {

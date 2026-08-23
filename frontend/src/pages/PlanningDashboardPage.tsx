@@ -1,26 +1,15 @@
 /**
- * NO_QTY FLOW ONLY
+ * Planning hub (Production Flow → Requirement & Cycle Planning)
  *
- * Flow:
- * NO_QTY SO
- * → Requirement Sheet
- * → Cycle Planning
- * → Production
- * → QC
- * → Dispatch
- * → Continue Planning
+ * Contains:
+ * 1) REGULAR_SO machine planning queue (Admin/Production) — operational only
+ * 2) NO_QTY requirement & cycle planning (existing)
  *
- * This flow is:
- * - cycle based
- * - planning driven
- * - shortage carry-forward based
+ * NO_QTY FLOW:
+ * NO_QTY SO → Requirement Sheet → Cycle Planning → Production → QC → Dispatch
  *
- * DO NOT IMPORT:
- * - Regular WO preparation routes (`/work-orders/prepare`, `/rm-check`) — those are REGULAR-only; this hub links there only as a wrong-flow escape when a REGULAR SO id appears in the URL.
- * - fixed-order dispatch assumptions for REGULAR NORMAL SO
- * - customer PO pending logic from REGULAR RM check
- *
- * Uses `/api/planning-dashboard` (requirement-sheet–driven signals). Not used for REGULAR fixed-qty WO prep.
+ * DO NOT mix REGULAR WO create into NO_QTY tables. REGULAR Store WO create stays on
+ * `/work-orders/prepare` after machine planning is complete.
  */
 import * as React from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -36,6 +25,7 @@ import { useAuth } from "../hooks/useAuth";
 import { useDemoMode } from "../contexts/DemoModeContext";
 import { demoHighlightKey } from "../lib/demoFlowConfig";
 import { ERP_REPORT_POLL_MS, useErpRefreshTick } from "../hooks/useErpRefreshTick";
+import { CARRY_FORWARD_PENDING_ROLES, SO_READ_ROLES, hasErpRole } from "../config/erpRoles";
 import type { DashboardProductionStatusSource } from "../lib/dashboardProductionStatus";
 import {
   buildPlanningLifecycleIndex,
@@ -49,6 +39,7 @@ import type { RmRequirementRow } from "./rmPurchase/rmPurchaseShared";
 import { NoQtyPlannerInboxSection } from "../components/erp/planning/NoQtyPlannerInboxSection";
 import { CarryForwardPendingSection } from "../components/erp/planning/CarryForwardPendingSection";
 import { useNoQtyPlannerInbox } from "../hooks/useNoQtyPlannerInbox";
+import { RegularSoMachinePlanningQueueSection } from "../components/erp/RegularSoMachinePlanningQueueSection";
 
 type WoLifecycleRow = {
   status: string;
@@ -155,6 +146,8 @@ export function PlanningDashboardPage() {
   const demo = useDemoMode();
   const planningDemoHl = demoHighlightKey(demo.enabled, demo.flow, demo.step, "no_qty", 2);
   const canSeeRmRequirements = auth.user?.role === "ADMIN" || auth.user?.role === "STORE";
+  const canSeeCarryForwardPending = hasErpRole(auth.user?.role, CARRY_FORWARD_PENDING_ROLES);
+  const canReadCommercialSalesOrderList = hasErpRole(auth.user?.role, SO_READ_ROLES);
   const [data, setData] = React.useState<ApiResp | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -209,7 +202,10 @@ export function PlanningDashboardPage() {
       apiFetch<{ nonCompleted: WoLifecycleRow[]; completed: WoLifecycleRow[] }>(
         "/api/production/work-orders?listScope=all&completedPage=1&limit=20",
       ),
-      apiFetch<SoCustomerRow[]>("/api/sales-orders"),
+      // Commercial SO list is ADMIN-only — do not call for Store/Production (avoids access-denied noise).
+      canReadCommercialSalesOrderList
+        ? apiFetch<SoCustomerRow[]>("/api/sales-orders")
+        : Promise.resolve([] as SoCustomerRow[]),
     ])
       .then(([queueRows, woBundle, salesOrders]) => {
         if (!mounted) return;
@@ -233,7 +229,7 @@ export function PlanningDashboardPage() {
     return () => {
       mounted = false;
     };
-  }, [liveTick]);
+  }, [liveTick, canReadCommercialSalesOrderList]);
 
   const customers = React.useMemo(() => {
     const set = new Set<string>();
@@ -376,11 +372,15 @@ export function PlanningDashboardPage() {
       >
         <div className="min-w-0 space-y-0.5">
           <h1 className="text-base font-semibold leading-tight tracking-tight text-slate-900">
-            {NO_QTY_TERMS.PLANNING_HUB_TITLE}
+            Requirement &amp; Cycle Planning
           </h1>
-          <p className="text-xs leading-snug text-slate-600">{NO_QTY_TERMS.PLANNING_HUB_SUBTITLE}</p>
+          <p className="text-xs leading-snug text-slate-600">
+            Regular SO machine planning (Production) and No Qty requirement/cycle planning.
+          </p>
         </div>
       </StickyWorkspaceHead>
+
+      <RegularSoMachinePlanningQueueSection />
 
       {planningSalesOrderIdFromUrl > 0 && urlSoConflict === "loading" ? (
         <div className="sr-only" aria-live="polite">
@@ -424,12 +424,21 @@ export function PlanningDashboardPage() {
             >
               {NO_QTY_TERMS.OPEN_PREPARE_WORK_ORDER}
             </Link>
-            <Link
-              to="/sales-orders"
-              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 border-amber-300 bg-white text-amber-950")}
-            >
-              {REGULAR_TERMS.SIDEBAR_BACK_TO_SALES_ORDERS}
-            </Link>
+            {canReadCommercialSalesOrderList ? (
+              <Link
+                to="/sales-orders"
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 border-amber-300 bg-white text-amber-950")}
+              >
+                {REGULAR_TERMS.SIDEBAR_BACK_TO_SALES_ORDERS}
+              </Link>
+            ) : (
+              <Link
+                to="/planning-dashboard"
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-8 border-amber-300 bg-white text-amber-950")}
+              >
+                Back to planning hub
+              </Link>
+            )}
           </div>
         </div>
       ) : null}
@@ -460,14 +469,16 @@ export function PlanningDashboardPage() {
         </div>
       ) : null}
 
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Carry Forward Pending</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <CarryForwardPendingSection />
-        </CardContent>
-      </Card>
+      {canSeeCarryForwardPending ? (
+        <Card data-testid="carry-forward-pending-section">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Carry Forward Pending</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <CarryForwardPendingSection enabled />
+          </CardContent>
+        </Card>
+      ) : null}
 
       {canSeeRmRequirements ? (
         <>

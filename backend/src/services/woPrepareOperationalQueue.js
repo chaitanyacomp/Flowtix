@@ -1,15 +1,24 @@
 /**
  * REGULAR SO → WO prepare operational substages (WO_PENDING only).
  * Drives Sales Order list labels/CTAs and Store/Admin dashboard WO-prepare queues.
+ *
+ * Machine planning gates READY_FOR_WO: approved SO alone (or RM stock alone) is never enough.
  */
 
 const { prisma } = require("../utils/prisma");
-const { computeFgGapLinesForSalesOrder } = require("./rmCheckService");
-const { evaluateWoPrepareReadiness } = require("./materialPlanningService");
+const rmCheckSvc = require("./rmCheckService");
+const materialPlanningSvc = require("./materialPlanningService");
 const { summarizeMaterialRequirement } = require("./procurementWorkspaceService");
 const { loadTotalPurchaseRequestAllocByMrLineId } = require("./purchaseRequestService");
 const { RM_REQUISITION_ACTIVE_STATUSES } = require("./rmRequisitionLifecycle");
 const { regularSoProcurementSourceTypes } = require("./regularSoProcurementSource");
+const {
+  assessRegularSoMachinePlanning,
+  MACHINE_PLANNING_PENDING,
+  MACHINE_PLANNING_IN_PROGRESS,
+  MACHINE_PLANNING_AWAITING_COMPLETION,
+  MACHINE_PLANNING_COMPLETE,
+} = require("./regularSoMachinePlanningService");
 
 const WO_PLANNING_SOURCE = "WORK_ORDER_PLANNING";
 
@@ -24,19 +33,101 @@ function isRegularWoPrepareCandidate(so) {
   return salesOrderHasFgLines(so);
 }
 
+function n(v) {
+  const x = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+
+/**
+ * Aggregate RM required / available / shortage for Store operational queues (existing terminology).
+ * @param {object} readiness — evaluateWoPrepareReadiness result
+ */
+function summarizeRmQtyFromReadiness(readiness) {
+  const lines = Array.isArray(readiness?.rmSummary) ? readiness.rmSummary : [];
+  let requiredQtyTotal = 0;
+  let availableQtyTotal = 0;
+  let shortageQtyTotal = 0;
+  const shortageLines = [];
+  for (const r of lines) {
+    const requiredQty = n(r.requiredQty);
+    const availableQty = n(r.availableQty);
+    const shortageQty = n(r.shortageQty ?? r.shortage ?? Math.max(0, requiredQty - availableQty));
+    requiredQtyTotal += requiredQty;
+    availableQtyTotal += availableQty;
+    shortageQtyTotal += shortageQty;
+    if (shortageQty > 1e-9) {
+      shortageLines.push({
+        rmItemId: r.rmItemId ?? null,
+        itemName: r.itemName ?? `RM #${r.rmItemId}`,
+        unit: r.unit ?? null,
+        requiredQty,
+        availableQty,
+        shortageQty,
+      });
+    }
+  }
+  return {
+    requiredQtyTotal: Math.round(requiredQtyTotal * 1000) / 1000,
+    availableQtyTotal: Math.round(availableQtyTotal * 1000) / 1000,
+    shortageQtyTotal: Math.round(shortageQtyTotal * 1000) / 1000,
+    shortageLines,
+  };
+}
+
 /**
  * @param {object} so — sales order with lines + item includes
  * @param {import('@prisma/client').PrismaClient} [db]
  */
 async function resolveWoPrepareOperationalForSalesOrder(so, db = prisma) {
-  const { fgLines } = await computeFgGapLinesForSalesOrder(so, db);
-  const readiness = await evaluateWoPrepareReadiness(so.id, { fgLines }, db);
+  const machine = await assessRegularSoMachinePlanning(so.id, db);
+
+  // Incomplete / stale machine planning stays with Production — never Store RM queues.
+  // Valid draft (awaiting Complete click) also stays with Production.
+  if (!machine.machinePlanningComplete) {
+    const pending = machine.key === MACHINE_PLANNING_IN_PROGRESS;
+    const awaiting = machine.key === MACHINE_PLANNING_AWAITING_COMPLETION;
+    return {
+      key: awaiting
+        ? MACHINE_PLANNING_AWAITING_COMPLETION
+        : pending
+          ? MACHINE_PLANNING_IN_PROGRESS
+          : MACHINE_PLANNING_PENDING,
+      label: awaiting
+        ? "Planning Valid — Awaiting Completion"
+        : pending
+          ? "Machine Planning In Progress"
+          : "Machine Planning Pending",
+      nextActionKey: awaiting ? "COMPLETE_MACHINE_PLANNING" : "PLAN_MACHINE_RUNS",
+      canCreateWorkOrder: false,
+      shortageRmCount: 0,
+      pendingMaterialRequirements: [],
+      pendingMrRefs: "",
+      primaryFgName: machine.primaryFgName,
+      woBlockReason:
+        machine.issues[0] ||
+        (awaiting
+          ? "Click Complete Machine Planning to hand off to Store."
+          : "Machine allocation pending — Production action required."),
+      machinePlanningStatus: machine.key,
+      machinePlanningComplete: false,
+      rmRequiredQtyTotal: 0,
+      rmAvailableQtyTotal: 0,
+      rmShortageQtyTotal: 0,
+      rmShortageLines: [],
+    };
+  }
+
+  // Valid machine planning always hands the SO to Store — even when RM is short.
+  const { fgLines } = await rmCheckSvc.computeFgGapLinesForSalesOrder(so, db);
+  const readiness = await materialPlanningSvc.evaluateWoPrepareReadiness(so.id, { fgLines }, db);
+  const rmQty = summarizeRmQtyFromReadiness(readiness);
   const pending = readiness.pendingMaterialRequirements || [];
   const shortageRmCount =
     readiness.materialReadiness?.shortageRmCount ?? readiness.totalShortageLines ?? 0;
   const primaryFgName =
     readiness.fgSummary?.find((f) => f.fgQty > 0)?.fgName ??
     fgLines.find((f) => f.toProduce > 0 && !f.note)?.fgName ??
+    machine.primaryFgName ??
     null;
   const pendingMrRefs = pending.map((m) => m.docNo || `#${m.id}`).join(", ");
 
@@ -55,6 +146,7 @@ async function resolveWoPrepareOperationalForSalesOrder(so, db = prisma) {
       nextActionKey: "OPEN_PURCHASE_PLAN",
     };
   } else if (shortageRmCount > 0) {
+    // Existing Store RM terminology (workflow guidance maps shortage → RM Shortage / Waiting for RM).
     stage = {
       key: "RM_SHORTAGE",
       label: "RM Shortage — WO blocked",
@@ -79,6 +171,12 @@ async function resolveWoPrepareOperationalForSalesOrder(so, db = prisma) {
     pendingMrRefs,
     primaryFgName,
     woBlockReason: readiness.woBlockReason ?? null,
+    machinePlanningStatus: MACHINE_PLANNING_COMPLETE,
+    machinePlanningComplete: true,
+    rmRequiredQtyTotal: rmQty.requiredQtyTotal,
+    rmAvailableQtyTotal: rmQty.availableQtyTotal,
+    rmShortageQtyTotal: rmQty.shortageQtyTotal,
+    rmShortageLines: rmQty.shortageLines,
   };
 }
 
@@ -169,7 +267,16 @@ async function getWoPrepareDashboardQueues(db = prisma, opts = {}) {
       nextActionKey: op.nextActionKey,
       operationalKey: op.key,
       operationalLabel: op.label,
+      machinePlanningComplete: Boolean(op.machinePlanningComplete),
+      rmRequiredQtyTotal: op.rmRequiredQtyTotal ?? 0,
+      rmAvailableQtyTotal: op.rmAvailableQtyTotal ?? 0,
+      rmShortageQtyTotal: op.rmShortageQtyTotal ?? 0,
+      rmShortageLines: op.rmShortageLines ?? [],
+      canCreateWorkOrder: Boolean(op.canCreateWorkOrder),
     };
+
+    // Only after completed machine planning — RM shortage never returns the SO to Production.
+    if (!op.machinePlanningComplete) continue;
 
       if (op.key === "READY_FOR_WO") readyForWoCreation.push(row);
     else if (op.key === "PURCHASE_GRN_PENDING") {
@@ -263,4 +370,5 @@ module.exports = {
   enrichSalesOrdersWithWoPrepareOperational,
   getWoPrepareDashboardQueues,
   getWoPreparePlanningRows,
+  summarizeRmQtyFromReadiness,
 };

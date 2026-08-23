@@ -40,13 +40,15 @@ export function PageContainer({
   children,
   className,
   narrow = false,
+  ...rest
 }: {
   children: React.ReactNode;
   className?: string;
   narrow?: boolean;
-}) {
+} & React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
+      {...rest}
       className={cn(
         "erp-page-shell page-shell w-full min-w-0 space-y-3 overflow-x-hidden",
         narrow ? "mx-auto max-w-5xl" : null,

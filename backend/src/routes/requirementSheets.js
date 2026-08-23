@@ -2,7 +2,7 @@ const express = require("express");
 const { z } = require("zod");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
-const { RS_WRITE_ROLES, RS_READ_ROLES } = require("../constants/erpRoles");
+const { RS_WRITE_ROLES, RS_READ_ROLES, WO_MACHINE_RUN_WRITE_ROLES } = require("../constants/erpRoles");
 const { DocType } = require("../prismaClientPackage");
 const { allocateDocNo } = require("../services/docNoService");
 const { computeZone } = require("../services/planningThresholds");
@@ -2701,6 +2701,109 @@ requirementSheetsRouter.get(
   },
 );
 
+/** ADMIN/PRODUCTION: save draft machine production-run allocations for NO_QTY WO placement. */
+requirementSheetsRouter.put(
+  "/requirement-sheets/:id/execution/production-runs",
+  requireAuth,
+  requireRole(WO_MACHINE_RUN_WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json(friendly400("Invalid requirement sheet id."));
+      const body = z
+        .object({
+          productionRuns: z
+            .array(
+              z.object({
+                fgItemId: z.coerce.number().int().positive(),
+                runSequence: z.coerce.number().int().positive().optional(),
+                machineId: z.coerce.number().int().positive(),
+                plannedQty: z.coerce.number().positive(),
+                plannedDate: z.string().optional().nullable(),
+                shiftId: z.coerce.number().int().positive().optional().nullable(),
+              }),
+            )
+            .default([]),
+          plannedFgLines: z
+            .array(
+              z.object({
+                fgItemId: z.coerce.number().int().positive(),
+                plannedQty: z.coerce.number().nonnegative(),
+                fgName: z.string().optional(),
+              }),
+            )
+            .optional(),
+        })
+        .parse(req.body ?? {});
+
+      const {
+        validateAndEnrichProductionRuns,
+        replaceRequirementSheetPlannedRuns,
+        mapPersistedRunRow,
+        RUN_INCLUDE,
+      } = require("../services/woProductionRunAllocationService");
+
+      const result = await prisma.$transaction(async (tx) => {
+        const sheet = await tx.requirementSheet.findUnique({
+          where: { id },
+          include: {
+            salesOrder: { select: { orderType: true } },
+            lines: { include: { item: { select: { id: true, itemName: true } } } },
+          },
+        });
+        if (!sheet) {
+          const err = new Error("Requirement sheet not found.");
+          err.statusCode = 404;
+          throw err;
+        }
+        if (sheet.salesOrder?.orderType !== "NO_QTY") {
+          const err = new Error("Production runs are only for No Qty requirement sheets.");
+          err.statusCode = 409;
+          throw err;
+        }
+        if (sheet.status !== "LOCKED") {
+          const err = new Error("Production runs can be saved only on a locked requirement sheet.");
+          err.statusCode = 409;
+          throw err;
+        }
+
+        const plannedFgLines =
+          body.plannedFgLines?.length > 0
+            ? body.plannedFgLines
+            : (sheet.lines ?? []).map((ln) => ({
+                fgItemId: ln.itemId,
+                plannedQty: Number(ln.requirementQty ?? 0),
+                fgName: ln.item?.itemName,
+              }));
+
+        const validated = await validateAndEnrichProductionRuns(tx, body.productionRuns, plannedFgLines, {
+          requireRuns: body.productionRuns.length > 0,
+        });
+        await replaceRequirementSheetPlannedRuns(tx, id, validated.enriched);
+        const rows = await tx.requirementSheetPlannedRunAllocation.findMany({
+          where: { requirementSheetId: id },
+          include: RUN_INCLUDE,
+          orderBy: [{ fgItemId: "asc" }, { runSequence: "asc" }],
+        });
+        const productionRuns = rows.map(mapPersistedRunRow).filter(Boolean);
+        return {
+          productionRuns,
+          productionRunCount: validated.productionRunCount,
+          plannedPurgeCount: validated.plannedPurgeCount,
+          physicalSetupConfirmationRequired: validated.physicalSetupConfirmationRequired,
+        };
+      });
+
+      return res.json({ ok: true, ...result });
+    } catch (e) {
+      if (e.statusCode === 404 || e.statusCode === 409 || e.statusCode === 400) {
+        return res.status(e.statusCode).json(friendly400(e.message));
+      }
+      return next(e);
+    }
+  },
+);
+
 // POST /api/requirement-sheets/:id/execution/rm-preview — live RM Detail for proposed WO qty
 requirementSheetsRouter.post(
   "/requirement-sheets/:id/execution/rm-preview",
@@ -2720,9 +2823,24 @@ requirementSheetsRouter.post(
               }),
             )
             .default([]),
+          plannedSetupCount: z.number().int().min(1).max(9999).optional(),
+          productionRuns: z
+            .array(
+              z.object({
+                fgItemId: z.coerce.number().int().positive(),
+                runSequence: z.coerce.number().int().positive().optional(),
+                machineId: z.coerce.number().int().positive(),
+                plannedQty: z.coerce.number().positive(),
+                plannedDate: z.string().optional().nullable(),
+                shiftId: z.coerce.number().int().positive().optional().nullable(),
+              }),
+            )
+            .optional(),
         })
         .parse(req.body ?? {});
-      const data = await previewRequirementSheetRmForProposedQty(prisma, id, body.lines);
+      const data = await previewRequirementSheetRmForProposedQty(prisma, id, body.lines, {
+        productionRuns: body.productionRuns,
+      });
       return res.json(data);
     } catch (e) {
       if (e.statusCode === 404) return res.status(404).json(friendly400(e.message));
@@ -2835,6 +2953,19 @@ requirementSheetsRouter.post(
             })
             .optional()
             .nullable(),
+          plannedSetupCount: z.number().int().min(1).max(9999).optional(),
+          productionRuns: z
+            .array(
+              z.object({
+                fgItemId: z.coerce.number().int().positive(),
+                runSequence: z.coerce.number().int().positive().optional(),
+                machineId: z.coerce.number().int().positive(),
+                plannedQty: z.coerce.number().positive(),
+                plannedDate: z.string().optional().nullable(),
+                shiftId: z.coerce.number().int().positive().optional().nullable(),
+              }),
+            )
+            .optional(),
         })
         .parse(req.body ?? {});
 
@@ -2897,6 +3028,7 @@ requirementSheetsRouter.post(
         const woResult = await createNoQtyWorkOrderFromLockedSheet(tx, sheet, {
           requestedLines: Array.isArray(body.lines) ? body.lines : undefined,
           placementSnapshot: body.placementSnapshot ?? null,
+          productionRuns: body.productionRuns,
         });
         if (!woResult.workOrderId) {
           const err = new Error(

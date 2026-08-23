@@ -64,6 +64,8 @@ const DISPATCH_READ_ROLES = Object.freeze(["ADMIN", "STORE"]);
 const GRN_WRITE_ROLES = Object.freeze(["ADMIN", "STORE"]);
 const MATERIAL_ISSUE_ROLES = Object.freeze(["ADMIN", "STORE"]);
 const STORE_DASHBOARD_ROLES = Object.freeze(["ADMIN", "STORE"]);
+/** Carry Forward Pending list on planning hub (Store consumes; Production does not list). */
+const CARRY_FORWARD_PENDING_ROLES = Object.freeze(["ADMIN", "STORE"]);
 
 const CUSTOMER_RETURN_CREATE_ROLES = Object.freeze(["ADMIN", "STORE"]);
 const CUSTOMER_RETURN_APPROVE_ROLES = Object.freeze(["ADMIN"]);
@@ -74,6 +76,13 @@ const NO_QTY_FLOW_STATE_READ_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTIO
 /** STORE owns Regular WO prepare/placement; PRODUCTION may open prepare / WO list. */
 const WO_WRITE_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
 const WO_PLAN_PREP_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
+/** ADMIN + PRODUCTION may create/edit machine production-run allocations; STORE is read-only. */
+const WO_MACHINE_RUN_WRITE_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
+/**
+ * REGULAR_SO Work Order create (post machine planning).
+ * PRODUCTION plans machines but cannot create the WO; ADMIN is secondary/emergency.
+ */
+const REGULAR_SO_WO_CREATE_ROLES = Object.freeze(["ADMIN", "STORE"]);
 /** STORE — Green Level replenishment WO placement workspace */
 const GREEN_LEVEL_WO_PLACEMENT_ROLES = Object.freeze(["ADMIN", "STORE"]);
 const PRODUCTION_WRITE_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
@@ -160,6 +169,7 @@ module.exports = {
   GRN_WRITE_ROLES,
   MATERIAL_ISSUE_ROLES,
   STORE_DASHBOARD_ROLES,
+  CARRY_FORWARD_PENDING_ROLES,
   CUSTOMER_RETURN_CREATE_ROLES,
   CUSTOMER_RETURN_APPROVE_ROLES,
   CUSTOMER_RETURN_READ_ROLES,
@@ -167,6 +177,8 @@ module.exports = {
   // production
   WO_WRITE_ROLES,
   WO_PLAN_PREP_ROLES,
+  WO_MACHINE_RUN_WRITE_ROLES,
+  REGULAR_SO_WO_CREATE_ROLES,
   GREEN_LEVEL_WO_PLACEMENT_ROLES,
   PRODUCTION_WRITE_ROLES,
   PRODUCTION_READ_ROLES,

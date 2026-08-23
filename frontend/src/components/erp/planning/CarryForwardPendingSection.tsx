@@ -4,13 +4,28 @@ import {
   fetchCarryForwardPending,
   type CarryForwardPendingRow,
 } from "../../../lib/productionExecutionApi";
+import { useAuth } from "../../../hooks/useAuth";
+import { CARRY_FORWARD_PENDING_ROLES, hasErpRole } from "../../../config/erpRoles";
 
-export function CarryForwardPendingSection() {
+type Props = {
+  /** When false, render nothing and do not call the API. */
+  enabled?: boolean;
+};
+
+export function CarryForwardPendingSection({ enabled }: Props = {}) {
+  const { user } = useAuth();
+  const allowed = enabled ?? hasErpRole(user?.role, CARRY_FORWARD_PENDING_ROLES);
   const [rows, setRows] = React.useState<CarryForwardPendingRow[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const [loading, setLoading] = React.useState(allowed);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
+    if (!allowed) {
+      setRows([]);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -27,7 +42,9 @@ export function CarryForwardPendingSection() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [allowed]);
+
+  if (!allowed) return null;
 
   if (loading) {
     return <div className="text-sm text-slate-600">Loading carry forward pending…</div>;
@@ -44,7 +61,7 @@ export function CarryForwardPendingSection() {
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-slate-200">
+    <div className="overflow-x-auto rounded-lg border border-slate-200" data-testid="carry-forward-pending-table">
       <table className="min-w-full text-sm">
         <thead className="bg-slate-100 text-left text-xs uppercase tracking-wide text-slate-600">
           <tr>

@@ -84,4 +84,53 @@ machinesRouter.patch("/:id", requireAuth, requireRole(WRITE_ROLES), async (req, 
   }
 });
 
+const materialStateBodySchema = z.object({
+  materialState: z.enum(["RETAINED", "CLEARED", "UNKNOWN"]),
+  profileFingerprint: z.string().max(64).optional().nullable(),
+  profileJson: z.any().optional().nullable(),
+  sourceWorkOrderId: z.number().int().positive().optional().nullable(),
+  sourceRunAllocationId: z.number().int().positive().optional().nullable(),
+});
+
+machinesRouter.get(
+  "/:id/material-state",
+  requireAuth,
+  requireRole(READ_ROLES),
+  async (req, res, next) => {
+    try {
+      const { loadMachineMaterialState } = require("../services/machineMaterialStateService");
+      const id = Number(req.params.id);
+      const state = await loadMachineMaterialState(prisma, id);
+      return res.json(state);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+machinesRouter.post(
+  "/:id/material-state/confirm",
+  requireAuth,
+  requireRole(WRITE_ROLES),
+  async (req, res, next) => {
+    try {
+      const { confirmMachineMaterialState } = require("../services/machineMaterialStateService");
+      const id = Number(req.params.id);
+      const body = materialStateBodySchema.parse(req.body ?? {});
+      const row = await confirmMachineMaterialState(prisma, {
+        machineId: id,
+        materialState: body.materialState,
+        profileFingerprint: body.profileFingerprint ?? null,
+        profileJson: body.profileJson ?? null,
+        sourceWorkOrderId: body.sourceWorkOrderId ?? null,
+        sourceRunAllocationId: body.sourceRunAllocationId ?? null,
+        confirmedByUserId: req.user?.userId ?? null,
+      });
+      return res.json(row);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
 module.exports = { machinesRouter, READ_ROLES, WRITE_ROLES };

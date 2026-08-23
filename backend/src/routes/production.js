@@ -640,6 +640,22 @@ productionRouter.post(
             }),
           )
           .min(1),
+        /** @deprecated Rejected when it does not match derived production-run count. */
+        plannedSetupCount: z.number().int().min(1).max(9999).optional(),
+        plannedPurgeCount: z.number().int().min(0).max(9999).optional(),
+        productionRunCount: z.number().int().min(0).max(9999).optional(),
+        productionRuns: z
+          .array(
+            z.object({
+              fgItemId: z.coerce.number().int().positive(),
+              runSequence: z.coerce.number().int().positive().optional(),
+              machineId: z.coerce.number().int().positive(),
+              plannedQty: z.coerce.number().positive(),
+              plannedDate: z.string().optional().nullable(),
+              shiftId: z.coerce.number().int().positive().optional().nullable(),
+            }),
+          )
+          .optional(),
         fgStockOverride: z
           .object({
             enabled: z.boolean().default(false),
@@ -652,6 +668,16 @@ productionRouter.post(
       const body = schema.parse(req.body);
       parsedWorkOrderBody = body;
       let normalizedLines = normalizeWorkOrderLinePayloads(body.lines);
+      const {
+        validateAndEnrichProductionRuns,
+        assertClientSetupCountMatchesDerived,
+        assertClientPurgeCountMatchesDerived,
+        createWorkOrderProductionRuns,
+      } = require("../services/woProductionRunAllocationService");
+      const { REGULAR_SO_WO_CREATE_ROLES } = require("../constants/erpRoles");
+      const {
+        assertRegularSoMachinePlanningCompleteForWoCreate,
+      } = require("../services/regularSoMachinePlanningService");
 
       const wo = await prisma.$transaction(async (tx) => {
         await lockSalesOrderForUpdate(tx, body.salesOrderId);
@@ -659,6 +685,25 @@ productionRouter.post(
           where: { id: body.salesOrderId },
           select: { orderType: true },
         });
+        const orderTypeEarly = soMeta?.orderType ?? "NORMAL";
+        if (orderTypeEarly !== "NO_QTY") {
+          const role = String(req.user?.role ?? "").trim().toUpperCase();
+          if (!REGULAR_SO_WO_CREATE_ROLES.includes(role)) {
+            const err = new Error(
+              "Production completes machine planning; Store creates the Work Order for Regular sales orders.",
+            );
+            err.statusCode = 403;
+            err.code = "REGULAR_SO_WO_CREATE_FORBIDDEN";
+            throw err;
+          }
+          await assertRegularSoMachinePlanningCompleteForWoCreate(body.salesOrderId, tx);
+        }
+        // Legacy plannedSetupCount stays 1 unless later confirmed; never = run-row count.
+        let woPlannedSetupCount = 1;
+        let woPlannedPurgeCount = 0;
+        let woProductionRunCount = 0;
+        let enrichedRuns = [];
+        let purgeCountByFgItemId = null;
         if ((soMeta?.orderType ?? "NORMAL") !== "NO_QTY" && (body.shortfallMode || body.shortfallBufferPercent != null)) {
           await upsertRegularSoPlanningSnapshot(
             {
@@ -686,6 +731,39 @@ productionRouter.post(
             ...line,
             qty: authoritativeByFg.get(Number(line.fgItemId)) || line.qty,
           }));
+
+          const plannedFgLines = normalizedLines.map((l) => ({
+            fgItemId: l.fgItemId,
+            plannedQty: l.qty,
+            fgName: planningView.lines?.find((x) => Number(x.fgItemId) === Number(l.fgItemId))?.fgName,
+          }));
+          const runsSource =
+            Array.isArray(body.productionRuns) && body.productionRuns.length > 0
+              ? body.productionRuns
+              : planningView.productionRuns ?? [];
+          const validated = await validateAndEnrichProductionRuns(tx, runsSource, plannedFgLines, {
+            requireRuns: true,
+          });
+          enrichedRuns = validated.enriched;
+          woPlannedPurgeCount = validated.plannedPurgeCount;
+          woProductionRunCount = validated.productionRunCount;
+          purgeCountByFgItemId = validated.purgeCountByFgItemId;
+          assertClientSetupCountMatchesDerived(body.plannedSetupCount);
+          assertClientPurgeCountMatchesDerived(body.plannedPurgeCount, woPlannedPurgeCount);
+        } else if (Array.isArray(body.productionRuns) && body.productionRuns.length > 0) {
+          const plannedFgLines = normalizedLines.map((l) => ({
+            fgItemId: l.fgItemId,
+            plannedQty: l.qty,
+          }));
+          const validated = await validateAndEnrichProductionRuns(tx, body.productionRuns, plannedFgLines, {
+            requireRuns: true,
+          });
+          enrichedRuns = validated.enriched;
+          woPlannedPurgeCount = validated.plannedPurgeCount;
+          woProductionRunCount = validated.productionRunCount;
+          purgeCountByFgItemId = validated.purgeCountByFgItemId;
+          assertClientSetupCountMatchesDerived(body.plannedSetupCount);
+          assertClientPurgeCountMatchesDerived(body.plannedPurgeCount, woPlannedPurgeCount);
         }
         await assertWorkOrderLinesAgainstSalesOrder(tx, {
           salesOrderId: body.salesOrderId,
@@ -712,7 +790,13 @@ productionRouter.post(
           );
           const materialReady = await evaluateWoPrepareReadiness(
             body.salesOrderId,
-            { fgLines, planQtyByFgItemId },
+            {
+              fgLines,
+              planQtyByFgItemId,
+              plannedPurgeCount: woPlannedPurgeCount,
+              purgeCountByFgItemId,
+              productionRuns: enrichedRuns,
+            },
             tx,
           );
           if (!materialReady.canCreateWorkOrder) {
@@ -799,13 +883,16 @@ productionRouter.post(
           }
         }
 
-        return tx.workOrder.create({
+        const created = await tx.workOrder.create({
           data: {
             docNo: await allocateWorkOrderDocNo(tx, {
               flow: resolveWorkOrderFlowFromSalesOrderType(orderType),
               date: new Date(),
             }),
             salesOrderId: body.salesOrderId,
+            plannedSetupCount: woPlannedSetupCount,
+            plannedPurgeCount: woPlannedPurgeCount,
+            productionRunCount: woProductionRunCount,
             status: "PENDING",
             ...(hasSufficientFg && isAdmin && overrideEnabled
               ? {
@@ -824,6 +911,10 @@ productionRouter.post(
           },
           include: { lines: { include: { fgItem: true } }, salesOrder: true, cycle: true },
         });
+        if (enrichedRuns.length) {
+          await createWorkOrderProductionRuns(tx, created.id, created.lines, enrichedRuns);
+        }
+        return created;
       });
 
       const woDoc = displayWorkOrderNo(wo.id, wo.docNo);
@@ -843,6 +934,11 @@ productionRouter.post(
           cycleNo: wo.cycle?.cycleNo != null ? Number(wo.cycle.cycleNo) : undefined,
           lineCount: wo.lines?.length ?? 0,
           totalPlannedQty: (wo.lines || []).reduce((s, l) => s + Number(l.plannedQty ?? l.qty ?? 0), 0) || undefined,
+          regularSoCreateRole: req.user?.role ?? null,
+          emergencyAdminCreate:
+            String(req.user?.role ?? "").toUpperCase() === "ADMIN" && (so?.orderType ?? "NORMAL") !== "NO_QTY"
+              ? true
+              : undefined,
         },
       });
 
@@ -1616,7 +1712,8 @@ productionRouter.get(
 /**
  * GET /api/production/eligible-sales-orders-for-wo
  * Returns approved sales orders with at least one FG line having remaining open qty for WO planning.
- * Same rule as assertWorkOrderLinesAgainstSalesOrder (see getEligibleSalesOrderIdsForWorkOrder).
+ * REGULAR_SO ids require completed machine planning (Store WO queue).
+ * NO_QTY eligibility is unchanged.
  *
  * Query:
  * - includeSalesOrderId (optional): force-include this SO id (edit-mode continuity).
@@ -1631,8 +1728,44 @@ productionRouter.get(
       const includeSalesOrderId =
         includeRaw != null && String(includeRaw).trim() !== "" ? Number(includeRaw) : undefined;
 
-      const ids = await getEligibleSalesOrderIdsForWorkOrder(prisma, { includeSalesOrderId });
-      return res.json({ ids });
+      let ids = await getEligibleSalesOrderIdsForWorkOrder(prisma, { includeSalesOrderId });
+      const {
+        filterSalesOrderIdsWithCompletedMachinePlanning,
+      } = require("../services/regularSoMachinePlanningService");
+      ids = await filterSalesOrderIdsWithCompletedMachinePlanning(prisma, ids);
+      if (
+        includeSalesOrderId &&
+        Number.isFinite(includeSalesOrderId) &&
+        includeSalesOrderId > 0 &&
+        !ids.includes(includeSalesOrderId)
+      ) {
+        // Edit continuity: allow include only when machine planning already complete (REGULAR).
+        const forced = await filterSalesOrderIdsWithCompletedMachinePlanning(prisma, [
+          includeSalesOrderId,
+        ]);
+        if (forced.length) ids = [...ids, ...forced];
+      }
+      return res.json({ ids: [...new Set(ids)] });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/**
+ * GET /api/production/regular-so-machine-planning-queue
+ * Production/Admin queue: approved REGULAR SOs needing machine-run planning (operational fields only).
+ */
+productionRouter.get(
+  "/regular-so-machine-planning-queue",
+  requireAuth,
+  requireRole(["ADMIN", "PRODUCTION"]),
+  async (req, res, next) => {
+    try {
+      const { getRegularSoMachinePlanningQueue } = require("../services/regularSoMachinePlanningService");
+      const limit = req.query.limit != null ? Number(req.query.limit) : 80;
+      const data = await getRegularSoMachinePlanningQueue(prisma, { limit });
+      return res.json(data);
     } catch (e) {
       return next(e);
     }

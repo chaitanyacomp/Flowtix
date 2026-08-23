@@ -191,7 +191,35 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
   const allowedFgItemIds = new Set((soLines || []).filter((l) => l.item?.itemType === "FG").map((l) => l.itemId));
 
   const placedByItem = sumPlacedQtyByItem(linkedWorkOrders);
-  const assessment = await assessNoQtyBatchPlacement(tx, sheet, { placedByItem });
+  const {
+    validateAndEnrichProductionRuns,
+    assertClientSetupCountMatchesDerived,
+    assertClientPurgeCountMatchesDerived,
+    createWorkOrderProductionRuns,
+    mapPersistedRunRow,
+    RUN_INCLUDE,
+  } = require("./woProductionRunAllocationService");
+
+  let runsSource = options?.productionRuns;
+  if (!Array.isArray(runsSource) || !runsSource.length) {
+    const draftFindMany = tx.requirementSheetPlannedRunAllocation?.findMany;
+    if (typeof draftFindMany === "function") {
+      const draftRuns = await draftFindMany.call(tx.requirementSheetPlannedRunAllocation, {
+        where: { requirementSheetId: sheet.id },
+        include: RUN_INCLUDE,
+        orderBy: [{ fgItemId: "asc" }, { runSequence: "asc" }],
+      });
+      runsSource = (draftRuns ?? []).map(mapPersistedRunRow).filter(Boolean);
+    } else {
+      runsSource = [];
+    }
+  }
+
+  // Assessment without purging first for placement caps; per-WO setup applied at create.
+  const assessment = await assessNoQtyBatchPlacement(tx, sheet, {
+    placedByItem,
+    plannedSetupCount: 1,
+  });
   const balanceLines = assessment.balanceLines.filter((line) => line.rsBalanceQty > EPS);
 
   const requestedLines = normalizeRequestedPlacementLines(options?.requestedLines, balanceLines);
@@ -225,11 +253,25 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
     const fgUnit = placementUnitByItemId.get(fgItemId) ?? null;
     const qty = roundFgQty(line.qty, fgUnit, { mode: "floor" });
     if (!(qty > EPS)) continue;
+
+    const fgRuns = (runsSource ?? []).filter((r) => Number(r.fgItemId) === fgItemId);
+    const validated = await validateAndEnrichProductionRuns(
+      tx,
+      fgRuns,
+      [{ fgItemId, plannedQty: qty }],
+      { requireRuns: true },
+    );
+    assertClientSetupCountMatchesDerived(options?.plannedSetupCount);
+    assertClientPurgeCountMatchesDerived(options?.plannedPurgeCount, validated.plannedPurgeCount);
+
     const created = await tx.workOrder.create({
       data: {
         salesOrderId: sheet.salesOrderId,
         requirementSheetId: sheet.id,
         cycleId: activeCycleId,
+        plannedSetupCount: 1,
+        plannedPurgeCount: validated.plannedPurgeCount,
+        productionRunCount: validated.productionRunCount,
         status: "PENDING",
         docNo: await allocateWorkOrderDocNo(tx, { flow: WORK_ORDER_FLOW.NO_QTY, date: new Date() }),
         lines: {
@@ -242,13 +284,23 @@ async function createNoQtyWorkOrderFromLockedSheet(tx, sheet, options = {}) {
           ],
         },
       },
-      select: { id: true, docNo: true },
+      include: { lines: true },
     });
+    await createWorkOrderProductionRuns(tx, created.id, created.lines, validated.enriched);
+    // Clear draft runs for this FG after successful placement.
+    if (typeof tx.requirementSheetPlannedRunAllocation?.deleteMany === "function") {
+      await tx.requirementSheetPlannedRunAllocation.deleteMany({
+        where: { requirementSheetId: sheet.id, fgItemId },
+      });
+    }
     createdWorkOrders.push({
       workOrderId: created.id,
       workOrderDocNo: created.docNo ?? null,
       fgItemId,
       qty,
+      plannedPurgeCount: validated.plannedPurgeCount,
+      productionRunCount: validated.productionRunCount,
+      plannedSetupCount: 1,
     });
   }
 

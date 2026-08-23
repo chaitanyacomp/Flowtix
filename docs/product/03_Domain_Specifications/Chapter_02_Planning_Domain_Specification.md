@@ -6,7 +6,7 @@
 | **Volume** | 3 — Domain Specifications |
 | **Chapter** | 2 — Planning Domain Specification |
 | **Title** | Planning Domain Specification |
-| **Version** | 1.0.4 |
+| **Version** | 1.0.5 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -34,6 +34,7 @@
 | 1.0.2 | 2026-07-12 | FT ERP Product Team | §7.2 — late PRODUCTION_SHORTFALL draft RS synchronization |
 | 1.0.3 | 2026-07-12 | FT ERP Product Team | §7.7 — Suggested WO = min(RS balance, RM capacity); multi-WO RS remains open |
 | 1.0.4 | 2026-07-14 | FT ERP Product Team | §7.2 — Decision-only Recovery Cycle; SO outstanding ≠ sum of historical RS qty |
+| 1.0.5 | 2026-08-23 | FT ERP Product Team | §5.6 — REGULAR Machine Run Planning precedes Store WO; NO_QTY path unchanged |
 
 **Supersedes:** None.
 
@@ -241,7 +242,7 @@ Architecture is defined in [Volume 2, Chapters 2–3](../02_Business_Architectur
 | **Validation rules** | Approved BOM; REGULAR ISO open; coverage policy | RS locked; placement balance > 0; RM readiness |
 | **Completion criteria** | **WO Created** — Planning domain handoff to Manufacturing |
 
-**REGULAR workspace:** RM Control Center supports WO prepare case diagnosis ([Vol. 2 Ch. 2](../02_Business_Architecture/Chapter_02_REGULAR_Order_Planning_Pipeline.md) §7).
+**REGULAR workspace:** RM Control Center supports WO prepare case diagnosis ([Vol. 2 Ch. 2](../02_Business_Architecture/Chapter_02_REGULAR_Order_Planning_Pipeline.md) §7). **Machine Run Planning** (Production-owned) precedes Store WO create on REGULAR_SO ([Vol. 2 Ch. 2 §6.2](../02_Business_Architecture/Chapter_02_REGULAR_Order_Planning_Pipeline.md)): SO approval → machine planning → Store handoff → Store creates WO. NO_QTY remains RS / Monthly Planning / Store WO placement—not this machine-run path.
 
 **Planning terminus:** Work Order creation ends Planning domain responsibility for placed quantity.
 

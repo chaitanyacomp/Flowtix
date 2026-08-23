@@ -493,6 +493,15 @@ function normalizeDispatchRow(raw) {
 function ownerForWoPlanningRow(raw) {
   const operationalKey = String(raw?.operationalKey ?? "");
   const nextActionKey = String(raw?.nextActionKey ?? "");
+  if (
+    operationalKey === "MACHINE_PLANNING_PENDING" ||
+    operationalKey === "MACHINE_PLANNING_IN_PROGRESS" ||
+    operationalKey === "MACHINE_PLANNING_AWAITING_COMPLETION" ||
+    nextActionKey === "PLAN_MACHINE_RUNS" ||
+    nextActionKey === "COMPLETE_MACHINE_PLANNING"
+  ) {
+    return VISIBLE_OWNERS.PRODUCTION;
+  }
   if (WO_PLANNING_STORE_OPERATIONAL_KEYS.includes(operationalKey)) {
     return VISIBLE_OWNERS.STORE;
   }
@@ -537,6 +546,17 @@ function normalizeNoQtyRsStatusToken(status) {
 
 function nextActionForWoPlanningRow(raw) {
   const key = String(raw?.nextActionKey ?? raw?.operationalKey ?? "");
+  if (
+    key === "PLAN_MACHINE_RUNS" ||
+    key === "COMPLETE_MACHINE_PLANNING" ||
+    key === "MACHINE_PLANNING_PENDING" ||
+    key === "MACHINE_PLANNING_IN_PROGRESS" ||
+    key === "MACHINE_PLANNING_AWAITING_COMPLETION"
+  ) {
+    return key === "COMPLETE_MACHINE_PLANNING" || key === "MACHINE_PLANNING_AWAITING_COMPLETION"
+      ? "Complete Machine Planning"
+      : "Plan Machine Runs";
+  }
   if (key === "CREATE_WO") return "Create Work Order";
   if (key === "OPEN_PURCHASE_PLAN") return "Open purchase / GRN plan";
   if (key === "RAISE_MR") return "Raise material requisition";

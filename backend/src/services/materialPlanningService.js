@@ -24,6 +24,11 @@ const {
   rmRequisitionStatusLabel,
 } = require("./rmRequisitionLifecycle");
 const { resolveRegularSoRmPlanningFgQty } = require("./regularSoRmIssuePlanning");
+const {
+  buildPurgingPlanningSummary,
+  snapshotProductionRmMap,
+  mergePurgingIntoRmNeeded,
+} = require("./bomPurgingRmPlanningService");
 
 function n(v) {
   const x = typeof v === "number" ? v : Number(v);
@@ -259,6 +264,8 @@ function buildRmSummaryLineFromAvailability({
   demandScope = null,
   issuePosition = null,
   openIncomingQty = 0,
+  productionRequiredQty = 0,
+  purgingRequiredQty = 0,
 }) {
   const availableQty = availability?.freeStockQty ?? 0;
   const required = round3(requiredQty);
@@ -306,6 +313,8 @@ function buildRmSummaryLineFromAvailability({
       issuePosition?.roundingToleranceAcknowledged && demandCoverage
         ? demandCoverage.remainingIssueBalanceQty
         : 0,
+    productionRequiredQty: round3(n(productionRequiredQty)),
+    purgingRequiredQty: round3(n(purgingRequiredQty)),
     /** Backward-compatible aliases consumed by existing frontend/MR code. */
     availableQty,
     shortageQty: shortage,
@@ -319,7 +328,30 @@ function buildRmSummaryLineFromAvailability({
  * @param {import('@prisma/client').PrismaClient | import('@prisma/client').Prisma.TransactionClient} db
  * @param {{ lineId?: number, fgItemId: number, fgName?: string, fgQty: number, unit?: string }[]} fgInput
  */
-async function buildMaterialReadinessForFgDemand(db, fgInput, demandScope = null) {
+async function buildMaterialReadinessForFgDemand(db, fgInput, demandScope = null, options = {}) {
+  const plannedPurgeCount = options.plannedPurgeCount ?? 0;
+  const purgeCountByFgItemId = options.purgeCountByFgItemId ?? null;
+  const purgingDetectionSource = options.purgingDetectionSource ?? "DETECTION";
+  const purgingDetectionLabel =
+    options.purgingDetectionLabel ??
+    (purgingDetectionSource === "LEGACY_NOT_PLANNED" ? "Not planned / legacy record" : null);
+  const purgingSetupOptions =
+    purgeCountByFgItemId != null
+      ? {
+          plannedPurgeCount,
+          purgeCountByFgItemId,
+          purgingDetectionSource,
+          purgingDetectionLabel,
+          productionRunCount: options.productionRunCount,
+          physicalSetupConfirmationRequired: options.physicalSetupConfirmationRequired,
+        }
+      : {
+          plannedPurgeCount,
+          purgingDetectionSource,
+          purgingDetectionLabel,
+          productionRunCount: options.productionRunCount,
+          physicalSetupConfirmationRequired: options.physicalSetupConfirmationRequired,
+        };
   const fgSummary = [];
   for (const row of fgInput) {
     if (!(row.fgQty > 0)) continue;
@@ -352,6 +384,15 @@ async function buildMaterialReadinessForFgDemand(db, fgInput, demandScope = null
     fgSummary.map((f) => ({ fgItemId: f.fgItemId, fgQty: f.fgQty, bomMissing: f.bomMissing })),
   );
 
+  const productionRmNeeded = snapshotProductionRmMap(rmNeeded);
+  const purgingPlanning = await buildPurgingPlanningSummary(
+    db,
+    fgInput.filter((r) => r.fgQty > 0),
+    purgingSetupOptions,
+  );
+  mergePurgingIntoRmNeeded(rmNeeded, purgingPlanning.purgingRmByItemId);
+  const purgingRmNeeded = purgingPlanning.purgingRmByItemId;
+
   const rmIds = [...rmNeeded.keys()];
   const [rmItems, availabilityRows] = await Promise.all([
     rmIds.length > 0
@@ -379,6 +420,8 @@ async function buildMaterialReadinessForFgDemand(db, fgInput, demandScope = null
 
   const rmSummary = [];
   for (const [rmItemId, requiredQty] of rmNeeded) {
+    const productionRequiredQty = round3(productionRmNeeded.get(rmItemId) || 0);
+    const purgingRequiredQty = round3(purgingRmNeeded.get(rmItemId) || 0);
     rmSummary.push(buildRmSummaryLineFromAvailability({
       rmItemId,
       requiredQty,
@@ -387,6 +430,8 @@ async function buildMaterialReadinessForFgDemand(db, fgInput, demandScope = null
       demandScope,
       issuePosition: issuePositionByItem.get(rmItemId),
       openIncomingQty: openIncomingByItem.get(rmItemId) || 0,
+      productionRequiredQty,
+      purgingRequiredQty,
     }));
   }
   rmSummary.sort((a, b) => b.shortageQty - a.shortageQty || a.itemName.localeCompare(b.itemName));
@@ -410,6 +455,20 @@ async function buildMaterialReadinessForFgDemand(db, fgInput, demandScope = null
   return {
     fgSummary,
     rmSummary,
+    purgingPlanning: {
+      plannedPurgeCount: purgingPlanning.plannedPurgeCount,
+      productionRunCount: purgingPlanning.productionRunCount ?? options.productionRunCount ?? null,
+      purgingDetectionSource: purgingPlanning.purgingDetectionSource ?? purgingDetectionSource,
+      purgingDetectionLabel: purgingPlanning.purgingDetectionLabel ?? purgingDetectionLabel,
+      standardPurgingQtyGramsPerSetup: purgingPlanning.standardPurgingQtyGramsPerSetup,
+      totalPlannedPurgingGrams: purgingPlanning.totalPlannedPurgingGrams,
+      totalPlannedPurgingKg: purgingPlanning.totalPlannedPurgingKg,
+      totalProductionRmKg: round3(
+        [...productionRmNeeded.values()].reduce((s, v) => s + n(v), 0),
+      ),
+      totalPlannedRmKg: round3([...rmNeeded.values()].reduce((s, v) => s + n(v), 0)),
+      byFgItem: purgingPlanning.byFgItem,
+    },
     childBomsLinked: fgSummary.reduce((s, f) => s + (f.childBomsLinked ?? 0), 0),
     childBomWarnings,
     hasMissingBom,
@@ -640,7 +699,15 @@ async function resolveWorkOrderIdForWoPlanning(salesOrderId, opts = {}, db = pri
  */
 async function evaluateWoPrepareReadiness(
   salesOrderId,
-  { fgLines, planQtyByLineId = {}, planQtyByFgItemId = {}, workOrderId: workOrderIdOpt } = {},
+  {
+    fgLines,
+    planQtyByLineId = {},
+    planQtyByFgItemId = {},
+    workOrderId: workOrderIdOpt,
+    plannedPurgeCount,
+    productionRuns,
+    purgeCountByFgItemId: purgeCountByFgOpt,
+  } = {},
   db = prisma,
 ) {
   await loadSalesOrderContext(salesOrderId, db);
@@ -670,17 +737,128 @@ async function evaluateWoPrepareReadiness(
     { workOrderId: workOrderIdOpt },
     db,
   );
-  const readiness = await buildMaterialReadinessForFgDemand(db, fgInput, {
-    salesOrderId,
-    workOrderId: resolvedWorkOrderId,
-  });
+
+  const { validateAndEnrichProductionRuns, derivePlanningCountsFromPersistedRuns } = (() => {
+    const woSvc = require("./woProductionRunAllocationService");
+    return {
+      validateAndEnrichProductionRuns: woSvc.validateAndEnrichProductionRuns,
+      derivePlanningCountsFromPersistedRuns: woSvc.derivePlanningCountsFromPersistedRuns,
+    };
+  })();
+
+  let purgeCountByFgItemId = purgeCountByFgOpt ?? null;
+  let resolvedPlannedPurgeCount = plannedPurgeCount != null ? Number(plannedPurgeCount) : null;
+  let productionRunCount = null;
+  let purgingDetectionSource = "DETECTION";
+  let purgingDetectionLabel = null;
+
+  if (Array.isArray(productionRuns) && productionRuns.length > 0) {
+    const validated = await validateAndEnrichProductionRuns(
+      db,
+      productionRuns,
+      fgInput.map((f) => ({
+        fgItemId: f.fgItemId,
+        plannedQty: f.fgQty,
+        fgName: f.fgName,
+      })),
+      { requireRuns: true },
+    );
+    purgeCountByFgItemId = validated.purgeCountByFgItemId;
+    resolvedPlannedPurgeCount = validated.plannedPurgeCount;
+    productionRunCount = validated.productionRunCount;
+    purgingDetectionSource = "DETECTION";
+  } else if (purgeCountByFgItemId == null) {
+    if (resolvedWorkOrderId) {
+      const woRuns = await db.workOrderProductionRunAllocation?.findMany?.({
+        where: { workOrderId: resolvedWorkOrderId },
+        select: { fgItemId: true, purgingRequired: true },
+      });
+      if (woRuns?.length) {
+        const counts = derivePlanningCountsFromPersistedRuns(woRuns);
+        purgeCountByFgItemId = counts.purgeCountByFgItemId;
+        resolvedPlannedPurgeCount = counts.plannedPurgeCount;
+        productionRunCount = counts.productionRunCount;
+        purgingDetectionSource = "DETECTION";
+      } else {
+        const woRow = await db.workOrder.findUnique({
+          where: { id: resolvedWorkOrderId },
+          select: { plannedPurgeCount: true },
+        });
+        // Legacy WO without run detection: never invent purging from plannedSetupCount.
+        resolvedPlannedPurgeCount =
+          woRow?.plannedPurgeCount != null ? Number(woRow.plannedPurgeCount) : 0;
+        productionRunCount = 0;
+        purgingDetectionSource = "LEGACY_NOT_PLANNED";
+        purgingDetectionLabel = "Not planned / legacy record";
+      }
+    }
+    if (purgeCountByFgItemId == null && resolvedPlannedPurgeCount == null) {
+      const snapshot = await db.regularSoPlanningSnapshot?.findUnique?.({
+        where: { salesOrderId },
+        include: {
+          productionRuns: { select: { fgItemId: true, purgingRequired: true } },
+        },
+      });
+      if (snapshot?.productionRuns?.length) {
+        const counts = derivePlanningCountsFromPersistedRuns(snapshot.productionRuns);
+        purgeCountByFgItemId = counts.purgeCountByFgItemId;
+        resolvedPlannedPurgeCount = counts.plannedPurgeCount;
+        productionRunCount = counts.productionRunCount;
+        purgingDetectionSource = "DETECTION";
+      } else {
+        // New pre-WO planning without runs — not a legacy Work Order.
+        resolvedPlannedPurgeCount =
+          snapshot?.plannedPurgeCount != null ? Number(snapshot.plannedPurgeCount) : 0;
+        productionRunCount = snapshot?.productionRunCount ?? 0;
+        if (Number(resolvedPlannedPurgeCount) > 0) {
+          purgingDetectionSource = "STORED_PURGE_COUNT";
+        } else {
+          purgingDetectionSource = "AWAITING_RUNS";
+          purgingDetectionLabel = "Purging will be calculated after machine runs are allocated.";
+        }
+      }
+    }
+  }
+
+  // Absence of machine-run allocations must not silently assume one purge.
+  if (resolvedPlannedPurgeCount == null || !Number.isFinite(Number(resolvedPlannedPurgeCount))) {
+    resolvedPlannedPurgeCount = 0;
+  }
+
+  const readiness = await buildMaterialReadinessForFgDemand(
+    db,
+    fgInput,
+    {
+      salesOrderId,
+      workOrderId: resolvedWorkOrderId,
+    },
+    {
+      plannedPurgeCount: resolvedPlannedPurgeCount,
+      purgeCountByFgItemId,
+      productionRunCount,
+      purgingDetectionSource,
+      purgingDetectionLabel,
+    },
+  );
   const pendingMaterialRequirements = await findPendingWoPlanningMaterialRequirements(
     salesOrderId,
     { workOrderId: resolvedWorkOrderId },
     db,
   );
 
-  const woBlockReason = resolveWoPrepareBlockReason(readiness, { pendingMaterialRequirements });
+  let woBlockReason = resolveWoPrepareBlockReason(readiness, { pendingMaterialRequirements });
+  let machinePlanning = null;
+  try {
+    const { assessRegularSoMachinePlanning } = require("./regularSoMachinePlanningService");
+    machinePlanning = await assessRegularSoMachinePlanning(salesOrderId, db);
+    if (!machinePlanning.machinePlanningComplete) {
+      woBlockReason =
+        machinePlanning.issues?.[0] ||
+        "Machine allocation pending — Production/Admin action required.";
+    }
+  } catch {
+    machinePlanning = null;
+  }
   const canCreateWorkOrder = woBlockReason == null;
 
   return {
@@ -688,6 +866,7 @@ async function evaluateWoPrepareReadiness(
     pendingMaterialRequirements,
     canCreateWorkOrder,
     woBlockReason,
+    machinePlanning,
   };
 }
 
@@ -715,12 +894,57 @@ async function buildMaterialPlanningPreview({ quotationId, salesOrderId }, db = 
     sourceType === "SALES_ORDER"
       ? await resolveWorkOrderIdForWoPlanning(salesOrderId, {}, db)
       : null;
+  let previewPlannedPurgeCount = 0;
+  let previewPurgingDetectionSource = "LEGACY_NOT_PLANNED";
+  let previewPurgingDetectionLabel = "Not planned / legacy record";
+  if (sourceType === "SALES_ORDER") {
+    const woRow =
+      planningWorkOrderId != null
+        ? await db.workOrder.findUnique({
+            where: { id: planningWorkOrderId },
+            select: { plannedPurgeCount: true, productionRunCount: true },
+          })
+        : null;
+    if (woRow != null) {
+      previewPlannedPurgeCount =
+        woRow.plannedPurgeCount != null ? Number(woRow.plannedPurgeCount) : 0;
+      if (Number(woRow.productionRunCount) > 0 || previewPlannedPurgeCount > 0) {
+        previewPurgingDetectionSource =
+          previewPlannedPurgeCount > 0 ? "STORED_PURGE_COUNT" : "LEGACY_NOT_PLANNED";
+        previewPurgingDetectionLabel =
+          previewPurgingDetectionSource === "LEGACY_NOT_PLANNED"
+            ? "Not planned / legacy record"
+            : null;
+      }
+    } else {
+      const snapshot = await db.regularSoPlanningSnapshot?.findUnique?.({
+        where: { salesOrderId },
+        select: { plannedPurgeCount: true, productionRunCount: true },
+      });
+      previewPlannedPurgeCount =
+        snapshot?.plannedPurgeCount != null ? Number(snapshot.plannedPurgeCount) : 0;
+      if (previewPlannedPurgeCount > 0) {
+        previewPurgingDetectionSource = "STORED_PURGE_COUNT";
+        previewPurgingDetectionLabel = null;
+      } else {
+        previewPurgingDetectionSource = "AWAITING_RUNS";
+        previewPurgingDetectionLabel = "Purging will be calculated after machine runs are allocated.";
+      }
+    }
+  }
   const readiness = await buildMaterialReadinessForFgDemand(
     db,
     fgInput,
     sourceType === "SALES_ORDER"
       ? { salesOrderId, workOrderId: planningWorkOrderId }
       : null,
+    sourceType === "SALES_ORDER"
+      ? {
+          plannedPurgeCount: previewPlannedPurgeCount,
+          purgingDetectionSource: previewPurgingDetectionSource,
+          purgingDetectionLabel: previewPurgingDetectionLabel,
+        }
+      : {},
   );
 
   const existingWhere =

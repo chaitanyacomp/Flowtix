@@ -11,9 +11,12 @@ type RmRow = {
   itemName: string;
   unit?: string;
   requiredQty: number;
+  productionRequiredQty?: number;
+  purgingRequiredQty?: number;
   availableQty: number;
   shortage: number;
   shortageQty?: number;
+  status?: "AVAILABLE" | "PARTIAL" | "SHORTAGE";
 };
 
 type Props = {
@@ -45,6 +48,8 @@ export function WoPrepareRmReadinessTable({
     return <p className="text-xs text-slate-600">No RM demand for current production quantities.</p>;
   }
 
+  const showPurgingSplit = rows.some((r) => Number(r.purgingRequiredQty ?? 0) > 0);
+
   return (
     <div className="space-y-1.5">
       {rows.length > 0 ? (
@@ -54,7 +59,13 @@ export function WoPrepareRmReadinessTable({
             <thead>
               <tr className="border-b border-slate-300 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-600">
                 <th className="py-1 pr-2">RM item</th>
-                <th className="w-[5.5rem] py-1 text-right">Required</th>
+                {showPurgingSplit ? (
+                  <>
+                    <th className="w-[5rem] py-1 text-right">Production</th>
+                    <th className="w-[5rem] py-1 text-right">Purging</th>
+                  </>
+                ) : null}
+                <th className="w-[5.5rem] py-1 text-right">{showPurgingSplit ? "Total" : "Required"}</th>
                 <th className="w-[5.5rem] py-1 text-right">Available</th>
                 <th className="w-[5.5rem] py-1 text-right">Shortage</th>
                 <th className="w-[8.5rem] py-1">Status</th>
@@ -82,6 +93,16 @@ export function WoPrepareRmReadinessTable({
                     <td className="truncate py-1 pr-2 font-medium text-slate-900" title={r.itemName}>
                       {r.itemName}
                     </td>
+                    {showPurgingSplit ? (
+                      <>
+                        <td className="py-1 text-right tabular-nums text-slate-800">
+                          {formatRmQty(Number(r.productionRequiredQty ?? r.requiredQty), r.unit)}
+                        </td>
+                        <td className="py-1 text-right tabular-nums text-slate-700">
+                          {formatRmQty(Number(r.purgingRequiredQty ?? 0), r.unit)}
+                        </td>
+                      </>
+                    ) : null}
                     <td className="py-1 text-right tabular-nums text-slate-800">
                       {formatRmQty(r.requiredQty, r.unit)}
                     </td>

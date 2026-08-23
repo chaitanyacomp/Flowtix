@@ -723,6 +723,19 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
   const readyFgCount = fgItemReadiness.filter((r) => r.outcome === "READY_FOR_WO" || r.outcome === "PARTIALLY_READY").length;
   const shortageFgCount = fgItemReadiness.filter((r) => r.outcome === "PROCUREMENT_REQUIRED").length;
 
+  let productionRuns = [];
+  try {
+    const { mapPersistedRunRow, RUN_INCLUDE } = require("./woProductionRunAllocationService");
+    const runRows = await db.requirementSheetPlannedRunAllocation.findMany({
+      where: { requirementSheetId: sheet.id },
+      include: RUN_INCLUDE,
+      orderBy: [{ fgItemId: "asc" }, { runSequence: "asc" }],
+    });
+    productionRuns = runRows.map(mapPersistedRunRow).filter(Boolean);
+  } catch {
+    productionRuns = [];
+  }
+
   return {
     requirementSheetId: sheet.id,
     salesOrderId: sheet.salesOrderId,
@@ -744,6 +757,8 @@ async function getRequirementSheetExecutionSummary(db, requirementSheetId, deps 
     readiness,
     procurementProgress,
     rmReadiness,
+    purgingPlanning: batchAssessment.purgingPlanning ?? null,
+    productionRuns,
     existingWoSummary,
     placement,
     placementSnapshot: batchAssessment.snapshot,

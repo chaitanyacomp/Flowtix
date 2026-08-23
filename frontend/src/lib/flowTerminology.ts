@@ -14,6 +14,9 @@ export const FLOW_TYPE = {
 /** Customer PO–driven, fixed-qty sales order → RM check → WO → production → dispatch. */
 export const REGULAR_TERMS = {
   WORK_ORDER_PREPARE_TITLE: "Prepare Work Order",
+  MACHINE_RUN_PLANNING_TITLE: "Machine Run Planning",
+  MACHINE_RUN_PLANNING_SUBTITLE:
+    "Allocate machine production runs, then Complete Machine Planning to hand off to Store.",
   WORK_ORDER_PREPARE_SUBTITLE: "Review RM readiness before creating Work Order.",
   LOAD_RM_FG_BUTTON: "Review RM & FG",
   SELECT_SO_HELPER: "Choose a sales order, then review requirements below.",

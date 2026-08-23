@@ -26,6 +26,20 @@ import {
   rmDetailCollapsedSummary,
   WO_PLANNING_UX,
 } from "../../../lib/requirementSheetExecutionWorkspaceUx";
+import {
+  derivePlannedSetupCountFromRuns,
+  mapApiRunsToDraft,
+  runsToApiPayload,
+  type ProductionRunDraft,
+} from "../../../lib/woProductionRunAllocation";
+import { type PurgingPlanningSummary } from "../../../lib/woPlanningPurging";
+import { WoPreparePurgingPlanningPanel } from "../WoPreparePurgingPlanningPanel";
+import { WoPrepareProductionRunAllocationPanel } from "../WoPrepareProductionRunAllocationPanel";
+import { WO_MACHINE_RUN_WRITE_ROLES, hasErpRole } from "../../../config/erpRoles";
+import { useAuth } from "../../../hooks/useAuth";
+import { fetchMachines, type MachineRow } from "../../../lib/machineApi";
+import { fetchFgProductionStandards, type FgProductionStandardRow } from "../../../lib/fgProductionStandardApi";
+import { fetchShifts, type ShiftRow } from "../../../lib/shiftApi";
 import { useErpRefreshTick } from "../../../hooks/useErpRefreshTick";
 import {
   buildRmPreviewLinesSignature,
@@ -60,6 +74,8 @@ type RmReadinessBlock = {
     rmItemId: number;
     rmItemName: string;
     requiredQty: number;
+    productionRequiredQty?: number;
+    purgingRequiredQty?: number;
     availableQty: number;
     shortageQty: number;
     incomingQty: number;
@@ -160,6 +176,8 @@ export type RsExecutionSummary = {
     };
   };
   rmReadiness: RmReadinessBlock;
+  purgingPlanning?: PurgingPlanningSummary | null;
+  productionRuns?: ProductionRunDraft[];
   existingWoSummary: Array<{
     workOrderId: number;
     docNo: string | null;
@@ -365,6 +383,8 @@ function CollapsibleWorkspaceSection({
 }
 
 function RmDetailTable({ rm }: { rm: RmReadinessBlock }) {
+  const showPurgingSplit = rm.lines.some((line) => Number(line.purgingRequiredQty ?? 0) > 0);
+
   if (rm.missingBoms.length > 0) {
     return (
       <div className="space-y-1 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
@@ -390,7 +410,13 @@ function RmDetailTable({ rm }: { rm: RmReadinessBlock }) {
         <thead>
           <tr className="border-b border-slate-200 text-left text-[10px] font-semibold uppercase tracking-wide text-slate-500">
             <th className="py-1.5 pr-2">RM Item</th>
-            <th className="py-1.5 pr-2 text-right">Required</th>
+            {showPurgingSplit ? (
+              <>
+                <th className="py-1.5 pr-2 text-right">Production</th>
+                <th className="py-1.5 pr-2 text-right">Purging</th>
+              </>
+            ) : null}
+            <th className="py-1.5 pr-2 text-right">{showPurgingSplit ? "Total" : "Required"}</th>
             <th className="py-1.5 pr-2 text-right">Available</th>
             <th className="py-1.5 pr-2 text-right">Shortage</th>
             <th className="py-1.5">Status</th>
@@ -400,6 +426,12 @@ function RmDetailTable({ rm }: { rm: RmReadinessBlock }) {
           {rm.lines.map((line) => (
             <tr key={line.rmItemId} className="border-b border-slate-100 text-slate-800">
               <td className="py-1.5 pr-2 font-medium">{line.rmItemName}</td>
+              {showPurgingSplit ? (
+                <>
+                  <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(line.productionRequiredQty ?? line.requiredQty)}</td>
+                  <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(line.purgingRequiredQty ?? 0)}</td>
+                </>
+              ) : null}
               <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(line.requiredQty)}</td>
               <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(line.availableQty)}</td>
               <td className="py-1.5 pr-2 text-right tabular-nums">{fmtQty(line.shortageQty)}</td>
@@ -449,11 +481,47 @@ export function RequirementSheetExecutionPanel({
   const [woHistoryExpanded, setWoHistoryExpanded] = React.useState(false);
   const [liveRm, setLiveRm] = React.useState<RmReadinessBlock | null>(null);
   const [liveRmBusy, setLiveRmBusy] = React.useState(false);
+  const auth = useAuth();
+  const canEditMachineRuns = hasErpRole(auth.user?.role, WO_MACHINE_RUN_WRITE_ROLES);
   const [createdBanner, setCreatedBanner] = React.useState<CreatedWoBanner | null>(null);
+  const [productionRuns, setProductionRuns] = React.useState<ProductionRunDraft[]>([]);
+  const [machines, setMachines] = React.useState<MachineRow[]>([]);
+  const [fgStandards, setFgStandards] = React.useState<FgProductionStandardRow[]>([]);
+  const [shifts, setShifts] = React.useState<ShiftRow[]>([]);
+  const productionRunCount = derivePlannedSetupCountFromRuns(productionRuns);
+  const serverPurge = data?.purgingPlanning?.plannedPurgeCount;
+  const plannedPurgeCount =
+    serverPurge != null && Number.isFinite(Number(serverPurge)) && Number(serverPurge) >= 0
+      ? Number(serverPurge)
+      : productionRuns.filter((r) => r.purgingRequired === true).length;
   const bomRefreshTick = useErpRefreshTick(["requirement", "stock", "production"], {
     pollIntervalMs: 0,
     refreshOnVisible: true,
   });
+
+  React.useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [m, s, sh] = await Promise.all([
+          fetchMachines(false),
+          fetchFgProductionStandards(false),
+          fetchShifts(false).catch(() => [] as ShiftRow[]),
+        ]);
+        if (!cancelled) {
+          setMachines(m);
+          setFgStandards(s);
+          setShifts(sh);
+        }
+      } catch {
+        /* optional for Store */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const executionDataRef = React.useRef<RsExecutionSummary | null>(null);
   executionDataRef.current = data;
   const rmPreviewRequestIdRef = React.useRef(0);
@@ -479,6 +547,9 @@ export function RequirementSheetExecutionPanel({
       try {
         const res = await apiFetch<RsExecutionSummary>(`/api/requirement-sheets/${sheetId}/execution`);
         if (!cancelled) setData(res);
+        if (!cancelled && Array.isArray(res.productionRuns)) {
+          setProductionRuns(mapApiRunsToDraft(res.productionRuns as any));
+        }
       } catch (e) {
         if (!cancelled) {
           if (!soft) setData(null);
@@ -613,7 +684,13 @@ export function RequirementSheetExecutionPanel({
         try {
           const res = await apiFetch<{ rmReadiness: RmReadinessBlock }>(
             `/api/requirement-sheets/${sheetId}/execution/rm-preview`,
-            { method: "POST", body: JSON.stringify({ lines }) },
+            {
+              method: "POST",
+              body: JSON.stringify({
+                lines,
+                productionRuns: runsToApiPayload(productionRuns),
+              }),
+            },
           );
           if (cancelled || requestId !== rmPreviewRequestIdRef.current) return;
           setLiveRm(res.rmReadiness);
@@ -631,7 +708,7 @@ export function RequirementSheetExecutionPanel({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [sheetId, rmPreviewSignature, bomRefreshTick]);
+  }, [sheetId, rmPreviewSignature, bomRefreshTick, productionRuns]);
 
   function resetDrafts() {
     const next: Record<number, string> = {};
@@ -681,7 +758,11 @@ export function RequirementSheetExecutionPanel({
         }>;
       }>(`/api/requirement-sheets/${sheetId}/create-wo`, {
         method: "POST",
-        body: JSON.stringify({ lines, placementSnapshot }),
+        body: JSON.stringify({
+          lines,
+          placementSnapshot,
+          productionRuns: runsToApiPayload(productionRuns),
+        }),
       });
       const primaryWoId = Number(res.workOrders?.[0]?.workOrderId ?? res.workOrderId);
       const primaryDocNo = res.workOrders?.[0]?.workOrderDocNo ?? res.workOrderDocNo ?? null;
@@ -1080,6 +1161,47 @@ export function RequirementSheetExecutionPanel({
               </table>
             </div>
           )}
+
+          <WoPrepareProductionRunAllocationPanel
+            fgLines={(data.placement?.lines ?? [])
+              .filter((l) => Number(l.rsBalanceQty) > 0)
+              .map((l) => ({
+                fgItemId: l.itemId,
+                fgName: l.itemName,
+                plannedQty: Number(draftQtyByItem[l.itemId] ?? l.suggestedExecutableQty ?? 0) || 0,
+              }))
+              .filter((l) => l.plannedQty > 0)}
+            runs={productionRuns}
+            onChange={(next) => {
+              setProductionRuns(next);
+              if (canEditMachineRuns) {
+                void apiFetch(`/api/requirement-sheets/${sheetId}/execution/production-runs`, {
+                  method: "PUT",
+                  body: JSON.stringify({
+                    productionRuns: runsToApiPayload(next),
+                    plannedFgLines: (data.placement?.lines ?? [])
+                      .filter((l) => Number(l.rsBalanceQty) > 0)
+                      .map((l) => ({
+                        fgItemId: l.itemId,
+                        plannedQty: Number(draftQtyByItem[l.itemId] ?? l.suggestedExecutableQty ?? 0) || 0,
+                        fgName: l.itemName,
+                      })),
+                  }),
+                }).catch(() => undefined);
+              }
+            }}
+            machines={machines}
+            standards={fgStandards}
+            shifts={shifts}
+            readOnly={!canEditMachineRuns}
+            disabled={submitBusy || loading}
+          />
+
+          <WoPreparePurgingPlanningPanel
+            purgingPlanning={data.purgingPlanning ?? null}
+            plannedPurgeCount={plannedPurgeCount}
+            productionRunCount={productionRunCount}
+          />
 
           {/* Live RM Requirement — compact, integrated directly below quantity entry */}
           <div

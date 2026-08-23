@@ -6,7 +6,7 @@
 | **Volume** | 2 — Business Architecture |
 | **Chapter** | 5 — Document Ownership & Responsibility Matrix |
 | **Title** | Document Ownership & Responsibility Matrix |
-| **Version** | 1.1.0 |
+| **Version** | 1.1.2 |
 | **Status** | Draft — Architecture Review |
 | **Effective date** | 2026-05-29 |
 | **Author** | FT ERP Product Team |
@@ -32,6 +32,7 @@
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial ownership and responsibility matrix for all major documents and stages |
 | 1.1.0 | 2026-07-10 | FT ERP Product Team | Production Report owns wastage classification; Lane C analytics read-only; MWN/Scrap/Variance remain separate owners |
 | 1.1.1 | 2026-07-22 | FT ERP Product Team | Interim — REGULAR End Production / Production Report remains Production-owned before WO close |
+| 1.1.2 | 2026-08-23 | FT ERP Product Team | REGULAR_SO Machine Run Planning — Production plans; Store creates WO; Admin reopen authority |
 
 **Supersedes:** None.
 
@@ -138,7 +139,8 @@ Ownership transfers when the Workflow Engine advances state (e.g. Store submits 
 | **Material Requirement (MR)** — REGULAR | Store | Store lead | Store | **Store** | From order shortage; REGULAR_SO pool ([Ch. 2](./Chapter_02_REGULAR_Order_Planning_Pipeline.md) §8) |
 | **Material Requirement (MR)** — MPRS | System (from release) | Store (release context) | — | **Store** (origin) → **Purchase** (PR stage) | After release, PR ownership transfers to Purchase |
 | **REGULAR order RM readiness** | Store | — | — | **Store** | RM Control Center case ownership ([Ch. 2](./Chapter_02_REGULAR_Order_Planning_Pipeline.md) §7) |
-| **Work Order preparation / placement** | Store | — | Store | **Store** | Planning terminus both models |
+| **REGULAR Machine Run Planning** | Production | Admin (reopen/override) | Production (complete) | **Production** | SO approval → machine runs → Store handoff ([Ch. 2](./Chapter_02_REGULAR_Order_Planning_Pipeline.md) §6.2); Store never reopens |
+| **Work Order preparation / placement** | Store | — | Store | **Store** | Planning terminus both models; REGULAR after machine planning complete |
 
 ---
 
@@ -194,9 +196,9 @@ Ownership transfers when the Workflow Engine advances state (e.g. Store submits 
 | Role | Representative Pending Actions (planning + execution) |
 |------|------------------------------------------------------|
 | **Admin** | Complete Enquiry / Feasibility / Quotation; commit Internal Sales Order; create Sales Bill; billing export; commercial completion review |
-| **Store** | Lock RS; complete/submit MPRS; **Create Additional Monthly Plan** (when uncovered source-identity components remain); release RM; raise REGULAR MR; create REGULAR PR; **Create GRN** (deep-link Purchase & GRN `/rm-po-grn/{id}?openGrn=1`); **Create Work Order in Prepare WO** then **Material Issue** (deep-link `/material-issue?workOrderId={id}&…`); WO prepare/placement; submit PMR; Dispatch; **RM Return Approval** (receive submitted production returns) |
+| **Store** | Lock RS; complete/submit MPRS; **Create Additional Monthly Plan** (when uncovered source-identity components remain); release RM; raise REGULAR MR; create REGULAR PR; **Create GRN** (deep-link Purchase & GRN `/rm-po-grn/{id}?openGrn=1`); **Create Work Order in Prepare WO** (REGULAR after Production machine-planning handoff) then **Material Issue** (deep-link `/material-issue?workOrderId={id}&…`); WO prepare/placement; submit PMR; Dispatch; **RM Return Approval** (receive submitted production returns) |
 | **Purchase** | Review/approve Monthly Production Plan (NO_QTY); create MPRS PR; prepare PO; supplier follow-up; monitor awaiting GRN (read-only alert, GRN action remains Store) |
-| **Production** | Record Production Entry; approve batch; report floor blocker; **submit RM return** (approval is Store/Admin — Production sees informational awaiting-approval status only) |
+| **Production** | **REGULAR Machine Run Planning** (plan machines / complete handoff — does not create REGULAR WO); Record Production Entry; approve batch; report floor blocker; **submit RM return** (approval is Store/Admin — Production sees informational awaiting-approval status only) |
 | **QA** | Inspect batch; disposition reject/rework/scrap; re-inspection after rework |
 
 **Rule:** Dashboard does **not** show other roles’ actionable buttons. Cross-role work appears on **Control Tower** for visibility, not for execution on Dashboard.
@@ -211,9 +213,10 @@ Ownership transfers when the Workflow Engine advances state (e.g. Store submits 
 |-----------|-------------------|--------------|-----------------|
 | **Commercial documents** (Enquiry → Internal Sales Order) | Admin | Commercial chain progression | Ch. 1 |
 | **RM Control Center** | Store | REGULAR order RM case diagnosis and handoff | Ch. 2 §7 |
-| **Requirement & Cycle Planning** | Store | RS, cycle lock, WO placement context | Ch. 3 §7 |
+| **Requirement & Cycle Planning** | Store (NO_QTY); Production (REGULAR Machine Run Planning queue) | RS, cycle lock, WO placement; REGULAR machine-run queue / handoff | Ch. 2 §6.2; Ch. 3 §7 |
 | **Monthly Production Planning Sheet (MPRS)** | Store (draft/release); Purchase (review) | FG plan, submit, approve, release | Ch. 3 §8 |
 | **Procurement Workspace** | Store (REGULAR PR); Purchase (MPRS PR, PO) | Demand pool queues, PR, PO context | Ch. 2 §8; Ch. 3 §9 |
+| **Machine Run Planning (REGULAR)** | Production; Admin reopen | Allocate runs, purging detection, Complete → Store | Ch. 2 §6.2 |
 | **Work Order context** | Store | WO header, placement trace | Ch. 2–4 |
 | **PMR / Material Issue** | Store | PMR submit, issue against PMR | Ch. 4 §7–8 |
 | **Production entry** | Production | Record and approve output | Ch. 4 §9 |
@@ -284,7 +287,8 @@ Control Tower may deep-link to owning role’s **Workspace** or show read-only t
 | REGULAR MR | — | **RA** | I | — | — | R |
 | MPRS MR (post-release) | — | C | **A** (PR→PO) | — | — | R |
 | REGULAR RM Control Center | — | **RA** | C | — | — | R |
-| Work Order creation | — | **RA** | I | I | — | R |
+| REGULAR Machine Run Planning | **A** (reopen) | I | — | **RA** | — | R |
+| **Work Order creation** | — | **RA** | I | I (REGULAR machine plan only; no create) | — | R |
 
 ### 13.3 Procurement
 

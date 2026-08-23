@@ -102,6 +102,21 @@ describe("pendingActionsService", () => {
     assert.equal(href, "/dispatch?salesOrderId=5");
   });
 
+  it("resolveHref routes MACHINE_PLANNING_PENDING WO_PLANNING to planning-dashboard hub", () => {
+    const href = resolveHrefForNormalizedRow({
+      rowType: "WO_PLANNING",
+      metadata: {
+        salesOrderId: 42,
+        nextActionKey: "PLAN_MACHINE_RUNS",
+        operationalKey: "MACHINE_PLANNING_PENDING",
+      },
+    });
+    assert.match(href, /^\/planning-dashboard\?/);
+    assert.match(href, /salesOrderId=42/);
+    assert.match(href, /focus=machine-planning/);
+    assert.match(href, /from=pending-actions/);
+  });
+
   it("friendlyAction maps dispatch backlog to Dispatch Pending", () => {
     const label = friendlyActionForNormalizedRow({
       rowType: "DISPATCH_BACKLOG",

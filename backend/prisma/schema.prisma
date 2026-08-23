@@ -139,6 +139,29 @@ enum MachineType {
   OTHER
 }
 
+/// Confirmed machine barrel/hopper material state (auditable; never invented automatically).
+enum MachineMaterialStateKind {
+  RETAINED
+  CLEARED
+  UNKNOWN
+}
+
+/// Planned-run purging detection outcome (backend-derived).
+enum PurgingDetectionStatus {
+  AUTO_REQUIRED
+  AUTO_NOT_REQUIRED
+  CONFIRMATION_REQUIRED
+  OVERRIDDEN
+}
+
+/// Physical mould/tool setup detection (separate from material purge).
+enum PhysicalSetupDetectionStatus {
+  CONFIRMATION_REQUIRED
+  CONFIRMED_REQUIRED
+  CONFIRMED_NOT_REQUIRED
+  OVERRIDDEN
+}
+
 /// Production → Store RM request (PMR); fulfilled via Material Issue Note (MIN).
 enum ProductionMaterialRequestStatus {
   DRAFT
@@ -582,6 +605,14 @@ model User {
   workOrdersClosedShortfall                WorkOrder[]                      @relation("WoClosedBy")
   regularSoPlanningSnapshotsCreated        RegularSoPlanningSnapshot[]      @relation("RegularSoPlanningSnapshotCreatedBy")
   regularSoPlanningSnapshotsUpdated        RegularSoPlanningSnapshot[]      @relation("RegularSoPlanningSnapshotUpdatedBy")
+  regularSoPlanningSnapshotsCompleted      RegularSoPlanningSnapshot[]      @relation("RegularSoPlanningSnapshotCompletedBy")
+  regularSoRunPurgingOverrides             RegularSoPlanningRunAllocation[] @relation("RegularSoRunPurgingOverrideBy")
+  regularSoRunPhysicalSetupOverrides       RegularSoPlanningRunAllocation[] @relation("RegularSoRunPhysicalSetupOverrideBy")
+  woRunPurgingOverrides                    WorkOrderProductionRunAllocation[] @relation("WoRunPurgingOverrideBy")
+  woRunPhysicalSetupOverrides              WorkOrderProductionRunAllocation[] @relation("WoRunPhysicalSetupOverrideBy")
+  rsRunPurgingOverrides                    RequirementSheetPlannedRunAllocation[] @relation("RsRunPurgingOverrideBy")
+  rsRunPhysicalSetupOverrides              RequirementSheetPlannedRunAllocation[] @relation("RsRunPhysicalSetupOverrideBy")
+  machineMaterialStatesConfirmed           MachineMaterialState[]           @relation("MachineMaterialStateConfirmedBy")
   reopenedSalesOrderCycles                 SalesOrderCycle[]                @relation("SalesOrderCycleReopenedBy")
   quotationsApprovalCancelled              Quotation[]                      @relation("QuotationApprovalCancelledBy")
   purchaseBillsExportReset                 PurchaseBill[]                   @relation("PurchaseBillExportResetBy")
@@ -920,6 +951,9 @@ model Item {
   monthlyPlanRequirementCoveragesAsFg MonthlyPlanRequirementCoverage[] @relation("MppRequirementCoverageFgItem")
   rmPlanLinesAsRm                 RmPlanLine[]                     @relation("RmPlanLineRmItem")
   fgProductionStandards           FgProductionStandard[]
+  regularSoPlanningRunAllocations RegularSoPlanningRunAllocation[] @relation("RegularSoPlanningRunFg")
+  workOrderProductionRunAllocations WorkOrderProductionRunAllocation[] @relation("WoProductionRunFg")
+  requirementSheetPlannedRunAllocations RequirementSheetPlannedRunAllocation[] @relation("RsPlannedRunFg")
 
   @@index([itemType])
   @@index([isActive])
@@ -1345,6 +1379,16 @@ model RegularSoPlanningSnapshot {
   id              Int      @id @default(autoincrement())
   salesOrderId    Int      @unique
   bufferPercent   Decimal  @default(0) @db.Decimal(18, 2)
+  /// Legacy snapshot field (historical). Purging uses plannedPurgeCount — not this field.
+  plannedSetupCount Int    @default(1)
+  /// Derived: count of planned runs where purgingRequired (incl. conservative UNKNOWN).
+  plannedPurgeCount Int    @default(0)
+  /// Derived: number of planned production-run allocation rows.
+  productionRunCount Int   @default(0)
+  /// True only after Production/Admin clicks Complete Machine Planning (valid runs required).
+  machinePlanningCompleted Boolean @default(false)
+  machinePlanningCompletedAt DateTime?
+  machinePlanningCompletedByUserId Int?
   createdByUserId Int?
   updatedByUserId Int?
   createdAt       DateTime @default(now())
@@ -1353,11 +1397,55 @@ model RegularSoPlanningSnapshot {
   salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
   createdBy  User?      @relation("RegularSoPlanningSnapshotCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   updatedBy  User?      @relation("RegularSoPlanningSnapshotUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  machinePlanningCompletedBy User? @relation("RegularSoPlanningSnapshotCompletedBy", fields: [machinePlanningCompletedByUserId], references: [id], onDelete: SetNull)
   lines      RegularSoPlanningSnapshotLine[]
+  productionRuns RegularSoPlanningRunAllocation[]
 
   @@index([salesOrderId])
   @@index([createdByUserId])
   @@index([updatedByUserId])
+  @@index([machinePlanningCompletedByUserId])
+}
+
+/// REGULAR_SO prepare: ordered machine production-run allocations (run ≠ setup ≠ purge).
+model RegularSoPlanningRunAllocation {
+  id          Int       @id @default(autoincrement())
+  snapshotId  Int
+  fgItemId    Int
+  runSequence Int
+  machineId   Int
+  plannedQty  Decimal   @db.Decimal(18, 3)
+  plannedDate DateTime? @db.Date
+  shiftId     Int?
+  purgingRequired              Boolean                   @default(false)
+  purgingDetectionStatus       PurgingDetectionStatus    @default(CONFIRMATION_REQUIRED)
+  purgingDetectionReason       String?                   @db.VarChar(500)
+  previousProfileFingerprint   String?                   @db.VarChar(64)
+  targetProfileFingerprint     String?                   @db.VarChar(64)
+  purgingOverrideReason        String?                   @db.VarChar(500)
+  purgingOverrideByUserId      Int?
+  purgingOverrideAt            DateTime?
+  physicalSetupRequired        Boolean?
+  physicalSetupStatus          PhysicalSetupDetectionStatus @default(CONFIRMATION_REQUIRED)
+  physicalSetupReason          String?                   @db.VarChar(500)
+  physicalSetupOverrideReason  String?                   @db.VarChar(500)
+  physicalSetupOverrideByUserId Int?
+  physicalSetupOverrideAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  snapshot RegularSoPlanningSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade, map: "RegSoRunAlloc_snap_fkey")
+  fgItem   Item                     @relation("RegularSoPlanningRunFg", fields: [fgItemId], references: [id], onDelete: Restrict, map: "RegSoRunAlloc_fg_fkey")
+  machine  Machine                  @relation(fields: [machineId], references: [id], onDelete: Restrict, map: "RegSoRunAlloc_machine_fkey")
+  shift    Shift?                   @relation(fields: [shiftId], references: [id], onDelete: SetNull, map: "RegSoRunAlloc_shift_fkey")
+  purgingOverrideBy User? @relation("RegularSoRunPurgingOverrideBy", fields: [purgingOverrideByUserId], references: [id], onDelete: SetNull, map: "RegSoRunAlloc_purgeOvBy_fkey")
+  physicalSetupOverrideBy User? @relation("RegularSoRunPhysicalSetupOverrideBy", fields: [physicalSetupOverrideByUserId], references: [id], onDelete: SetNull, map: "RegSoRunAlloc_setupOvBy_fkey")
+
+  @@unique([snapshotId, fgItemId, runSequence], map: "RegSoRunAlloc_snap_fg_seq_key")
+  @@index([snapshotId], map: "RegSoRunAlloc_snap_idx")
+  @@index([fgItemId], map: "RegSoRunAlloc_fg_idx")
+  @@index([machineId], map: "RegSoRunAlloc_machine_idx")
+  @@index([shiftId], map: "RegSoRunAlloc_shift_idx")
 }
 
 /// Store → Admin REGULAR_SO production buffer approval (above 5% through 10%) on Prepare Work Order.
@@ -1622,6 +1710,7 @@ model RequirementSheet {
   cancelledBy User?                 @relation("RequirementSheetCancelledBy", fields: [cancelledByUserId], references: [id], onDelete: SetNull)
   lines      RequirementSheetLine[]
   workOrders WorkOrder[]
+  plannedRunAllocations RequirementSheetPlannedRunAllocation[]
   carryForwardPendingSources CarryForwardPending[] @relation("CfPendingSourceRs")
   carryForwardPendingTargets CarryForwardPending[] @relation("CfPendingTargetRs")
   recoveryAllocations        RecoveryAllocation[]
@@ -2856,6 +2945,12 @@ model WorkOrder {
   /// P16-13: Store explicit release — production may start before full RM issue.
   materialReleasedToProductionAt DateTime?
   materialReleasedByUserId       Int?
+  /// Legacy field (historical WOs). Purging RM uses plannedPurgeCount — not this field.
+  plannedSetupCount               Int          @default(1)
+  /// Derived: count of planned runs requiring purge (incl. conservative UNKNOWN).
+  plannedPurgeCount               Int          @default(0)
+  /// Derived: number of planned production-run allocation rows.
+  productionRunCount              Int          @default(0)
   createdAt               DateTime     @default(now())
   updatedAt               DateTime     @updatedAt
 
@@ -2866,6 +2961,8 @@ model WorkOrder {
   cycle                           SalesOrderCycle?                 @relation(fields: [cycleId], references: [id], onDelete: SetNull)
   monthlyProductionPlan           MonthlyProductionPlan?           @relation("MppGreenLevelWorkOrders", fields: [monthlyProductionPlanId], references: [id], onDelete: SetNull)
   lines                           WorkOrderLine[]
+  productionRuns                  WorkOrderProductionRunAllocation[]
+  machineMaterialStateSources     MachineMaterialState[]             @relation("MachineMaterialStateSourceWo")
   materialAllocations             MaterialAllocation[]
   scrapLoss                       ScrapRecord[]
   requirementSheet                RequirementSheet?                @relation(fields: [requirementSheetId], references: [id], onDelete: SetNull)
@@ -3228,9 +3325,123 @@ model WorkOrderLine {
   productions ProductionEntry[]
   materialAllocations MaterialAllocation[]
   productionShortfallResolutions ProductionShortfallResolution[]
+  productionRuns WorkOrderProductionRunAllocation[]
 
   @@index([workOrderId])
   @@index([fgItemId])
+}
+
+/// Planned machine production-run rows for a Work Order (run ≠ setup ≠ purge).
+model WorkOrderProductionRunAllocation {
+  id              Int       @id @default(autoincrement())
+  workOrderId     Int
+  workOrderLineId Int?
+  fgItemId        Int
+  runSequence     Int
+  machineId       Int
+  plannedQty      Decimal   @db.Decimal(18, 3)
+  plannedDate     DateTime? @db.Date
+  shiftId         Int?
+  cycleTimeSeconds          Decimal? @db.Decimal(18, 3)
+  piecesPerCycle            Int?
+  standardEfficiencyPercent Decimal? @db.Decimal(5, 2)
+  purgingRequired              Boolean                   @default(false)
+  purgingDetectionStatus       PurgingDetectionStatus    @default(CONFIRMATION_REQUIRED)
+  purgingDetectionReason       String?                   @db.VarChar(500)
+  previousProfileFingerprint   String?                   @db.VarChar(64)
+  targetProfileFingerprint     String?                   @db.VarChar(64)
+  purgingOverrideReason        String?                   @db.VarChar(500)
+  purgingOverrideByUserId      Int?
+  purgingOverrideAt            DateTime?
+  physicalSetupRequired        Boolean?
+  physicalSetupStatus          PhysicalSetupDetectionStatus @default(CONFIRMATION_REQUIRED)
+  physicalSetupReason          String?                   @db.VarChar(500)
+  physicalSetupOverrideReason  String?                   @db.VarChar(500)
+  physicalSetupOverrideByUserId Int?
+  physicalSetupOverrideAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workOrder     WorkOrder      @relation(fields: [workOrderId], references: [id], onDelete: Cascade, map: "WoProdRunAlloc_wo_fkey")
+  workOrderLine WorkOrderLine? @relation(fields: [workOrderLineId], references: [id], onDelete: SetNull, map: "WoProdRunAlloc_wol_fkey")
+  fgItem        Item           @relation("WoProductionRunFg", fields: [fgItemId], references: [id], onDelete: Restrict, map: "WoProdRunAlloc_fg_fkey")
+  machine       Machine        @relation(fields: [machineId], references: [id], onDelete: Restrict, map: "WoProdRunAlloc_machine_fkey")
+  shift         Shift?         @relation(fields: [shiftId], references: [id], onDelete: SetNull, map: "WoProdRunAlloc_shift_fkey")
+  purgingOverrideBy User? @relation("WoRunPurgingOverrideBy", fields: [purgingOverrideByUserId], references: [id], onDelete: SetNull, map: "WoProdRunAlloc_purgeOvBy_fkey")
+  physicalSetupOverrideBy User? @relation("WoRunPhysicalSetupOverrideBy", fields: [physicalSetupOverrideByUserId], references: [id], onDelete: SetNull, map: "WoProdRunAlloc_setupOvBy_fkey")
+
+  @@unique([workOrderId, fgItemId, runSequence], map: "WoProdRunAlloc_wo_fg_seq_key")
+  @@index([workOrderId], map: "WoProdRunAlloc_wo_idx")
+  @@index([workOrderLineId], map: "WoProdRunAlloc_wol_idx")
+  @@index([fgItemId], map: "WoProdRunAlloc_fg_idx")
+  @@index([machineId], map: "WoProdRunAlloc_machine_idx")
+  @@index([shiftId], map: "WoProdRunAlloc_shift_idx")
+}
+
+/// NO_QTY locked RS: draft machine production-run allocations before WO create.
+model RequirementSheetPlannedRunAllocation {
+  id                 Int       @id @default(autoincrement())
+  requirementSheetId Int
+  fgItemId           Int
+  runSequence        Int
+  machineId          Int
+  plannedQty         Decimal   @db.Decimal(18, 3)
+  plannedDate        DateTime? @db.Date
+  shiftId            Int?
+  purgingRequired              Boolean                   @default(false)
+  purgingDetectionStatus       PurgingDetectionStatus    @default(CONFIRMATION_REQUIRED)
+  purgingDetectionReason       String?                   @db.VarChar(500)
+  previousProfileFingerprint   String?                   @db.VarChar(64)
+  targetProfileFingerprint     String?                   @db.VarChar(64)
+  purgingOverrideReason        String?                   @db.VarChar(500)
+  purgingOverrideByUserId      Int?
+  purgingOverrideAt            DateTime?
+  physicalSetupRequired        Boolean?
+  physicalSetupStatus          PhysicalSetupDetectionStatus @default(CONFIRMATION_REQUIRED)
+  physicalSetupReason          String?                   @db.VarChar(500)
+  physicalSetupOverrideReason  String?                   @db.VarChar(500)
+  physicalSetupOverrideByUserId Int?
+  physicalSetupOverrideAt      DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  requirementSheet RequirementSheet @relation(fields: [requirementSheetId], references: [id], onDelete: Cascade, map: "RsPlanRunAlloc_rs_fkey")
+  fgItem           Item             @relation("RsPlannedRunFg", fields: [fgItemId], references: [id], onDelete: Restrict, map: "RsPlanRunAlloc_fg_fkey")
+  machine          Machine          @relation(fields: [machineId], references: [id], onDelete: Restrict, map: "RsPlanRunAlloc_machine_fkey")
+  shift            Shift?           @relation(fields: [shiftId], references: [id], onDelete: SetNull, map: "RsPlanRunAlloc_shift_fkey")
+  purgingOverrideBy User? @relation("RsRunPurgingOverrideBy", fields: [purgingOverrideByUserId], references: [id], onDelete: SetNull, map: "RsPlanRunAlloc_purgeOvBy_fkey")
+  physicalSetupOverrideBy User? @relation("RsRunPhysicalSetupOverrideBy", fields: [physicalSetupOverrideByUserId], references: [id], onDelete: SetNull, map: "RsPlanRunAlloc_setupOvBy_fkey")
+
+  @@unique([requirementSheetId, fgItemId, runSequence], map: "RsPlanRunAlloc_rs_fg_seq_key")
+  @@index([requirementSheetId], map: "RsPlanRunAlloc_rs_idx")
+  @@index([fgItemId], map: "RsPlanRunAlloc_fg_idx")
+  @@index([machineId], map: "RsPlanRunAlloc_machine_idx")
+  @@index([shiftId], map: "RsPlanRunAlloc_shift_idx")
+}
+
+/// Auditable machine barrel/hopper material state (confirmed only — never auto-claimed).
+model MachineMaterialState {
+  id                         Int                      @id @default(autoincrement())
+  machineId                  Int                      @unique(map: "MachMatState_machineId_key")
+  currentProfileFingerprint  String?                  @db.VarChar(64)
+  /// Optional JSON snapshot of leaf-RM mix components at confirmation.
+  currentProfileJson         Json?
+  materialState              MachineMaterialStateKind @default(UNKNOWN)
+  sourceWorkOrderId          Int?
+  sourceRunAllocationId      Int?
+  confirmedAt                DateTime?
+  confirmedByUserId          Int?
+  version                    Int                      @default(0)
+  createdAt                  DateTime                 @default(now())
+  updatedAt                  DateTime                 @updatedAt
+
+  machine     Machine    @relation(fields: [machineId], references: [id], onDelete: Restrict, map: "MachMatState_machine_fkey")
+  sourceWorkOrder WorkOrder? @relation("MachineMaterialStateSourceWo", fields: [sourceWorkOrderId], references: [id], onDelete: SetNull, map: "MachMatState_sourceWo_fkey")
+  confirmedBy User?      @relation("MachineMaterialStateConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: SetNull, map: "MachMatState_confirmedBy_fkey")
+
+  @@index([materialState], map: "MachMatState_materialState_idx")
+  @@index([sourceWorkOrderId], map: "MachMatState_sourceWo_idx")
+  @@index([confirmedByUserId], map: "MachMatState_confirmedBy_idx")
 }
 
 
@@ -3344,6 +3555,10 @@ model Machine {
   updatedAt          DateTime    @updatedAt
 
   fgProductionStandards FgProductionStandard[]
+  regularSoPlanningRunAllocations RegularSoPlanningRunAllocation[]
+  workOrderProductionRunAllocations WorkOrderProductionRunAllocation[]
+  requirementSheetPlannedRunAllocations RequirementSheetPlannedRunAllocation[]
+  materialState MachineMaterialState?
 
   @@index([isActive, machineName])
   @@index([machineType, isActive])
@@ -3378,6 +3593,10 @@ model Shift {
   isActive             Boolean  @default(true)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+
+  regularSoPlanningRunAllocations RegularSoPlanningRunAllocation[]
+  workOrderProductionRunAllocations WorkOrderProductionRunAllocation[]
+  requirementSheetPlannedRunAllocations RequirementSheetPlannedRunAllocation[]
 
   @@index([isActive, shiftName])
 }

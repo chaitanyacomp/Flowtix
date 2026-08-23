@@ -8,12 +8,15 @@ import { rmControlCenterHref } from "./materialWorkflowLinks";
 import { formatProcessStageDisplayLabel } from "./operationalErrorPresentation";
 
 export type WoPrepareOperationalKey =
+  | "MACHINE_PLANNING_PENDING"
+  | "MACHINE_PLANNING_IN_PROGRESS"
   | "RM_SHORTAGE"
   | "PURCHASE_GRN_PENDING"
   | "READY_FOR_WO"
   | "WO_PREPARE";
 
 export type WoPrepareNextActionKey =
+  | "PLAN_MACHINE_RUNS"
   | "RAISE_MR"
   | "OPEN_PURCHASE_PLAN"
   | "CREATE_WO"
@@ -30,19 +33,41 @@ export type WoPrepareOperational = {
   primaryFgName?: string | null;
   pendingPoStatus?: string;
   pendingGrnStatus?: string;
+  machinePlanningComplete?: boolean;
+  machinePlanningStatus?: string;
+  rmRequiredQtyTotal?: number;
+  rmAvailableQtyTotal?: number;
+  rmShortageQtyTotal?: number;
+  rmShortageLines?: Array<{
+    rmItemId: number | null;
+    itemName: string;
+    unit?: string | null;
+    requiredQty: number;
+    availableQty: number;
+    shortageQty: number;
+  }>;
 };
 
 export function woPreparePrepareHref(
   salesOrderId: number,
-  opts?: { source?: string; from?: string; itemId?: number; fgItemId?: number },
+  opts?: { source?: string; from?: string; itemId?: number; fgItemId?: number; intent?: string },
 ): string {
   const p = new URLSearchParams();
   p.set("salesOrderId", String(salesOrderId));
   p.set("source", opts?.source?.trim() || "regular_so");
   if (opts?.from?.trim()) p.set("from", opts.from.trim());
+  if (opts?.intent?.trim()) p.set("intent", opts.intent.trim());
   if (opts?.itemId != null && opts.itemId > 0) p.set("itemId", String(opts.itemId));
   if (opts?.fgItemId != null && opts.fgItemId > 0) p.set("fgItemId", String(opts.fgItemId));
   return `/work-orders/prepare?${p.toString()}`;
+}
+
+export function woMachinePlanningHref(salesOrderId: number): string {
+  return woPreparePrepareHref(salesOrderId, {
+    source: "regular_so_machine_planning",
+    intent: "machine-planning",
+    from: "planning-dashboard",
+  });
 }
 
 /** Order RM Planning — live SO/quotation requirement review (not PO/GRN execution). */
@@ -146,10 +171,19 @@ export function resolvePurchaseExecutionCta(opts: {
 export function woPreparePrimaryCta(
   soId: number,
   op: WoPrepareOperational | null | undefined,
+  role?: string,
 ): { label: string; to: string } {
   const prepare = woPreparePrepareHref(soId);
-  if (!op) return { label: "Create Work Order", to: prepare };
+  const planMachines = woMachinePlanningHref(soId);
+  if (!op) {
+    if (role === "PRODUCTION" || role === "ADMIN") {
+      return { label: "Plan Machine Runs", to: planMachines };
+    }
+    return { label: "Create Work Order", to: prepare };
+  }
   switch (op.nextActionKey) {
+    case "PLAN_MACHINE_RUNS":
+      return { label: "Plan Machine Runs", to: planMachines };
     case "OPEN_PURCHASE_PLAN": {
       const cta = resolvePurchaseExecutionCta({
         salesOrderId: soId,
@@ -165,9 +199,18 @@ export function woPreparePrimaryCta(
         to: rmControlCenterHref({ salesOrderId: soId, onlyBlocked: true, returnTo: "sales-orders" }),
       };
     case "CREATE_WO":
+      if (role === "PRODUCTION") {
+        return { label: "View machine planning", to: planMachines };
+      }
       return { label: "Create Work Order", to: prepare };
     case "PREPARE_WO":
     default:
+      if (role === "STORE") {
+        return { label: "Review RM Readiness", to: prepare };
+      }
+      if (role === "PRODUCTION") {
+        return { label: "Plan Machine Runs", to: planMachines };
+      }
       return { label: "Review RM Readiness", to: prepare };
   }
 }
@@ -181,8 +224,12 @@ export function woPreparePositionLabel(op: WoPrepareOperational | null | undefin
 export function woPrepareNextActionStatusLabel(op: WoPrepareOperational | null | undefined): string {
   if (!op) return "WO preparation pending";
   switch (op.nextActionKey) {
+    case "PLAN_MACHINE_RUNS":
+      return op.key === "MACHINE_PLANNING_IN_PROGRESS"
+        ? "Machine planning in progress"
+        : "Machine planning pending";
     case "CREATE_WO":
-      return "WO preparation pending";
+      return "Ready for Work Order creation";
     case "PREPARE_WO":
       return "Ready for WO planning";
     case "RAISE_MR":

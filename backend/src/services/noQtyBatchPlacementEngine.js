@@ -12,6 +12,12 @@ const { aggregateRmDemandForFgLines, loadApprovedBomWithLines } = require("./bom
 const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
 const { resolveNoQtyWoExecutableQty } = require("./noQtyWoQtyService");
 const { roundFgQty } = require("./itemQtyPrecision");
+const {
+  buildPurgingPlanningSummary,
+  addPurgingRmForFgLines,
+  parsePlannedSetupCount,
+  snapshotProductionRmMap,
+} = require("./bomPurgingRmPlanningService");
 
 const EPS = 1e-6;
 
@@ -108,8 +114,30 @@ async function verifyBatchRmFeasibility(db, fgLines, deps = {}) {
   }
 
   const rmNeeded = demand?.rmNeeded instanceof Map ? demand.rmNeeded : new Map();
+  const productionRmNeeded = snapshotProductionRmMap(rmNeeded);
+  let plannedPurgeOpts = { plannedPurgeCount: deps.plannedPurgeCount ?? 0 };
+  if (deps.purgeCountByFgItemId != null) {
+    plannedPurgeOpts = {
+      plannedPurgeCount: deps.plannedPurgeCount ?? 0,
+      purgeCountByFgItemId: deps.purgeCountByFgItemId,
+    };
+  } else if (Array.isArray(deps.productionRuns) && deps.productionRuns.length > 0) {
+    const { derivePlanningCountsFromPersistedRuns } = require("./woProductionRunAllocationService");
+    const hasDetection = deps.productionRuns.some((r) => r.purgingRequired != null);
+    if (hasDetection) {
+      const counts = derivePlanningCountsFromPersistedRuns(deps.productionRuns);
+      plannedPurgeOpts = {
+        plannedPurgeCount: counts.plannedPurgeCount,
+        purgeCountByFgItemId: counts.purgeCountByFgItemId,
+      };
+    } else {
+      // No detection flags and no plannedPurgeCount → zero purging (do not invent from run count).
+      plannedPurgeOpts = { plannedPurgeCount: deps.plannedPurgeCount ?? 0 };
+    }
+  }
+  await addPurgingRmForFgLines(db, rmNeeded, positive, plannedPurgeOpts);
   if (!rmNeeded.size) {
-    return { feasible: true, rmNeeded, shortages: [], missingChildBoms: [] };
+    return { feasible: true, rmNeeded, productionRmNeeded, shortages: [], missingChildBoms: [] };
   }
 
   const availabilityRows = await availability({
@@ -141,6 +169,7 @@ async function verifyBatchRmFeasibility(db, fgLines, deps = {}) {
   return {
     feasible: shortages.length === 0,
     rmNeeded,
+    productionRmNeeded,
     shortages,
     missingChildBoms: [],
     availabilityRows: availabilityRows ?? [],
@@ -393,9 +422,16 @@ function buildRmReadinessFromBatch(db, balanceLines, placementLines, batchRmAtPr
       message: line.reason || "Missing BOM for FG item. RM requirement cannot be calculated.",
     }));
 
+  const productionRmNeeded =
+    batchRmAtProposed?.productionRmNeeded instanceof Map
+      ? batchRmAtProposed.productionRmNeeded
+      : snapshotProductionRmMap(batchRmAtProposed?.rmNeeded ?? new Map());
+
   const rmLines = (batchRmAtProposed?.availabilityRows ?? []).map((row) => {
     const rmItemId = Number(row.itemId);
     const requiredQty = round3(n(batchRmAtProposed.rmNeeded?.get(rmItemId)));
+    const productionRequiredQty = round3(n(productionRmNeeded.get(rmItemId)));
+    const purgingRequiredQty = round3(Math.max(0, requiredQty - productionRequiredQty));
     const availableQty = round3(n(row.freeStockQty ?? row.physicalUsableStockQty));
     const incomingQty = round3(n(row.incomingQty));
     const shortageQty = round3(Math.max(0, requiredQty - availableQty));
@@ -404,6 +440,8 @@ function buildRmReadinessFromBatch(db, balanceLines, placementLines, batchRmAtPr
       rmItemId,
       rmItemName: row.itemName ?? `Item ${rmItemId}`,
       requiredQty,
+      productionRequiredQty,
+      purgingRequiredQty,
       availableQty,
       shortageQty,
       incomingQty,
@@ -495,7 +533,31 @@ async function previewRmReadinessForProposedQty(db, sheet, proposedLines, deps =
       ? await verifyBatchRmFeasibility(db, fgLinesForRm, deps)
       : { feasible: true, rmNeeded: new Map(), shortages: [], missingChildBoms: [], availabilityRows: [] };
 
+  const productionRmNeeded =
+    batchRm.productionRmNeeded instanceof Map
+      ? batchRm.productionRmNeeded
+      : snapshotProductionRmMap(batchRm.rmNeeded ?? new Map());
+
   const rmReadiness = buildRmReadinessFromBatch(db, balanceLines, placementLines, batchRm, deps);
+  const { derivePlanningCountsFromPersistedRuns } = require("./woProductionRunAllocationService");
+  let purgeOpts = { plannedPurgeCount: deps.plannedPurgeCount ?? 0 };
+  if (deps.purgeCountByFgItemId != null) {
+    purgeOpts = {
+      plannedPurgeCount: deps.plannedPurgeCount ?? 0,
+      purgeCountByFgItemId: deps.purgeCountByFgItemId,
+    };
+  } else if (Array.isArray(deps.productionRuns) && deps.productionRuns.length > 0) {
+    const counts = derivePlanningCountsFromPersistedRuns(deps.productionRuns);
+    purgeOpts = {
+      plannedPurgeCount: counts.plannedPurgeCount,
+      purgeCountByFgItemId: counts.purgeCountByFgItemId,
+    };
+  }
+  const purgingPlanning = await buildPurgingPlanningSummary(
+    db,
+    fgLinesForRm.map((line) => ({ fgItemId: line.fgItemId })),
+    purgeOpts,
+  );
 
   const perLine = [];
   for (const line of placementLines) {
@@ -509,7 +571,24 @@ async function previewRmReadinessForProposedQty(db, sheet, proposedLines, deps =
     });
   }
 
-  return { rmReadiness, lines: perLine, basis: "PROPOSED_WO_QTY" };
+  return {
+    rmReadiness,
+    purgingPlanning: {
+      plannedPurgeCount: purgingPlanning.plannedPurgeCount,
+      standardPurgingQtyGramsPerSetup: purgingPlanning.standardPurgingQtyGramsPerSetup,
+      totalPlannedPurgingGrams: purgingPlanning.totalPlannedPurgingGrams,
+      totalPlannedPurgingKg: purgingPlanning.totalPlannedPurgingKg,
+      totalProductionRmKg: round3([...productionRmNeeded.values()].reduce((s, v) => s + n(v), 0)),
+      totalPlannedRmKg: round3(
+        [...(batchRm.rmNeeded instanceof Map ? batchRm.rmNeeded : new Map()).values()].reduce(
+          (s, v) => s + n(v),
+          0,
+        ),
+      ),
+    },
+    lines: perLine,
+    basis: "PROPOSED_WO_QTY",
+  };
 }
 
 function buildPlacementStatus(positiveLines) {
@@ -740,6 +819,17 @@ async function assessNoQtyBatchPlacement(db, sheet, deps = {}) {
     ? await verifyBatchRmFeasibility(db, proposedFgLines, deps)
     : { feasible: true, rmNeeded: new Map(), shortages: [], missingChildBoms: [], availabilityRows: [] };
 
+  const purgingPlanning = await buildPurgingPlanningSummary(
+    db,
+    balanceLines
+      .filter((line) => line.rsBalanceQty > EPS && !line.bomMissing)
+      .map((line) => ({ fgItemId: line.itemId, fgName: line.itemName })),
+    {
+      plannedPurgeCount: deps.plannedPurgeCount ?? 0,
+      purgeCountByFgItemId: deps.purgeCountByFgItemId ?? null,
+    },
+  );
+
   return {
     balanceLines,
     fgUnitByItemId,
@@ -751,6 +841,24 @@ async function assessNoQtyBatchPlacement(db, sheet, deps = {}) {
       rmLimitedCapacityQty: placement.summary.totalRmLimitedCapacityQty,
     },
     placement,
+    purgingPlanning: {
+      plannedPurgeCount: purgingPlanning.plannedPurgeCount,
+      standardPurgingQtyGramsPerSetup: purgingPlanning.standardPurgingQtyGramsPerSetup,
+      totalPlannedPurgingGrams: purgingPlanning.totalPlannedPurgingGrams,
+      totalPlannedPurgingKg: purgingPlanning.totalPlannedPurgingKg,
+      totalProductionRmKg: round3(
+        [...(batchRmAtProposed.productionRmNeeded instanceof Map
+          ? batchRmAtProposed.productionRmNeeded
+          : new Map()
+        ).values()].reduce((s, v) => s + n(v), 0),
+      ),
+      totalPlannedRmKg: round3(
+        [...(batchRmAtProposed.rmNeeded instanceof Map ? batchRmAtProposed.rmNeeded : new Map()).values()].reduce(
+          (s, v) => s + n(v),
+          0,
+        ),
+      ),
+    },
     rmReadiness: buildRmReadinessFromBatch(db, balanceLines, placementLines, batchRmAtProposed, deps),
     snapshot: buildPlacementSnapshot(placedByItem, balanceLines, placement),
   };

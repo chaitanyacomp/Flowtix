@@ -23,6 +23,19 @@ export type WoPrepareQueueRow = {
   pendingPoStatus?: string;
   pendingGrnStatus?: string;
   supplierPendingStatus?: string;
+  machinePlanningComplete?: boolean;
+  canCreateWorkOrder?: boolean;
+  rmRequiredQtyTotal?: number;
+  rmAvailableQtyTotal?: number;
+  rmShortageQtyTotal?: number;
+  rmShortageLines?: Array<{
+    rmItemId: number | null;
+    itemName: string;
+    unit?: string | null;
+    requiredQty: number;
+    availableQty: number;
+    shortageQty: number;
+  }>;
 };
 
 export type WoPrepareDashboardQueues = {
@@ -77,6 +90,13 @@ function QueueSection({
                 {row.primaryFgName && row.shortageRmCount > 0 ? " · " : null}
                 {row.shortageRmCount > 0 ? (
                   <span className="text-red-700">{row.shortageRmCount} RM shortage line(s)</span>
+                ) : null}
+                {row.rmShortageQtyTotal != null && row.rmShortageQtyTotal > 0 ? (
+                  <span className="text-red-800">
+                    {" "}
+                    · req {row.rmRequiredQtyTotal ?? "—"} / avail {row.rmAvailableQtyTotal ?? "—"} / short{" "}
+                    {row.rmShortageQtyTotal}
+                  </span>
                 ) : null}
                 {row.pendingMrRefs ? (
                   <span className={row.shortageRmCount > 0 ? " · " : ""}>MR {row.pendingMrRefs}</span>

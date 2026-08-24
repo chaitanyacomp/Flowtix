@@ -9,28 +9,20 @@ import { useIsAdmin } from "../hooks/useIsAdmin";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../contexts/ToastContext";
 import { apiFetch } from "../services/api";
-
-type UserRole = "ADMIN" | "STORE" | "PURCHASE" | "PRODUCTION" | "QA";
+import { ERP_ROLES, ERP_ROLE_LABEL, type ErpRole } from "../config/erpRoles";
 
 type AdminUser = {
   id: number;
   email: string;
   name: string;
-  role: UserRole;
+  role: ErpRole;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
 };
 
-const ROLES: UserRole[] = ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"];
-
-const ROLE_LABEL: Record<UserRole, string> = {
-  ADMIN: "Admin",
-  STORE: "Store",
-  PURCHASE: "Purchase",
-  PRODUCTION: "Production",
-  QA: "QA",
-};
+const ROLES = ERP_ROLES;
+const ROLE_LABEL = ERP_ROLE_LABEL;
 
 function formatWhen(iso: string): string {
   try {
@@ -51,13 +43,13 @@ export function AdminUsersPage() {
   const [creating, setCreating] = React.useState(false);
 
   const [q, setQ] = React.useState("");
-  const [roleFilter, setRoleFilter] = React.useState<"" | UserRole>("");
+  const [roleFilter, setRoleFilter] = React.useState<"" | ErpRole>("");
   const [activeFilter, setActiveFilter] = React.useState<"" | "true" | "false">("");
 
   const [createForm, setCreateForm] = React.useState({
     email: "",
     name: "",
-    role: "STORE" as UserRole,
+    role: "STORE" as ErpRole,
     password: "",
     isActive: true,
   });
@@ -130,7 +122,7 @@ export function AdminUsersPage() {
     }
   }
 
-  async function patchUser(id: number, patch: { name?: string; role?: UserRole; isActive?: boolean }) {
+  async function patchUser(id: number, patch: { name?: string; role?: ErpRole; isActive?: boolean }) {
     setBusyId(id);
     try {
       await apiFetch<{ user: AdminUser }>(`/api/admin/users/${id}`, {
@@ -231,7 +223,7 @@ export function AdminUsersPage() {
               <select
                 className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-900 shadow-sm"
                 value={createForm.role}
-                onChange={(e) => setCreateForm((f) => ({ ...f, role: e.target.value as UserRole }))}
+                onChange={(e) => setCreateForm((f) => ({ ...f, role: e.target.value as ErpRole }))}
               >
                 {ROLES.map((r) => (
                   <option key={r} value={r}>
@@ -297,7 +289,7 @@ export function AdminUsersPage() {
               <select
                 className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm shadow-sm"
                 value={roleFilter}
-                onChange={(e) => setRoleFilter(e.target.value as "" | UserRole)}
+                onChange={(e) => setRoleFilter(e.target.value as "" | ErpRole)}
               >
                 <option value="">All</option>
                 {ROLES.map((r) => (
@@ -363,7 +355,7 @@ export function AdminUsersPage() {
                             value={u.role}
                             disabled={rowBusy}
                             onChange={(e) => {
-                              const next = e.target.value as UserRole;
+                              const next = e.target.value as ErpRole;
                               if (next === u.role) return;
                               void patchUser(u.id, { role: next });
                             }}

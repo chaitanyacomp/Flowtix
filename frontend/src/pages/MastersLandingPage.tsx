@@ -17,6 +17,7 @@ import { useAuth } from "../hooks/useAuth";
 import {
   ENQUIRY_QUOTATION_WRITE_ROLES,
   SUPPLIER_VIEW_ROLES,
+  PRODUCTION_MASTER_READ_ROLES,
 } from "../config/erpRoles";
 import { MasterListPageShell } from "../components/masters/MasterListWorkbench";
 import { cn } from "../lib/utils";
@@ -63,21 +64,21 @@ const CARDS: MasterCard[] = [
     title: "Machines",
     description: "Production machine register (code, type, make/model). Soft activate/deactivate only.",
     icon: <Cog className="h-5 w-5" />,
-    roles: ["ADMIN", "PRODUCTION"],
+    roles: [...PRODUCTION_MASTER_READ_ROLES],
   },
   {
     to: "/operators",
     title: "Operators",
     description: "Production operator register. Soft activate/deactivate only.",
     icon: <Users className="h-5 w-5" />,
-    roles: ["ADMIN", "PRODUCTION"],
+    roles: [...PRODUCTION_MASTER_READ_ROLES],
   },
   {
     to: "/shifts",
     title: "Shifts",
     description: "Production shift templates (code, window, break). Soft activate/deactivate only.",
     icon: <Clock className="h-5 w-5" />,
-    roles: ["ADMIN", "PRODUCTION"],
+    roles: [...PRODUCTION_MASTER_READ_ROLES],
   },
   {
     to: "/fg-production-standards",

@@ -1,7 +1,7 @@
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { ALL_APP_ROLES } from "../config/erpRoles";
-import { loginPathWithReturn, ROLE_LANDING_PATH } from "../lib/authReturnPath";
+import { loginPathWithReturn, resolveRoleLandingPath } from "../lib/authReturnPath";
 import { BrandSplash } from "./branding/Branding";
 
 export { ALL_APP_ROLES };
@@ -37,8 +37,8 @@ export function ProtectedRoute({ allowedRoles, children }: ProtectedRouteProps) 
     return <Navigate to={loginPathWithReturn(returnTo)} replace />;
   }
   if (!allowedRoles.includes(auth.user.role)) {
-    const fallback = auth.user.landingPath || ROLE_LANDING_PATH;
-    if (location.pathname === fallback) return <Navigate to={ROLE_LANDING_PATH} replace />;
+    const fallback = resolveRoleLandingPath(auth.user.role, auth.user.landingPath);
+    if (location.pathname === fallback) return <Navigate to={resolveRoleLandingPath(auth.user.role, null)} replace />;
     return <Navigate to={fallback} replace />;
   }
   return <>{children}</>;

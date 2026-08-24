@@ -8,6 +8,16 @@ export const ERP_ROLES = ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "PRODUCTIO
 
 export type ErpRole = (typeof ERP_ROLES)[number];
 
+/** Display labels for user-management role dropdowns (Admin Users, etc.). */
+export const ERP_ROLE_LABEL: Record<ErpRole, string> = {
+  ADMIN: "Admin",
+  STORE: "Store",
+  PURCHASE: "Purchase",
+  PRODUCTION: "Production",
+  PRODUCTION_MANAGER: "Production Manager",
+  QA: "QA",
+};
+
 export const ALL_APP_ROLES = ERP_ROLES;
 
 export const ALL_APP_ROLES_OPERATIONAL = ERP_ROLES;
@@ -123,6 +133,12 @@ export const MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES = ["ADMIN", "PURCHASE"] as c
 
 /** Shift Production (machine shift sessions) — view + operate */
 export const SHIFT_PRODUCTION_ROLES = ["ADMIN", "PRODUCTION_MANAGER", "PRODUCTION"] as const;
+
+/** Production master registers readable by PRODUCTION_MANAGER (mirrors backend READ_ROLES). */
+export const PRODUCTION_MASTER_READ_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER"] as const;
+
+/** Dashboard / control-tower / pending-actions shell (PRODUCTION_MANAGER uses Shift Production landing). */
+export const DASHBOARD_SHELL_ROLES = ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"] as const;
 
 /** Legacy aliases */
 export const PURCHASE_WITH_ACCOUNTS_ROLES = PURCHASE_BILL_READ_ROLES;

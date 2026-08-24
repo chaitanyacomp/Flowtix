@@ -8,6 +8,29 @@ export const ERP_POST_LOGIN_RETURN_KEY = "erp:postLoginReturnPath";
 /** Safe default after login when no valid returnTo is available. */
 export const ROLE_LANDING_PATH = "/dashboard";
 
+/** Frontend role landing overrides (API may still return `/dashboard`). */
+const ROLE_LANDING_OVERRIDES: Readonly<Record<string, string>> = {
+  PRODUCTION_MANAGER: "/shift-production",
+};
+
+/** Shell routes PRODUCTION_MANAGER must not use as post-login destinations. */
+const PRODUCTION_MANAGER_FORBIDDEN_RETURN_PREFIXES = ["/dashboard", "/control-tower", "/pending-actions"] as const;
+
+/**
+ * Resolve the SPA landing path for a role.
+ * Prefer frontend overrides, then API landing, then global default.
+ */
+export function resolveRoleLandingPath(role: string | null | undefined, apiLandingPath?: string | null): string {
+  const roleNorm = String(role ?? "")
+    .trim()
+    .toUpperCase();
+  const override = roleNorm ? ROLE_LANDING_OVERRIDES[roleNorm] : undefined;
+  if (override && isSafeInternalReturnPath(override)) return override;
+  const fromApi = apiLandingPath != null ? String(apiLandingPath).trim() : "";
+  if (isSafeInternalReturnPath(fromApi)) return fromApi;
+  return ROLE_LANDING_PATH;
+}
+
 const BLOCKED_EXACT = new Set(["/login", "/logout"]);
 const BLOCKED_PREFIXES = ["/login/", "/logout/"];
 
@@ -104,6 +127,11 @@ export function isReturnPathAllowedForRole(path: string, role: string | null | u
   if (role == null || !String(role).trim()) return false;
   const roleNorm = String(role).trim().toUpperCase();
   const pathname = (path.split(/[?#]/)[0] || "/").toLowerCase();
+  if (roleNorm === "PRODUCTION_MANAGER") {
+    for (const prefix of PRODUCTION_MANAGER_FORBIDDEN_RETURN_PREFIXES) {
+      if (pathname === prefix || pathname.startsWith(`${prefix}/`)) return false;
+    }
+  }
   for (const gate of ROLE_GATED_PREFIXES) {
     if (pathname === gate.prefix || pathname.startsWith(`${gate.prefix}/`)) {
       return gate.roles.some((r) => r.toUpperCase() === roleNorm);
@@ -170,6 +198,7 @@ export function resolvePostLoginDestination(
   const fromSession = consumePostLoginReturnPath();
   const sessionPick = pick(fromSession);
   if (sessionPick) return sessionPick;
-  const landing = pick(options?.landingPath ? String(options.landingPath).trim() : null);
-  return landing ?? ROLE_LANDING_PATH;
+  const landingCandidate = resolveRoleLandingPath(role, options?.landingPath ?? null);
+  const landingPick = pick(landingCandidate);
+  return landingPick ?? resolveRoleLandingPath(role, null);
 }

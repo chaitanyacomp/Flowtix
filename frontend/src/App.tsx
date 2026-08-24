@@ -11,7 +11,7 @@ import {
   peekSessionExpiredMessage,
 } from "./lib/authSession";
 import { endPerfMark, startPerfMark } from "./lib/performanceTiming";
-import { loginPathWithReturn, resolvePostLoginDestination, ROLE_LANDING_PATH } from "./lib/authReturnPath";
+import { loginPathWithReturn, resolvePostLoginDestination, resolveRoleLandingPath } from "./lib/authReturnPath";
 import { AppLayout } from "./components/AppLayout";
 import {
   BrandBanner,
@@ -142,6 +142,8 @@ import {
   RM_PO_READ_ROLES,
   STOCK_WRITE_ROLES,
   SHIFT_PRODUCTION_ROLES,
+  PRODUCTION_MASTER_READ_ROLES,
+  DASHBOARD_SHELL_ROLES,
 } from "./config/erpRoles";
 import { GreenLevelWoPlacementPage } from "./pages/store/GreenLevelWoPlacementPage";
 import { DatabaseCleanupPage } from "./pages/DatabaseCleanupPage";
@@ -174,13 +176,18 @@ function RequireAuthLayout() {
   return <AppLayout />;
 }
 
-/** Unknown paths → dashboard (authed) or login — avoids empty shell flicker. */
+/** Unknown paths → role landing (authed) or login — avoids empty shell flicker. */
 function CatchAllRedirect() {
   const auth = useAuth();
   if (auth.authStatus === "loading") {
     return <BrandSplash hint="Checking session…" className="min-h-[100dvh]" />;
   }
-  return <Navigate to={auth.isAuthed ? ROLE_LANDING_PATH : "/login"} replace />;
+  return (
+    <Navigate
+      to={auth.isAuthed ? resolveRoleLandingPath(auth.user?.role, auth.user?.landingPath) : "/login"}
+      replace
+    />
+  );
 }
 
 /** Legacy `/planning-dashboard/production` → single planning hub (preserve query string). */
@@ -461,7 +468,7 @@ export default function App() {
         <Route
           path="/dashboard"
           element={
-            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
+            <ProtectedRoute allowedRoles={[...DASHBOARD_SHELL_ROLES]}>
               <DashboardScreen />
             </ProtectedRoute>
           }
@@ -469,7 +476,7 @@ export default function App() {
         <Route
           path="/pending-actions"
           element={
-            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
+            <ProtectedRoute allowedRoles={[...DASHBOARD_SHELL_ROLES]}>
               <PendingActionsPage />
             </ProtectedRoute>
           }
@@ -477,7 +484,7 @@ export default function App() {
         <Route
           path="/control-tower"
           element={
-            <ProtectedRoute allowedRoles={[...ALL_APP_ROLES]}>
+            <ProtectedRoute allowedRoles={[...DASHBOARD_SHELL_ROLES]}>
               <ControlTowerPage />
             </ProtectedRoute>
           }
@@ -573,7 +580,7 @@ export default function App() {
         <Route
           path="/machines"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={[...PRODUCTION_MASTER_READ_ROLES]}>
               <MachinesPage />
             </ProtectedRoute>
           }
@@ -581,7 +588,7 @@ export default function App() {
         <Route
           path="/operators"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={[...PRODUCTION_MASTER_READ_ROLES]}>
               <OperatorsPage />
             </ProtectedRoute>
           }
@@ -589,7 +596,7 @@ export default function App() {
         <Route
           path="/shifts"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={[...PRODUCTION_MASTER_READ_ROLES]}>
               <ShiftsPage />
             </ProtectedRoute>
           }
@@ -1280,7 +1287,14 @@ export default function App() {
           auth.authStatus === "loading" ? (
             <BrandSplash hint="Checking session…" className="min-h-[100dvh]" />
           ) : (
-            <Navigate to={auth.isAuthed ? ROLE_LANDING_PATH : "/login"} replace />
+            <Navigate
+              to={
+                auth.isAuthed
+                  ? resolveRoleLandingPath(auth.user?.role, auth.user?.landingPath)
+                  : "/login"
+              }
+              replace
+            />
           )
         }
       />

@@ -1,5 +1,5 @@
 const bcrypt = require("bcryptjs");
-const { PrismaClient } = require("./generated/client");
+const { PrismaClient } = require("./generated/client-v2");
 const { ensureIndiaStatesSeeded, backfillLegacyStateLinks } = require("../src/services/stateMaster");
 const { ensureDefaultUnitsSeeded, backfillLegacyItemUnitLinks } = require("../src/services/unitMaster");
 

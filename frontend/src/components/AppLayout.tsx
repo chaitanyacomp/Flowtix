@@ -81,6 +81,7 @@ import {
   RM_CONTROL_CENTER_ROLES,
   PLANNING_DASHBOARD_ROLES,
   SHIFT_PRODUCTION_ROLES,
+  PRODUCTION_MASTER_READ_ROLES,
 } from "../config/erpRoles";
 import { isStoreNavItemVisible } from "../lib/storeNavFilter";
 import { isPurchaseNavItemVisible } from "../lib/purchaseNavFilter";
@@ -91,7 +92,9 @@ import {
   isWorkOrderRegisterNavActive,
   REQUIREMENT_CYCLE_PLANNING_HREF,
 } from "../lib/productionNavFilter";
+import { isProductionManagerNavItemVisible } from "../lib/productionManagerNavFilter";
 import { isQaNavItemVisible } from "../lib/qaNavFilter";
+import { resolveRoleLandingPath } from "../lib/authReturnPath";
 
 type NavItem = {
   to: string;
@@ -156,9 +159,9 @@ const navGroups: NavGroup[] = [
       { to: "/items", navKey: "items", label: "Items", roles: ["ADMIN", "STORE"], icon: <Package className="h-4 w-4 shrink-0" /> },
       { to: "/opening-stock", navKey: "opening-stock", label: "Opening Stock", roles: ["ADMIN", "STORE"], icon: <Boxes className="h-4 w-4 shrink-0" /> },
       { to: "/units", navKey: "units", label: "Units", roles: ["ADMIN", "STORE"], icon: <Ruler className="h-4 w-4 shrink-0" /> },
-      { to: "/machines", navKey: "machines", label: "Machines", roles: ["ADMIN", "PRODUCTION"], icon: <Cog className="h-4 w-4 shrink-0" /> },
-      { to: "/operators", navKey: "operators", label: "Operators", roles: ["ADMIN", "PRODUCTION"], icon: <Users className="h-4 w-4 shrink-0" /> },
-      { to: "/shifts", navKey: "shifts", label: "Shifts", roles: ["ADMIN", "PRODUCTION"], icon: <Clock className="h-4 w-4 shrink-0" /> },
+      { to: "/machines", navKey: "machines", label: "Machines", roles: [...PRODUCTION_MASTER_READ_ROLES], icon: <Cog className="h-4 w-4 shrink-0" /> },
+      { to: "/operators", navKey: "operators", label: "Operators", roles: [...PRODUCTION_MASTER_READ_ROLES], icon: <Users className="h-4 w-4 shrink-0" /> },
+      { to: "/shifts", navKey: "shifts", label: "Shifts", roles: [...PRODUCTION_MASTER_READ_ROLES], icon: <Clock className="h-4 w-4 shrink-0" /> },
       { to: "/fg-production-standards", navKey: "fg-standards", label: "FG Standards", roles: ["ADMIN", "PRODUCTION"], icon: <Gauge className="h-4 w-4 shrink-0" /> },
       { to: "/locations", navKey: "locations", label: "Locations", roles: ["ADMIN", "STORE"], icon: <Boxes className="h-4 w-4 shrink-0" /> },
       { to: "/masters/tally-import", navKey: "tally-import", label: "Tally import", roles: ["ADMIN"], icon: <FileUp className="h-4 w-4 shrink-0" /> },
@@ -470,6 +473,7 @@ export function AppLayout() {
   const { pathname, search } = useLocation();
   const { flags } = useFeatureFlags();
   const role = auth.user?.role || "";
+  const homePath = resolveRoleLandingPath(role, auth.user?.landingPath);
   const pageTitle =
     pathname === "/dashboard" && role === "PURCHASE"
       ? "Purchase desk"
@@ -520,9 +524,9 @@ export function AppLayout() {
         data-sidebar-collapsed={sidebarCollapsed ? "1" : "0"}
       >
         <DemoGatedNavLink
-          to="/dashboard"
+          to={homePath}
           title={sidebarCollapsed ? `Dashboard · ${BRAND_NAME} home` : `${BRAND_NAME} · Dashboard`}
-          aria-label={`${BRAND_NAME} · Dashboard`}
+          aria-label={`${BRAND_NAME} · Home`}
           className={({ isActive }) =>
             cn(
               "erp-nav-link flex shrink-0 items-center rounded-none border-b border-slate-200/80 text-[13px] font-semibold tracking-tight text-slate-900 no-underline",
@@ -551,6 +555,7 @@ export function AppLayout() {
                 isStoreNavItemVisible(role, n.navKey) &&
                 isPurchaseNavItemVisible(role, n.navKey) &&
                 isProductionNavItemVisible(role, n.navKey) &&
+                isProductionManagerNavItemVisible(role, n.navKey) &&
                 isQaNavItemVisible(role, n.navKey) &&
                 (!n.featureFlag || flags[n.featureFlag]),
             );

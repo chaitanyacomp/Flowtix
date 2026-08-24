@@ -23,6 +23,7 @@ const {
 } = require("./materialWastageSchemaGuard");
 
 const TXN_TYPE = "RM_WASTAGE";
+const PURGING_CONSUMPTION_EVENT = "PURGING_CONSUMPTION";
 
 const WASTAGE_REASON_LABELS = {
   PROCESS_LOSS: "Process Loss",
@@ -39,6 +40,43 @@ function n(v) {
 
 function wastageReasonLabel(reason) {
   return WASTAGE_REASON_LABELS[String(reason)] ?? String(reason || "");
+}
+
+/** True when MWN is machine purging consumption (not generic process wastage). */
+function isPurgingConsumptionNote(note) {
+  if (!note) return false;
+  if (String(note.reason || "").toUpperCase() === "PURGING") return true;
+  return String(note.remarks || "").includes(PURGING_CONSUMPTION_EVENT);
+}
+
+/**
+ * Split MWN rows into process wastage vs PURGING_CONSUMPTION for shift/production reports.
+ * Ledger type remains RM_WASTAGE for both; reporting must not inflate process totals with purging.
+ */
+function summarizeMaterialWastageByCategory(notes) {
+  let processWastageQty = 0;
+  let purgingConsumptionQty = 0;
+  let processNoteCount = 0;
+  let purgingNoteCount = 0;
+  for (const row of Array.isArray(notes) ? notes : []) {
+    const qty = round3(n(row.qty));
+    if (!(qty > 0)) continue;
+    if (isPurgingConsumptionNote(row)) {
+      purgingConsumptionQty = round3(purgingConsumptionQty + qty);
+      purgingNoteCount += 1;
+    } else {
+      processWastageQty = round3(processWastageQty + qty);
+      processNoteCount += 1;
+    }
+  }
+  return {
+    processWastageQty,
+    purgingConsumptionQty,
+    totalWastageQty: round3(processWastageQty + purgingConsumptionQty),
+    processNoteCount,
+    purgingNoteCount,
+    eventTypePurging: PURGING_CONSUMPTION_EVENT,
+  };
 }
 
 async function assertWorkOrderForWastage(tx, workOrderId) {
@@ -432,8 +470,11 @@ async function getRmWastageAggregateStats(db = prisma, { dateFrom, dateTo } = {}
 
 module.exports = {
   TXN_TYPE,
+  PURGING_CONSUMPTION_EVENT,
   WASTAGE_REASON_LABELS,
   wastageReasonLabel,
+  isPurgingConsumptionNote,
+  summarizeMaterialWastageByCategory,
   buildWastageContextForLine,
   createMaterialWastageNote,
   listMaterialWastageNotes,

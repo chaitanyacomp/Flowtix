@@ -302,6 +302,26 @@ async function computePurgingRmForFg(tx, fgItemId, plannedPurgeCountInput) {
 }
 
 /**
+ * Allocate measured actual purging grams across leaf RM using the same BOM mix rules as planning.
+ * @returns {Promise<Array<{ rmItemId: number, qtyKg: number, qtyGrams: number }>>}
+ */
+async function allocateActualPurgingGramsToLeafRm(tx, fgItemId, actualGrams) {
+  const grams = round3(Math.max(0, n(actualGrams)));
+  const totalKg = round3(grams / 1000);
+  if (totalKg <= EPS) return [];
+  const distributed = await distributePurgingKgToLeafRm(tx, fgItemId, totalKg);
+  const lines = [];
+  for (const [rmItemId, qtyKg] of distributed.entries()) {
+    lines.push({
+      rmItemId: Number(rmItemId),
+      qtyKg: round3(qtyKg),
+      qtyGrams: round3(n(qtyKg) * 1000),
+    });
+  }
+  return lines;
+}
+
+/**
  * Merge purging RM into production RM map (returns copy of production-only map).
  */
 function snapshotProductionRmMap(rmNeeded) {
@@ -450,6 +470,8 @@ module.exports = {
   resolveSetupCountForFg,
   resolvePurgeCountForFg,
   computePurgingRmForFg,
+  allocateActualPurgingGramsToLeafRm,
+  distributePurgingKgToLeafRm,
   addPurgingRmForFgLines,
   buildPurgingPlanningSummary,
   mergePurgingIntoRmNeeded,

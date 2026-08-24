@@ -33,6 +33,7 @@
 | 1.1.0 | 2026-07-10 | FT ERP Product Team | WastageType master extension (code/category/description); Lane C Production Report classification analytics ownership clarified |
 | 1.1.1 | 2026-07-15 | FT ERP Product Team | BOM lifecycle — Phase-2 Future Enhancement for BOM Revision FK traceability (docs only) |
 | 1.1.2 | 2026-07-15 | FT ERP Product Team | Cross-ref FT-PD-100 §7.1 Phase-2 planning register (docs only) |
+| 1.1.4 | 2026-08-24 | FT ERP Product Team | Production Run Start Confirmation; actual purging from issued RM; run-linked Production Entry |
 | 1.1.3 | 2026-07-22 | FT ERP Product Team | Interim — REGULAR SO demand vs WO-plan production completion |
 
 **Supersedes:** None.
@@ -192,6 +193,25 @@ Architecture is in [Volume 2, Chapter 4](../02_Business_Architecture/Chapter_04_
 
 ---
 
+### 5.4.5 Production Run Start Confirmation (machine-run WOs)
+
+| Attribute | Specification |
+|-----------|---------------|
+| **Purpose** | Gate first quantity entry per **planned machine run** — operator confirms machine material and mould before production |
+| **Creator / Owner** | Production (Admin may override purge decision where policy allows) |
+| **When required** | Work Order has **machine-run allocations** from REGULAR Machine Run Planning |
+| **Operator confirmation** | Material currently in machine; mould fitted; actual purging required/not required and quantity (grams) |
+| **Actual purging** | Posts `PURGING_CONSUMPTION` against **already-issued Production RM** — **Store stock is not deducted again** |
+| **Wastage separation** | Purging consumption is **not** process wastage (Lane C Production Report classification remains separate) |
+| **Production Entry link** | Each entry on a machine-run WO **SHALL** reference its **run allocation** when the run model applies |
+| **Machine state** | Confirmed run updates machine material state with **optimistic version locking** |
+| **Legacy compatibility** | Work Orders **without** machine runs **SHALL NOT** require start confirmation |
+| **Future scope** | **PLC / machine interlock** (automated lock from machine signals) is premium future scope; **shift-wise reports** and **Shift Over** are the next checkpoint |
+
+Applied schema migration: `20260823200000_production_run_start_confirmation`.
+
+---
+
 ### 5.5 Production Entry
 
 | Attribute | Specification |
@@ -203,7 +223,7 @@ Architecture is in [Volume 2, Chapter 4](../02_Business_Architecture/Chapter_04_
 | **Outputs** | Approved production qty; RM consumption posting; **QA Pending** handoff |
 | **Lifecycle** | Draft → Submitted → Approved → QA Pending \| Rejected (internal) |
 | **Allowed actions** | Record draft; submit; approve; cancel draft |
-| **Validation rules** | Material issued; qty ≤ remaining RM-supported capacity. For REGULAR and NO_QTY, WO qty is the planned **target** (Target Remaining / Use Remaining) and is not a hard entry cap when issued RM supports more FG. Limiting BOM/PMR RM line governs; floor for whole-number FG UOMs. Open **draft** qty is not finalized production — Target Remaining and Finalized Produced stay based on approved qty until Review & Finalize. |
+| **Validation rules** | Material issued; qty ≤ remaining RM-supported capacity. **Machine-run WOs:** run start confirmed for selected run. For REGULAR and NO_QTY, WO qty is the planned **target** (Target Remaining / Use Remaining) and is not a hard entry cap when issued RM supports more FG. Limiting BOM/PMR RM line governs; floor for whole-number FG UOMs. Open **draft** qty is not finalized production — Target Remaining and Finalized Produced stay based on approved qty until Review & Finalize. |
 
 ### REGULAR / NO_QTY excess production authorization
 

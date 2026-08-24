@@ -131,3 +131,14 @@ Allowance bands:
 - **Above 10%:** Blocked on this card; use **Additional RM Issue**.
 
 Changing WO/PMR/RM line/Add Qty/Issue Now after approval invalidates that approval and requires resubmission. Store cannot issue more than the approved Issue Now quantity. Theoretical BOM RM already includes runner; never add runner a second time. Planned allowance supports issue planning only and does **not** post actual wastage. Production records actual wastage later in the mandatory Production Report.
+
+## Check Machine Before Start (machine-run WOs)
+
+When the Work Order uses **machine-run planning**, Production must **Confirm Start** for the selected run before entering quantity:
+
+1. Open **Check Machine Before Start** from the Production Workspace run panel.
+2. Confirm **material currently in the machine** and **mould status**.
+3. Review purging result — when required, actual purging uses **already-issued Production RM** (Store stock is not deducted again).
+4. After confirmation, record production quantity for that run.
+
+Work Orders **without** machine runs skip this step. **PLC / machine interlock** is not included in this release.

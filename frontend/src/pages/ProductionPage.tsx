@@ -93,11 +93,14 @@ import {
   type RegularSoDemandCoverage,
 } from "../lib/regularSoProductionClosureUx";
 import { ProductionWorkspaceCompactPanel } from "../components/erp/production/ProductionWorkspaceCompactPanel";
+import { ProductionRunStartConfirmPanel } from "../components/erp/production/ProductionRunStartConfirmPanel";
+import { hasErpRole, PRODUCTION_WRITE_ROLES } from "../config/erpRoles";
 import { ProductionRecentEntriesPanel } from "../components/erp/production/ProductionRecentEntriesPanel";
 import { ProductionNoQtyOperatorContextBar } from "../components/erp/production/ProductionNoQtyOperatorContextBar";
 import { ProductionNoQtyLoggingActionConsole } from "../components/erp/production/ProductionNoQtyLoggingActionConsole";
 import { ProductionNoQtyWorkQueuePanel } from "../components/erp/production/ProductionNoQtyWorkQueuePanel";
 import { ERPBackNavigation } from "../components/erp/foundation/ERPBackNavigation";
+import type { ProductionRunStartEntryGate } from "../components/erp/production/ProductionRunStartConfirmPanel";
 import {
   shouldEmbedNoQtyRecentEntriesInLoggingWorkbench,
   shouldShowNoQtyOperatorWorkstationChrome,
@@ -135,6 +138,13 @@ import {
   shouldHoldProductionIdentityUnresolved,
   productionScopedUrlAlreadyMatches,
   buildRegularExecutableProductionSearch,
+  shouldAutoOpenExecutableFromProductionWorkspaceList,
+  resolveProductionRegularBack,
+  appendProductionNavHistory,
+  detectProductionNavOscillation,
+  shouldHideEnterProductionCtaInEntryWorkspace,
+  shouldSuppressRecordProductionPrimaryStrip,
+  PRODUCTION_ENTRY_AWAIT_RUN_CONFIRM_MESSAGE,
 } from "../lib/productionNavigationStability";
 import {
   resolveRegularSoProductionDraftProjection,
@@ -377,69 +387,6 @@ function entryUsesRmConsumptionReview(e: ProdEntryRow | undefined): boolean {
 
 
 /** REGULAR flow only — smart back targets from explicit `from` / `source` (UI navigation). */
-function resolveProductionRegularBack(args: {
-  fromParam: string;
-  sourceParam: string;
-  fromStepParam?: string;
-  returnToParam?: string;
-  salesOrderId: number;
-  workOrderId?: number;
-  productionBucket?: string | null;
-  hasActiveDraft?: boolean;
-}): { label: string; to: string } {
-  const from = args.fromParam.trim().toLowerCase();
-  const src = args.sourceParam.trim().toLowerCase();
-  const returnTo = String(args.returnToParam ?? "").trim().toLowerCase();
-  const fromStep = (args.fromStepParam ?? "").trim().toLowerCase();
-  const sid = args.salesOrderId;
-  const woId = Number(args.workOrderId ?? 0);
-  const soQs = sid > 0 ? `?salesOrderId=${encodeURIComponent(String(sid))}` : "";
-  if (from === "dashboard" || src === "dashboard") return { label: "Dashboard", to: "/dashboard" };
-  if (from === "production-workspace" || src === "production-workspace") {
-    const qs = new URLSearchParams();
-    if (args.hasActiveDraft) {
-      qs.set("pwSection", "draftPending");
-    } else if (args.productionBucket === "readyToStart" || args.productionBucket === "inProgress") {
-      qs.set("productionBucket", args.productionBucket);
-      qs.set("pwSection", args.productionBucket === "readyToStart" ? "ready" : "active");
-    }
-    if (woId > 0) qs.set("pwFocus", String(woId));
-    const q = qs.toString();
-    return {
-      label: "Back to Production Workspace",
-      to: q ? `/production?${q}` : "/production",
-    };
-  }
-  if (from === "dispatch" || src === "dispatch" || fromStep === "dispatch") {
-    return {
-      label: "Back to Dispatch",
-      to: sid > 0 ? `/dispatch?salesOrderId=${encodeURIComponent(String(sid))}` : "/dispatch",
-    };
-  }
-  if (from === "pending-actions" || src === "pending-actions" || returnTo === "pending-actions") {
-    return { label: "Back to Pending Actions", to: "/pending-actions" };
-  }
-  if (from === "work-order-workspace" || from === "work-orders" || from === "wo-list") {
-    // Never append bare salesOrderId — that opens obsolete Create WO / production-buffer UI.
-    const qs = new URLSearchParams();
-    if (woId > 0) qs.set("workOrderId", String(woId));
-    const q = qs.toString();
-    return { label: "Back to Work Orders", to: q ? `/work-orders?${q}` : "/work-orders" };
-  }
-  if (from === "sales-orders" || from === "sales-order")
-    return { label: "Sales Orders", to: sid > 0 ? `/sales-orders${soQs}` : "/sales-orders" };
-  if (from === "rm-check" || from === "prepare-wo")
-    return {
-      label: "Prepare Work Order",
-      to: sid > 0 ? `/work-orders/prepare?salesOrderId=${encodeURIComponent(String(sid))}` : "/work-orders/prepare",
-    };
-  // Default: Production Workspace overview (not obsolete Create WO screen).
-  return {
-    label: "Back to Production Workspace",
-    to: buildProductionWorkspaceListHref({ productionBucket: args.productionBucket }),
-  };
-}
-
 type NoQtyRmShortagePayload = {
   shortages?: Array<{
     rmItemId: number;
@@ -579,6 +526,18 @@ export function ProductionPage() {
   const roleUi = useErpRoleUi();
   const canCreateNextRs = useCanCreateNextRs();
   const canProd = auth.user?.role === "ADMIN" || auth.user?.role === "PRODUCTION";
+  const canConfirmProductionStart = hasErpRole(auth.user?.role, PRODUCTION_WRITE_ROLES);
+  const [selectedRunAllocationId, setSelectedRunAllocationId] = React.useState<number | null>(null);
+  const [runStartEntryGate, setRunStartEntryGate] = React.useState<ProductionRunStartEntryGate>({
+    mode: null,
+    loading: false,
+    confirmedRunCount: 0,
+    entryBlocked: false,
+  });
+  const onRunStartEntryGateChange = React.useCallback((gate: ProductionRunStartEntryGate) => {
+    setRunStartEntryGate(gate);
+  }, []);
+  const runStartEntryBlocked = Boolean(runStartEntryGate.entryBlocked);
   const operatorRole = auth.user?.role ?? "";
   const canOpenQaFromProduction = productionRoleCanOpenQaWorkspace(operatorRole);
   const isAdmin = auth.user?.role === "ADMIN";
@@ -645,6 +604,12 @@ export function ProductionPage() {
   const urlWoSelectionAuthorityRef = React.useRef(urlWoSelectionAuthority);
   urlWoSelectionAuthorityRef.current = urlWoSelectionAuthority;
   const urlSelectionAppliedRef = React.useRef(false);
+  /** After explicit Back to workspace list — block auto-open / stale reopen until user picks a WO. */
+  const suppressWorkspaceAutoOpenRef = React.useRef(false);
+  const productionNavGenerationRef = React.useRef(0);
+  const productionNavHistoryRef = React.useRef<string[]>([]);
+  const backToWorkspaceBusyRef = React.useRef(false);
+  const [backToWorkspaceBusy, setBackToWorkspaceBusy] = React.useState(false);
   /** Locked when operator picks a work-queue row (menu entry); prevents NO_QTY/REGULAR layout oscillation. */
   const [userLockedFlowMode, setUserLockedFlowMode] = React.useState<ProductionFlowMode | null>(null);
   const [soOrderTypeById, setSoOrderTypeById] = React.useState<Record<number, string>>({});
@@ -900,6 +865,12 @@ export function ProductionPage() {
     resetProducedQtyField();
   }, [resetProducedQtyField]);
 
+  React.useEffect(() => {
+    if (urlWoSelectionAuthority) {
+      suppressWorkspaceAutoOpenRef.current = false;
+    }
+  }, [urlWoSelectionAuthority]);
+
   /** Left-menu / PA overview: drop stale WO selection so Active Production is primary. */
   React.useEffect(() => {
     const overview =
@@ -1048,6 +1019,17 @@ export function ProductionPage() {
     if (workOrderLineIdFromUrlValid) return workOrderLineIdFromUrl;
     return 0;
   }, [wolId, workOrderLineIdFromUrlValid, workOrderLineIdFromUrl]);
+
+  React.useEffect(() => {
+    if (effectiveScopedWoId > 0) return;
+    setSelectedRunAllocationId(null);
+    setRunStartEntryGate({
+      mode: null,
+      loading: false,
+      confirmedRunCount: 0,
+      entryBlocked: false,
+    });
+  }, [effectiveScopedWoId]);
 
   const scopedExecutionSummary = React.useMemo(
     () => coerceExecutionSummaryForWorkOrder(noQtyExecutionSummary, effectiveScopedWoId),
@@ -1345,6 +1327,15 @@ export function ProductionPage() {
         toast.showError(access.reason ?? "This production item cannot be opened.");
         return;
       }
+      suppressWorkspaceAutoOpenRef.current = false;
+      productionNavGenerationRef.current += 1;
+      setSelectedRunAllocationId(null);
+      setRunStartEntryGate({
+        mode: null,
+        loading: false,
+        confirmedRunCount: 0,
+        entryBlocked: false,
+      });
       resetScopedProductionWorkspaceState();
       const href = productionHrefFromProductionWorkspace({
         orderType: row.orderType,
@@ -1354,6 +1345,10 @@ export function ProductionPage() {
         cycleId: row.cycleId ?? null,
         actionHref: row.actionHref,
       });
+      productionNavHistoryRef.current = appendProductionNavHistory(
+        productionNavHistoryRef.current,
+        href,
+      );
       navigate(href, { replace: true });
     },
     [navigate, resetScopedProductionWorkspaceState, toast],
@@ -2211,6 +2206,9 @@ export function ProductionPage() {
 
   const openExecutableProductionLine = React.useCallback(
     (l: FlatLine) => {
+      if (suppressWorkspaceAutoOpenRef.current && !urlWoSelectionAuthorityRef.current) {
+        return;
+      }
       const woRow = workOrders.find((w) => w.id === l.workOrderId);
       const orderType = String(
         woRow?.salesOrder?.orderType ?? soOrderTypeById[l.salesOrderId] ?? "",
@@ -2219,13 +2217,13 @@ export function ProductionPage() {
         navigateToNoQtyProductionLine(l);
         return;
       }
-      applyLine(l);
       const target = {
         workOrderId: l.workOrderId,
         workOrderLineId: l.id,
         flow: PRODUCTION_FLOW_REGULAR,
       };
       if (productionScopedUrlAlreadyMatches(searchParams, target)) {
+        applyLine(l);
         return;
       }
       const nextSearch = buildRegularExecutableProductionSearch({
@@ -2234,7 +2232,21 @@ export function ProductionPage() {
         from: fromParam || undefined,
         returnTo: searchParams.get("returnTo"),
       });
-      navigate(`/production?${nextSearch}`, { replace: true });
+      const href = `/production?${nextSearch}`;
+      if (detectProductionNavOscillation(productionNavHistoryRef.current, href)) {
+        suppressWorkspaceAutoOpenRef.current = true;
+        return;
+      }
+      // Claim URL authority before state mutation so overview clear cannot fight mid-navigate.
+      urlWoSelectionAuthorityRef.current = true;
+      urlSelectionAppliedRef.current = true;
+      suppressWorkspaceAutoOpenRef.current = false;
+      applyLine(l);
+      productionNavHistoryRef.current = appendProductionNavHistory(
+        productionNavHistoryRef.current,
+        href,
+      );
+      navigate(href, { replace: true });
     },
     [
       workOrders,
@@ -2256,20 +2268,44 @@ export function ProductionPage() {
         window.clearTimeout(productionCloseReturnTimerRef.current);
         productionCloseReturnTimerRef.current = null;
       }
+      suppressWorkspaceAutoOpenRef.current = true;
+      productionNavGenerationRef.current += 1;
+      setSelectedRunAllocationId(null);
+      setRunStartEntryGate({
+        mode: null,
+        loading: false,
+        confirmedRunCount: 0,
+        entryBlocked: false,
+      });
       clearWoLineSelection({ force: true });
       urlSelectionAppliedRef.current = false;
       urlWoSelectionAuthorityRef.current = false;
       setUserLockedFlowMode(null);
       resetScopedProductionWorkspaceState();
-      // Navigate FIRST to card workspace Ready to Start — never orphan NO_QTY Select-WO URLs.
-      navigate(
-        buildPostProductionReportCloseHref({
-          from: searchParams.get("from"),
-          returnTo: searchParams.get("returnTo"),
-          source: searchParams.get("source"),
-        }),
-        { replace: true },
-      );
+      const href = buildPostProductionReportCloseHref({
+        from: searchParams.get("from"),
+        returnTo: searchParams.get("returnTo"),
+        source: searchParams.get("source"),
+      });
+      if (detectProductionNavOscillation(productionNavHistoryRef.current, href)) {
+        // Stay on clean overview — do not bounce.
+        navigate(
+          buildProductionWorkspaceListHref({
+            productionBucket: "readyToStart",
+            from:
+              String(searchParams.get("from") ?? "").trim() === "pending-actions"
+                ? "pending-actions"
+                : null,
+          }),
+          { replace: true },
+        );
+      } else {
+        productionNavHistoryRef.current = appendProductionNavHistory(
+          productionNavHistoryRef.current,
+          href,
+        );
+        navigate(href, { replace: true });
+      }
       if (opts?.refreshAfter) {
         bumpErpRefresh([...PRODUCTION_REPORT_CONFIRM_REFRESH_SCOPES]);
         void refresh().then(() => {
@@ -2278,6 +2314,70 @@ export function ProductionPage() {
       }
     },
     [clearWoLineSelection, navigate, resetScopedProductionWorkspaceState, refresh, searchParams],
+  );
+
+  const navigateBackToProductionWorkspaceList = React.useCallback(
+    (targetHref?: string) => {
+      if (backToWorkspaceBusyRef.current) return;
+      backToWorkspaceBusyRef.current = true;
+      setBackToWorkspaceBusy(true);
+      suppressWorkspaceAutoOpenRef.current = true;
+      productionNavGenerationRef.current += 1;
+      setSelectedRunAllocationId(null);
+      setRunStartEntryGate({
+        mode: null,
+        loading: false,
+        confirmedRunCount: 0,
+        entryBlocked: false,
+      });
+      clearWoLineSelection({ force: true });
+      urlSelectionAppliedRef.current = false;
+      urlWoSelectionAuthorityRef.current = false;
+      setUserLockedFlowMode(null);
+      resetScopedProductionWorkspaceState();
+      const scopedWoId =
+        woIdRef.current > 0
+          ? woIdRef.current
+          : woIdFromUrlValid
+            ? woIdFromUrlPick
+            : 0;
+      const fallback = resolveProductionRegularBack({
+        fromParam: fromParam || "production-workspace",
+        sourceParam: source,
+        fromStepParam,
+        returnToParam: searchParams.get("returnTo") ?? "",
+        salesOrderId: focusSoIdValid ? focusSoId : 0,
+        workOrderId: scopedWoId,
+        productionBucket: productionBucketFilter,
+        hasActiveDraft: false,
+      });
+      const href = String(targetHref ?? fallback.to).trim() || fallback.to;
+      if (!detectProductionNavOscillation(productionNavHistoryRef.current, href)) {
+        productionNavHistoryRef.current = appendProductionNavHistory(
+          productionNavHistoryRef.current,
+          href,
+        );
+      }
+      navigate(href, { replace: true });
+      window.setTimeout(() => {
+        backToWorkspaceBusyRef.current = false;
+        setBackToWorkspaceBusy(false);
+      }, 450);
+    },
+    [
+      clearWoLineSelection,
+      resetScopedProductionWorkspaceState,
+      fromParam,
+      source,
+      fromStepParam,
+      searchParams,
+      focusSoIdValid,
+      focusSoId,
+      woIdFromUrlValid,
+      woIdFromUrlPick,
+      productionBucketFilter,
+      navigate,
+    ],
   );
 
   const handleProductionExecutionClosed = React.useCallback(
@@ -2617,7 +2717,10 @@ export function ProductionPage() {
       !woProductionLifecycleBlocked &&
       !regularCreateFormLockedByDraft &&
       !shouldHideRegularProductionEntryForReport(regularSoCoverage) &&
-      !(navigateNoQtyContext && noQtyBlockProductionEntry),
+      !(navigateNoQtyContext && noQtyBlockProductionEntry) &&
+      !runStartEntryBlocked &&
+      (runStartEntryGate.mode !== "MACHINE_RUN_PLANNING" ||
+        (selectedRunAllocationId != null && selectedRunAllocationId > 0)),
   );
 
   const onRmReadinessLoaded = React.useCallback((data: ProductionRmReadiness | null) => {
@@ -3518,10 +3621,12 @@ export function ProductionPage() {
     const autoPickTarget = pickFirstExecutableProductionLine(flatLines);
     if (!autoPickTarget) return;
 
+    // Canonical workspace list: never auto-open (prevents Back ↔ overview-clear flicker loop).
     if (showProductionWorkspace) {
-      openExecutableProductionLine(autoPickTarget);
+      void shouldAutoOpenExecutableFromProductionWorkspaceList();
       return;
     }
+    if (suppressWorkspaceAutoOpenRef.current) return;
 
     if (productionFlowMode === "NO_QTY") {
       if (!showNoQtyScopedProductionCard) return;
@@ -3742,6 +3847,9 @@ export function ProductionPage() {
           workOrderLineId: wolId,
           producedQty: producedQtyParsed,
           date: prodDate,
+          ...(selectedRunAllocationId != null && selectedRunAllocationId > 0
+            ? { runAllocationId: selectedRunAllocationId }
+            : {}),
         }),
       });
       setEditing(null);
@@ -4560,7 +4668,11 @@ export function ProductionPage() {
       selectedMetrics &&
       selectedMetrics.remainingQty > 1e-6 &&
       canProd &&
-      flatLines.length > 0
+      flatLines.length > 0 &&
+      !shouldHideEnterProductionCtaInEntryWorkspace({
+        alreadyInScopedEntry: effectiveScopedWoId > 0 && wolId > 0,
+        runStartEntryBlocked,
+      })
     ) {
       const step = buildRmReadyProductionNextStep(selected!.workOrderId, wolId);
       return {
@@ -4577,7 +4689,13 @@ export function ProductionPage() {
         },
       };
     }
+    // Never show “Next Step: Record production / Continue production” on the scoped WO
+    // entry screen — Confirm start (or the entry form itself) is the next action.
     if (
+      !shouldSuppressRecordProductionPrimaryStrip({
+        alreadyInScopedEntry: effectiveScopedWoId > 0 && wolId > 0,
+        runStartEntryBlocked,
+      }) &&
       selectedMetrics &&
       selectedMetrics.remainingQty > 1e-6 &&
       canProd &&
@@ -4652,6 +4770,9 @@ export function ProductionPage() {
     resumeWoBusy,
     noQtyShowContinueProductionCta,
     hideContinueForProductionReport,
+    effectiveScopedWoId,
+    wolId,
+    runStartEntryBlocked,
   ]);
 
   const productionPrimaryStripCoversDraft = draftApprovalPendingRegular;
@@ -5091,6 +5212,7 @@ export function ProductionPage() {
       prodQtyPlaceholder={operatorProdQtyPlaceholder}
       unit={selected?.fgItem.unit ?? null}
       disabled={rmProductionEntryBlocked || productionQuantityCompleted}
+      runStartConfirmLocked={runStartEntryBlocked}
       maxAllowedQty={productionEntryMaxQty}
       maxLabelPrefix={
         fromNoQtySo || showRegularRmReadiness ? "Maximum allowed from issued RM" : "Max"
@@ -5099,7 +5221,7 @@ export function ProductionPage() {
       wolId={wolId}
       rmReadinessLoading={rmReadinessLoading}
       rmAllowedNowQty={rmAllowedNowQty}
-      rmProductionEntryBlocked={rmProductionEntryBlocked || productionQuantityCompleted}
+      rmProductionEntryBlocked={rmProductionEntryBlocked || productionQuantityCompleted || runStartEntryBlocked}
       showRmCapHint={!productionOperatorIdentityProps && !hardenedWoSummary}
       posting={posting}
       createFormCanSubmit={createFormCanSubmit}
@@ -5108,7 +5230,8 @@ export function ProductionPage() {
         !selectedMetrics ||
         (selectedMetrics?.remainingQty ?? 0) <= 0 ||
         Boolean(rmProductionEntryBlocked) ||
-        productionQuantityCompleted
+        productionQuantityCompleted ||
+        runStartEntryBlocked
       }
       onUseRemaining={fillOperatorRemainingQty}
       showUseRmSupportedMax={Boolean(showRegularRmReadiness || fromNoQtySo) && rmEntryQtyCap != null}
@@ -5116,7 +5239,8 @@ export function ProductionPage() {
         posting ||
         !(rmEntryQtyCap != null && rmEntryQtyCap > 1e-6) ||
         Boolean(rmProductionEntryBlocked) ||
-        productionQuantityCompleted
+        productionQuantityCompleted ||
+        runStartEntryBlocked
       }
       onUseRmSupportedMax={fillOperatorRmSupportedMaxQty}
       prodSaveFocusBind={prodSaveFocusBind}
@@ -5125,7 +5249,10 @@ export function ProductionPage() {
       onMarkProdSaveShortcut={() => shortcutHints.markFieldShortcutUsed("prodSave")}
       shortcutHints={shortcutHints}
       prodDemoHl={prodDemoHl}
-      saveButtonTitle={opts?.saveButtonTitle}
+      saveButtonTitle={
+        opts?.saveButtonTitle ??
+        (runStartEntryBlocked ? PRODUCTION_ENTRY_AWAIT_RUN_CONFIRM_MESSAGE : undefined)
+      }
       warnings={productionWarnings}
     />
   );
@@ -6997,6 +7124,17 @@ export function ProductionPage() {
                         onContinueLater={() => returnToProductionWorkspaceDashboard({ refreshAfter: true })}
                       />
                     ) : null}
+                    {effectiveScopedWoId > 0 ? (
+                      <ProductionRunStartConfirmPanel
+                        workOrderId={effectiveScopedWoId}
+                        fgItemId={selected?.fgItemId ?? null}
+                        canConfirm={canConfirmProductionStart}
+                        selectedRunAllocationId={selectedRunAllocationId}
+                        onSelectedRunAllocationIdChange={setSelectedRunAllocationId}
+                        onEntryGateChange={onRunStartEntryGateChange}
+                        onChanged={() => void refresh()}
+                      />
+                    ) : null}
                     {showRegularRmReadiness && !draftApprovalPendingRegular ? (
                       <ProductionConciseRmStatus
                         workOrderLineId={wolId}
@@ -7697,7 +7835,10 @@ export function ProductionPage() {
             <DemoFlowBanner />
             <div className="flex flex-wrap items-end justify-between gap-2">
               <div className="min-w-0 space-y-0.5">
-                <PageSmartBackLink defaultTo="/dashboard" defaultLabel="Back to Dashboard" />
+                <PageSmartBackLink
+                  defaultTo={fromPendingActions ? "/pending-actions" : "/dashboard"}
+                  defaultLabel={fromPendingActions ? "Back to Pending Actions" : "Back to Dashboard"}
+                />
                 <h1 className="text-sm font-semibold leading-tight tracking-tight text-slate-900">Production Workspace</h1>
                 <p className="text-[11px] leading-snug text-slate-600">
                   Active shop-floor work across REGULAR, NO_QTY, and Green Level.
@@ -7809,59 +7950,46 @@ export function ProductionPage() {
         <OperationalContextSticky className="sticky top-0 z-20 space-y-1 border-b border-slate-200/90 bg-white/95 pb-1.5 pt-0.5 shadow-sm backdrop-blur-sm">
           <DemoFlowBanner />
           {!productionOperatorHeaderCompressed ? (
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <nav
-              className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[12px] font-medium leading-tight text-slate-900"
-              aria-label="Workflow location"
-            >
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               {productionRegularBackNav ? (
-                <Link
+                <ERPBackNavigation
                   to={productionRegularBackNav.to}
-                  className="text-sky-900 underline decoration-sky-700/40 underline-offset-2 hover:decoration-sky-800"
-                >
-                  ← {productionRegularBackNav.label}
-                </Link>
+                  label={productionRegularBackNav.label}
+                  replace
+                  disabled={backToWorkspaceBusy}
+                  data-testid="production-back-to-workspace"
+                  onNavigate={(target) => navigateBackToProductionWorkspaceList(target.to)}
+                />
               ) : (
                 <PageSmartBackLink defaultTo="/work-orders" defaultLabel="Back to Work Orders" />
               )}
-              <span className="text-slate-300" aria-hidden>
-                /
-              </span>
-              <span className="font-mono font-semibold tabular-nums text-slate-900">
-                {(() => {
-                  const id = woId > 0 ? woId : activeWoForRegularShell?.id ?? 0;
-                  if (!(id > 0)) return "—";
-                  return displayWorkOrderNo(id, activeWoForRegularShell?.docNo ?? null);
-                })()}
-              </span>
-              <span className="text-slate-300" aria-hidden>
-                /
-              </span>
-              <span className="font-semibold text-slate-950">Production</span>
-            </nav>
-            {canProd ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-8 w-8 shrink-0 p-0 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                title="Keyboard shortcuts (?)"
-                aria-label="Keyboard shortcuts"
-                onClick={() => setKbHelpOpen(true)}
-              >
-                <Keyboard className="h-4 w-4" />
-              </Button>
-            ) : null}
+              {canProd ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-8 shrink-0 p-0 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                  title="Keyboard shortcuts (?)"
+                  aria-label="Keyboard shortcuts"
+                  onClick={() => setKbHelpOpen(true)}
+                >
+                  <Keyboard className="h-4 w-4" />
+                </Button>
+              ) : null}
+            </div>
           </div>
           ) : (
             <div className="flex flex-wrap items-center justify-between gap-2">
               {productionRegularBackNav ? (
-                <Link
+                <ERPBackNavigation
                   to={productionRegularBackNav.to}
-                  className="text-[12px] font-medium text-sky-900 underline decoration-sky-700/40 underline-offset-2 hover:decoration-sky-800"
-                >
-                  ← {productionRegularBackNav.label}
-                </Link>
+                  label={productionRegularBackNav.label}
+                  replace
+                  disabled={backToWorkspaceBusy}
+                  data-testid="production-back-to-workspace"
+                  onNavigate={(target) => navigateBackToProductionWorkspaceList(target.to)}
+                />
               ) : (
                 <PageSmartBackLink defaultTo="/work-orders" defaultLabel="Back to Work Orders" />
               )}
@@ -7941,24 +8069,6 @@ export function ProductionPage() {
                 <Link className="text-sky-900 underline-offset-2 hover:underline" to={regularQcBannerHref}>
                   {PRODUCTION_QA_TERMS.OPEN_PRODUCTION_QA}
                 </Link>
-              ) : null}
-              {selectedMetrics &&
-              selectedMetrics.remainingQty > 1e-6 &&
-              !latestDraftForSelectedWo &&
-              !draftApprovalPendingRegular &&
-              canProd &&
-              !rmProductionEntryBlocked &&
-              !hideContinueForProductionReport ? (
-                <button
-                  type="button"
-                  className="text-left text-sky-900 underline-offset-2 hover:underline"
-                  onClick={() => {
-                    document.getElementById("regular-production-entry")?.scrollIntoView({ behavior: "smooth", block: "start" });
-                    window.setTimeout(() => producedQtyRef.current?.focus(), 120);
-                  }}
-                >
-                  Continue production
-                </button>
               ) : null}
             </div>
           ) : null}
@@ -8309,23 +8419,35 @@ export function ProductionPage() {
           </div>
         ) : null}
         {!showNoQtyOperatorChrome && useHardenedProductionShell && effectiveScopedWoId > 0 && canProd && !showProductionWorkspaceCompactLayout ? (
-          <ProductionExecutionPanel
-            key={scopedProductionWorkspaceKey(effectiveScopedWoId, effectiveScopedWolId)}
-            workOrderId={effectiveScopedWoId}
-            orderType={isGreenLevelFlow ? "GREEN_LEVEL" : "NO_QTY"}
-            canOperate={canProd}
-            refreshKey={executionPanelRefreshTick}
-            evaluateTick={completionEvaluateTick}
-            evaluateBatchQty={completionEvaluateBatchQty}
-            workOrderLabel={hardenedWoSummary?.woLabel}
-            itemName={hardenedWoSummary?.itemName}
-            unit={selected?.fgItem?.unit ?? null}
-            onChanged={() => {
-              void refresh();
-            }}
-            onSummaryChange={handleScopedWoExecutionSummaryChange}
-            onExecutionClosed={handleProductionExecutionClosed}
-          />
+          <>
+            <ProductionRunStartConfirmPanel
+              workOrderId={effectiveScopedWoId}
+              fgItemId={selected?.fgItemId ?? null}
+              canConfirm={canConfirmProductionStart}
+              selectedRunAllocationId={selectedRunAllocationId}
+              onSelectedRunAllocationIdChange={setSelectedRunAllocationId}
+              onEntryGateChange={onRunStartEntryGateChange}
+              className="mb-2"
+              onChanged={() => void refresh()}
+            />
+            <ProductionExecutionPanel
+              key={scopedProductionWorkspaceKey(effectiveScopedWoId, effectiveScopedWolId)}
+              workOrderId={effectiveScopedWoId}
+              orderType={isGreenLevelFlow ? "GREEN_LEVEL" : "NO_QTY"}
+              canOperate={canProd}
+              refreshKey={executionPanelRefreshTick}
+              evaluateTick={completionEvaluateTick}
+              evaluateBatchQty={completionEvaluateBatchQty}
+              workOrderLabel={hardenedWoSummary?.woLabel}
+              itemName={hardenedWoSummary?.itemName}
+              unit={selected?.fgItem?.unit ?? null}
+              onChanged={() => {
+                void refresh();
+              }}
+              onSummaryChange={handleScopedWoExecutionSummaryChange}
+              onExecutionClosed={handleProductionExecutionClosed}
+            />
+          </>
         ) : null}
       </OperationalContextSticky>
       {/*

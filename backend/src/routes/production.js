@@ -90,6 +90,13 @@ const {
 } = require("../services/noQtyExecutionBoundaryService");
 const { assertProductionEntryAllowed } = require("../services/productionEntryGateService");
 const {
+  loadStartPreview,
+  listStartConfirmationsForWorkOrder,
+  confirmProductionRunStart,
+  suggestPurgeFromActualCondition,
+} = require("../services/productionRunStartConfirmationService");
+const { PRODUCTION_WRITE_ROLES, PRODUCTION_READ_ROLES } = require("../constants/erpRoles");
+const {
   approveProductionEntryWithLedgerPosting,
   PE_DRAFT,
   PE_APPROVED,
@@ -2118,6 +2125,100 @@ productionRouter.get(
 );
 
 /**
+ * GET /work-orders/:workOrderId/production-run-starts
+ * Lists planned machine runs + confirmation status (legacy label when N/A).
+ */
+productionRouter.get(
+  "/work-orders/:workOrderId/production-run-starts",
+  requireAuth,
+  requireRole([...PRODUCTION_READ_ROLES]),
+  async (req, res, next) => {
+    try {
+      const workOrderId = Number(req.params.workOrderId);
+      if (!Number.isFinite(workOrderId) || workOrderId <= 0) {
+        const err = new Error("Invalid work order id.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const payload = await listStartConfirmationsForWorkOrder(prisma, workOrderId);
+      return res.json(payload);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/**
+ * GET /production-run-allocations/:runAllocationId/start-preview
+ */
+productionRouter.get(
+  "/production-run-allocations/:runAllocationId/start-preview",
+  requireAuth,
+  requireRole([...PRODUCTION_READ_ROLES]),
+  async (req, res, next) => {
+    try {
+      const runAllocationId = Number(req.params.runAllocationId);
+      if (!Number.isFinite(runAllocationId) || runAllocationId <= 0) {
+        const err = new Error("Invalid run allocation id.");
+        err.statusCode = 400;
+        throw err;
+      }
+      const preview = await loadStartPreview(prisma, runAllocationId);
+      return res.json(preview);
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/**
+ * POST /production-run-allocations/:runAllocationId/confirm-start
+ * Atomic start confirmation + optional PURGING_CONSUMPTION (RM_WASTAGE/PURGING).
+ * STORE forbidden.
+ */
+productionRouter.post(
+  "/production-run-allocations/:runAllocationId/confirm-start",
+  requireAuth,
+  requireRole([...PRODUCTION_WRITE_ROLES]),
+  async (req, res, next) => {
+    try {
+      const runAllocationId = Number(req.params.runAllocationId);
+      const schema = z.object({
+        actualMaterialCondition: z.enum([
+          "SAME_MATERIAL_RETAINED",
+          "DIFFERENT_MATERIAL_RETAINED",
+          "MACHINE_CLEARED",
+          "UNKNOWN",
+        ]),
+        actualSetupCondition: z.enum(["SETUP_RETAINED", "NEW_SETUP_COMPLETED"]),
+        actualPurgingRequired: z.boolean().optional(),
+        purgeOverrideReason: z.string().max(500).optional().nullable(),
+        actualPurgeQtyGrams: z.union([z.number(), z.string()]).optional().nullable(),
+        expectedMachineStateVersion: z.number().int().nonnegative().optional().nullable(),
+        idempotencyKey: z.string().max(64).optional().nullable(),
+      });
+      const body = schema.parse(req.body ?? {});
+      // Preview suggestion for response transparency (decision still computed server-side).
+      const suggestion = suggestPurgeFromActualCondition(body.actualMaterialCondition);
+      const result = await confirmProductionRunStart(
+        {
+          runAllocationId,
+          ...body,
+        },
+        { userId: req.user?.userId ?? req.user?.id, role: req.user?.role },
+        prisma,
+      );
+      return res.status(result.idempotent ? 200 : 201).json({
+        ...result,
+        suggestion,
+      });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+/**
  * POST /production-entries — create a DRAFT batch (no RM stock issue). Approve via POST .../approve to issue RM and enable QC.
  */
 productionRouter.post(
@@ -2129,6 +2230,10 @@ productionRouter.post(
       const schema = z.object({
         workOrderLineId: z.number().int(),
         producedQty: z.number().positive(),
+        /** Required for machine-run planning WOs; omitted/null for legacy WOs. */
+        runAllocationId: z.number().int().positive().optional().nullable(),
+        /** Optional cross-check only — authoritative machine comes from the run allocation. */
+        machineId: z.number().int().positive().optional().nullable(),
         /** Optional ISO date or YYYY-MM-DD; defaults to now if omitted */
         date: z.union([z.string(), z.undefined()]).optional(),
       });
@@ -2151,6 +2256,8 @@ productionRouter.post(
         const gate = await assertProductionEntryAllowed(tx, {
           workOrderLineId: body.workOrderLineId,
           producedQty: body.producedQty,
+          runAllocationId: body.runAllocationId ?? null,
+          claimedMachineId: body.machineId ?? null,
           woQtyToleranceMessageBuilder: ({ lineQty: lq, allowedMaxQty, alreadyProduced = 0 }) => {
             const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n).toFixed(3));
             const remainingProducible = Math.max(0, allowedMaxQty - alreadyProduced);
@@ -2158,12 +2265,22 @@ productionRouter.post(
           },
         });
 
+        const resolvedRunAllocationId =
+          gate.productionRunStartGate?.runAllocationId != null
+            ? Number(gate.productionRunStartGate.runAllocationId)
+            : body.runAllocationId != null
+              ? Number(body.runAllocationId)
+              : null;
+
         const prod = await tx.productionEntry.create({
           data: {
             docNo: await allocateDocNo(tx, { docType: DocType.PRODUCTION_ENTRY, date: entryDate ?? new Date() }),
             workOrderLineId: gate.wol.id,
             producedQty: String(body.producedQty),
             workflowStatus: PE_DRAFT,
+            ...(resolvedRunAllocationId != null && Number.isFinite(resolvedRunAllocationId)
+              ? { runAllocationId: resolvedRunAllocationId }
+              : {}),
             ...(entryDate ? { date: entryDate } : {}),
           },
         });
@@ -2229,6 +2346,7 @@ productionRouter.put(
           workOrderLineId: existing.workOrderLineId,
           producedQty: body.producedQty,
           excludeProductionId: id,
+          runAllocationId: existing.runAllocationId ?? null,
           woQtyToleranceMessageBuilder: ({ lineQty: lq, allowedMaxQty, alreadyProduced = 0 }) => {
             const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n).toFixed(3));
             const remaining = Math.max(0, allowedMaxQty - alreadyProduced);

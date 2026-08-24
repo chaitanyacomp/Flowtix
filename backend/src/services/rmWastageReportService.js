@@ -109,6 +109,8 @@ async function buildRmWastageReport(query = {}, db = prisma) {
     const rateInfo = rateByItem.get(r.itemId) || { rate: 0, source: null };
     const rate = n(rateInfo.rate);
     const wastageValue = roundMoney(qty * rate);
+    const isPurging = String(r.reason || "").toUpperCase() === "PURGING"
+      || String(r.remarks || "").includes("PURGING_CONSUMPTION");
     return {
       id: r.id,
       date: r.createdAt,
@@ -121,6 +123,8 @@ async function buildRmWastageReport(query = {}, db = prisma) {
       qty: round3(qty),
       reason: r.reason,
       reasonLabel: wastageReasonLabel(r.reason),
+      category: isPurging ? "PURGING_CONSUMPTION" : "PROCESS_WASTAGE",
+      eventType: isPurging ? "PURGING_CONSUMPTION" : null,
       remarks: r.remarks,
       createdByName: r.createdBy?.name ?? null,
       rate,
@@ -131,9 +135,20 @@ async function buildRmWastageReport(query = {}, db = prisma) {
 
   let totalQty = 0;
   let totalValue = 0;
+  let processWastageQty = 0;
+  let processWastageValue = 0;
+  let purgingConsumptionQty = 0;
+  let purgingConsumptionValue = 0;
   for (const row of detailRows) {
     totalQty = round3(totalQty + row.qty);
     totalValue = roundMoney(totalValue + row.wastageValue);
+    if (row.category === "PURGING_CONSUMPTION") {
+      purgingConsumptionQty = round3(purgingConsumptionQty + row.qty);
+      purgingConsumptionValue = roundMoney(purgingConsumptionValue + row.wastageValue);
+    } else {
+      processWastageQty = round3(processWastageQty + row.qty);
+      processWastageValue = roundMoney(processWastageValue + row.wastageValue);
+    }
   }
 
   const payload = {
@@ -147,6 +162,10 @@ async function buildRmWastageReport(query = {}, db = prisma) {
       totalNotes: total,
       totalWastageQty: totalQty,
       totalWastageValue: totalValue,
+      processWastageQty,
+      processWastageValue,
+      purgingConsumptionQty,
+      purgingConsumptionValue,
     },
     rows: detailRows,
   };

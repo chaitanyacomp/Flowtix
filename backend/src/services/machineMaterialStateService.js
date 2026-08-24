@@ -360,6 +360,7 @@ function derivePlanningCountsFromDetectedRuns(enrichedRuns) {
 
 /**
  * Confirm machine material state (ADMIN/PRODUCTION only — caller enforces role).
+ * Pass expectedVersion for optimistic locking (0 when no row yet).
  */
 async function confirmMachineMaterialState(
   db,
@@ -371,6 +372,7 @@ async function confirmMachineMaterialState(
     sourceWorkOrderId = null,
     sourceRunAllocationId = null,
     confirmedByUserId = null,
+    expectedVersion = null,
   },
 ) {
   const state = String(materialState || "").toUpperCase();
@@ -386,13 +388,37 @@ async function confirmMachineMaterialState(
   }
   const existing = await db.machineMaterialState.findUnique({
     where: { machineId: Number(machineId) },
-    select: { version: true },
+    select: { version: true, id: true },
   });
-  const version = (existing?.version ?? 0) + 1;
-  return db.machineMaterialState.upsert({
-    where: { machineId: Number(machineId) },
-    create: {
-      machineId: Number(machineId),
+  const currentVersion = existing?.version ?? 0;
+  if (expectedVersion != null && Number(expectedVersion) !== Number(currentVersion)) {
+    const err = new Error(
+      "Machine material state was updated by another work order. Reload and confirm again.",
+    );
+    err.statusCode = 409;
+    err.code = "MACHINE_STATE_VERSION_CONFLICT";
+    err.details = { expectedVersion: Number(expectedVersion), currentVersion };
+    throw err;
+  }
+  const nextVersion = currentVersion + 1;
+  if (!existing) {
+    return db.machineMaterialState.create({
+      data: {
+        machineId: Number(machineId),
+        materialState: state,
+        currentProfileFingerprint: profileFingerprint,
+        currentProfileJson: profileJson,
+        sourceWorkOrderId,
+        sourceRunAllocationId,
+        confirmedAt: new Date(),
+        confirmedByUserId,
+        version: nextVersion,
+      },
+    });
+  }
+  const updated = await db.machineMaterialState.updateMany({
+    where: { machineId: Number(machineId), version: currentVersion },
+    data: {
       materialState: state,
       currentProfileFingerprint: profileFingerprint,
       currentProfileJson: profileJson,
@@ -400,19 +426,18 @@ async function confirmMachineMaterialState(
       sourceRunAllocationId,
       confirmedAt: new Date(),
       confirmedByUserId,
-      version,
-    },
-    update: {
-      materialState: state,
-      currentProfileFingerprint: profileFingerprint,
-      currentProfileJson: profileJson,
-      sourceWorkOrderId,
-      sourceRunAllocationId,
-      confirmedAt: new Date(),
-      confirmedByUserId,
-      version,
+      version: nextVersion,
     },
   });
+  if (updated.count !== 1) {
+    const err = new Error(
+      "Machine material state was updated by another work order. Reload and confirm again.",
+    );
+    err.statusCode = 409;
+    err.code = "MACHINE_STATE_VERSION_CONFLICT";
+    throw err;
+  }
+  return db.machineMaterialState.findUnique({ where: { machineId: Number(machineId) } });
 }
 
 module.exports = {

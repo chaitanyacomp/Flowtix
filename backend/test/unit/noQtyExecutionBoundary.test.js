@@ -65,9 +65,22 @@ function createBoundaryDb({ releasedPeriods = [], sheets = [] } = {}) {
  */
 const FG_ITEM = { id: 65, itemType: "FG", unit: "Nos", itemName: "FG Widget" };
 const RM_ITEM = { id: 70, itemType: "RM", unit: "kg", itemName: "RM Steel Coil" };
+const MACHINE = { id: 1, machineCode: "M-01", machineName: "Machine 1", isActive: true };
 
 // 2 kg RM per 1 FG unit (outputQty 1, no process/QC loss, per-piece normalization).
 const RM_PER_FG = 2;
+
+function productionRunsForQty(qty) {
+  return [
+    {
+      fgItemId: FG_ITEM.id,
+      machineId: MACHINE.id,
+      plannedQty: qty,
+      runSequence: 1,
+      purgingRequired: false,
+    },
+  ];
+}
 
 function buildApprovedBom(overrides = {}) {
   return {
@@ -245,10 +258,33 @@ function createExecutionReadyTx(opts = {}) {
         };
         state.workOrders.push(record);
         state.createdWorkOrders.push(data);
-        return { id, docNo };
+        return { id, docNo, lines: record.lines };
       },
       update: async () => ({}),
       findUnique: async ({ where }) => state.workOrders.find((w) => w.id === where.id) ?? null,
+    },
+    machine: {
+      findMany: async () => [MACHINE],
+    },
+    fgProductionStandard: {
+      findMany: async () => [
+        {
+          itemId: FG_ITEM.id,
+          machineId: MACHINE.id,
+          cycleTimeSeconds: 30,
+          piecesPerCycle: 1,
+          standardEfficiencyPercent: 100,
+          isActive: true,
+        },
+      ],
+    },
+    workOrderProductionRunAllocation: {
+      create: async ({ data }) => ({ id: state.seq++, ...data }),
+      createMany: async () => ({ count: 0 }),
+    },
+    requirementSheetPlannedRunAllocation: {
+      findMany: async () => [],
+      deleteMany: async () => ({ count: 0 }),
     },
   };
 
@@ -336,7 +372,9 @@ describe("noQtyExecutionReleaseService.createNoQtyWorkOrderFromLockedSheet", () 
       lines: [{ itemId: FG_ITEM.id, requirementQty: "5000", suggestedWoQtySnapshot: "5000" }],
     });
 
-    const res = await createNoQtyWorkOrderFromLockedSheet(tx, sheet);
+    const res = await createNoQtyWorkOrderFromLockedSheet(tx, sheet, {
+      productionRuns: productionRunsForQty(5000),
+    });
 
     assert.equal(res.created, true);
     assert.ok(res.workOrderId > 0);
@@ -376,7 +414,9 @@ describe("noQtyExecutionReleaseService.createNoQtyWorkOrderFromLockedSheet", () 
       lines: [{ itemId: FG_ITEM.id, requirementQty: "10000", suggestedWoQtySnapshot: "10000" }],
     });
 
-    const res = await createNoQtyWorkOrderFromLockedSheet(tx, sheet);
+    const res = await createNoQtyWorkOrderFromLockedSheet(tx, sheet, {
+      productionRuns: productionRunsForQty(6000),
+    });
 
     assert.equal(res.created, true);
     assert.ok(res.workOrderId > 0);
@@ -431,7 +471,9 @@ describe("noQtyExecutionReleaseService.createNoQtyWorkOrderFromLockedSheet", () 
 
     async function placeWithCommit() {
       try {
-        return await createNoQtyWorkOrderFromLockedSheet(tx, sheet);
+        return await createNoQtyWorkOrderFromLockedSheet(tx, sheet, {
+          productionRuns: productionRunsForQty(10000),
+        });
       } finally {
         releaseLock();
       }

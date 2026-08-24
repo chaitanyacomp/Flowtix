@@ -28,6 +28,7 @@
 
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
+| 1.0.5 | 2026-08-24 | FT ERP Product Team | Production Run Start Confirmation gate; actual purging from issued RM; run-linked Production Entry |
 | 1.0.2 | 2026-07-23 | FT ERP Product Team | REGULAR_SO buffered theoretical RM, rounding-tolerance issue close, RM-supported capacity |
 | 1.0.1 | 2026-07-22 | FT ERP Product Team | Interim — REGULAR SO demand vs WO-plan closure; mandatory Production Report |
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Manufacturing Execution Pipeline — common post–Work Order path |
@@ -112,6 +113,22 @@ PMR freeze rules, issue gates, production readiness, QA disposition, dispatch el
 
 **Material Issue** moves RM from store to production location and reserves/consumes issue capacity. **Production Entry** is gated on **issued** material aligned to frozen PMR—not on live BOM recalculation alone.
 
+### 5.3.1 Production Run Start Confirmation (machine-run WOs)
+
+When a Work Order has **planned machine-run allocations** (REGULAR Machine Run Planning path), **Production** must confirm start for the **specific run** before entering quantity:
+
+| Rule | Contract |
+|------|----------|
+| **Gate** | No Production Entry save/approve on a run until that run’s start is **confirmed** |
+| **Operator inputs** | Material currently in machine; correct mould fitted; actual purging decision and quantity when required |
+| **Actual purging** | Consumes **already-issued Production RM** (`PURGING_CONSUMPTION`); **Store stock is not deducted again** |
+| **Reporting** | Purging is **separate from process wastage** (Production Report Lane C) |
+| **Traceability** | Production Entry carries **run allocation** linkage; machine material state uses **optimistic version locking** |
+| **Legacy WOs** | WOs **without** machine runs skip this gate — historical behaviour preserved |
+| **Future** | **PLC / machine interlock** is premium future scope; **shift-wise reports** and **Shift Over** are the next checkpoint |
+
+---
+
 ### 5.4 QA authorizes dispatch
 
 Only **Accepted Quantity** from **QA Inspection** becomes dispatch-eligible FG. Rejected, rework, and scrap paths are disposition-controlled before stock is released for shipment.
@@ -124,7 +141,7 @@ Each transition is engine-gated:
 |------|-----|-------------------|
 | Work Order | PMR | WO active; BOM/planning basis available |
 | PMR | Material Issue | PMR submitted; stock and location valid |
-| Material Issue | Production | Issued RM supports intended FG qty |
+| Material Issue | Production | Issued RM supports intended FG qty; **for machine-run WOs:** Production Run Start Confirmation for the selected run |
 | Production | QA | Production Entry approved; batch recorded |
 | QA | Dispatch | Accepted qty released |
 | Dispatch | Sales Bill | Shipment recorded; commercial rules met |
@@ -159,7 +176,9 @@ PMR (frozen RM requirement)
     ↓
 Material Issue (RM to production)
     ↓
-Production Entry (FG manufactured)
+Production Run Start Confirmation (machine-run WOs only — material + mould + actual purging)
+    ↓
+Production Entry (FG manufactured; linked to run allocation when applicable)
     ↓
 QA Inspection (accept / reject / rework / scrap)
     ↓

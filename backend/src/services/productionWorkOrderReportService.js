@@ -907,10 +907,16 @@ async function receiveProductionRmReturnPending(input, actor = {}, db = prisma) 
   const postedWastage = db.materialWastageNote?.findMany
     ? await db.materialWastageNote.findMany({
         where: { workOrderId: receivedPending.workOrderId, itemId: receivedPending.itemId },
-        select: { qty: true },
+        select: { qty: true, reason: true, remarks: true },
       })
     : [];
-  const alreadyPostedWastageQty = round3(postedWastage.reduce((sum, row) => sum + n(row.qty), 0));
+  // Exclude PURGING_CONSUMPTION from process scrap auto-post baseline.
+  const { isPurgingConsumptionNote } = require("./materialWastageService");
+  const alreadyPostedWastageQty = round3(
+    postedWastage
+      .filter((row) => !isPurgingConsumptionNote(row))
+      .reduce((sum, row) => sum + n(row.qty), 0),
+  );
   const wastageQtyToPost = round3(Math.max(0, scrapQty - alreadyPostedWastageQty));
   let wastageNote = null;
   // Finalized report wastage must leave PRODUCTION USABLE for Regular and NO_QTY.

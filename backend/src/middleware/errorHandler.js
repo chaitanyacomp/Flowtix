@@ -114,16 +114,13 @@ function mapPrismaClientError(err) {
     const raw = typeof err.message === "string" ? err.message : "";
     // Prefer actionable message when callers already annotated the error.
     const annotated = /tally|identity|migration/i.test(raw) ? raw : null;
-    // Unknown select/include fields are programmer bugs (not client input) — do not mask as 400.
+    // Unknown select/include fields / Invalid create invocations are server bugs —
+    // never leak Prisma payloads or code fragments to the UI.
     const looksLikeServerSchemaBug = /Unknown field|Invalid `[^`]+` invocation/i.test(raw);
     if (looksLikeServerSchemaBug) {
-      const isProd = process.env.NODE_ENV === "production";
-      const firstLine = raw.split("\n").map((l) => l.trim()).find((l) => l.length > 0) || raw;
       return {
         status: 500,
-        message: isProd
-          ? "Something went wrong. Please try again later."
-          : firstLine.slice(0, 500),
+        message: "Could not complete this action. Please try again or contact Admin.",
         code: "INTERNAL_PRISMA_VALIDATION",
       };
     }

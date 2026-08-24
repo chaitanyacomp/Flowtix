@@ -18,6 +18,6 @@
 | Master lifecycle labels | Product architecture may describe Suspend/Archive; runtime uses Active/Inactive (`isActive`) until schema expands |
 | Master list pagination | Large Item masters are filtered/sorted/paged in the browser after load; server-side page tokens for all masters remain a future hardening |
 | Extra item categories | Packing / Stores & Spares / Tool / Scrap are not separate `ItemType` values; packing import maps to CONSUMABLE when approved |
-| Machine purging execution | Planning detects purging profile (incl. UNKNOWN → conservative purge) and estimates RM; **actual purging consumption posting** and **shop-floor setup confirmation** remain future scope |
+| Machine purging execution | **Implemented (2026-08-24):** Production Run Start Confirmation per planned machine run; actual purging consumes issued Production RM (`PURGING_CONSUMPTION`); purging separate from process wastage. **Future:** PLC / machine interlock (premium); shift-wise reports and Shift Over (next checkpoint) |
 
 Fill site-specific notes in FT-DEP-013 when deploying.

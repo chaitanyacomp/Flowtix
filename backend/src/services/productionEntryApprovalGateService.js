@@ -111,6 +111,7 @@ async function approveProductionEntryWithLedgerPosting(tx, input) {
     workOrderLineId: wol.id,
     producedQty: prod.producedQty,
     excludeProductionId: productionEntryId,
+    runAllocationId: prod.runAllocationId ?? null,
     woQtyToleranceMessageBuilder: input.woQtyToleranceMessageBuilder,
   });
 

@@ -146,6 +146,25 @@ enum MachineMaterialStateKind {
   UNKNOWN
 }
 
+/// Operator-confirmed machine material condition at production-run start.
+enum ProdStartMaterialCondition {
+  SAME_MATERIAL_RETAINED
+  DIFFERENT_MATERIAL_RETAINED
+  MACHINE_CLEARED
+  UNKNOWN
+}
+
+/// Operator-confirmed physical mould/setup condition at production-run start.
+enum ProdStartSetupCondition {
+  SETUP_RETAINED
+  NEW_SETUP_COMPLETED
+}
+
+enum ProdRunStartConfirmStatus {
+  CONFIRMED
+  REVERSED
+}
+
 /// Planned-run purging detection outcome (backend-derived).
 enum PurgingDetectionStatus {
   AUTO_REQUIRED
@@ -613,6 +632,8 @@ model User {
   rsRunPurgingOverrides                    RequirementSheetPlannedRunAllocation[] @relation("RsRunPurgingOverrideBy")
   rsRunPhysicalSetupOverrides              RequirementSheetPlannedRunAllocation[] @relation("RsRunPhysicalSetupOverrideBy")
   machineMaterialStatesConfirmed           MachineMaterialState[]           @relation("MachineMaterialStateConfirmedBy")
+  woRunStartConfirmationsConfirmed         WorkOrderProductionRunStartConfirmation[] @relation("WoRunStartConfConfirmedBy")
+  woRunStartPurgeOverrides                 WorkOrderProductionRunStartConfirmation[] @relation("WoRunStartConfPurgeOverrideBy")
   reopenedSalesOrderCycles                 SalesOrderCycle[]                @relation("SalesOrderCycleReopenedBy")
   quotationsApprovalCancelled              Quotation[]                      @relation("QuotationApprovalCancelledBy")
   purchaseBillsExportReset                 PurchaseBill[]                   @relation("PurchaseBillExportResetBy")
@@ -953,6 +974,8 @@ model Item {
   fgProductionStandards           FgProductionStandard[]
   regularSoPlanningRunAllocations RegularSoPlanningRunAllocation[] @relation("RegularSoPlanningRunFg")
   workOrderProductionRunAllocations WorkOrderProductionRunAllocation[] @relation("WoProductionRunFg")
+  woRunStartConfirmationsFg         WorkOrderProductionRunStartConfirmation[] @relation("WoRunStartConfFg")
+  woRunPurgeRmLines                 WorkOrderProductionRunPurgeRmLine[]       @relation("WoRunPurgeRmItem")
   requirementSheetPlannedRunAllocations RequirementSheetPlannedRunAllocation[] @relation("RsPlannedRunFg")
 
   @@index([itemType])
@@ -2413,6 +2436,7 @@ model MaterialWastageNote {
   productionMaterialRequest ProductionMaterialRequest? @relation(fields: [productionMaterialRequestId], references: [id], onDelete: SetNull)
   item                      Item                       @relation(fields: [itemId], references: [id], onDelete: Restrict)
   createdBy                 User?                      @relation("MaterialWastageCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  purgeRmLine               WorkOrderProductionRunPurgeRmLine?
 
   @@index([workOrderId])
   @@index([productionMaterialRequestId])
@@ -2962,6 +2986,7 @@ model WorkOrder {
   monthlyProductionPlan           MonthlyProductionPlan?           @relation("MppGreenLevelWorkOrders", fields: [monthlyProductionPlanId], references: [id], onDelete: SetNull)
   lines                           WorkOrderLine[]
   productionRuns                  WorkOrderProductionRunAllocation[]
+  productionRunStartConfirmations WorkOrderProductionRunStartConfirmation[]
   machineMaterialStateSources     MachineMaterialState[]             @relation("MachineMaterialStateSourceWo")
   materialAllocations             MaterialAllocation[]
   scrapLoss                       ScrapRecord[]
@@ -3359,6 +3384,8 @@ model WorkOrderProductionRunAllocation {
   physicalSetupOverrideReason  String?                   @db.VarChar(500)
   physicalSetupOverrideByUserId Int?
   physicalSetupOverrideAt      DateTime?
+  /// Soft-inactive: cancelled / superseded planned runs cannot receive production entries.
+  isActive                     Boolean                   @default(true)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -3369,6 +3396,8 @@ model WorkOrderProductionRunAllocation {
   shift         Shift?         @relation(fields: [shiftId], references: [id], onDelete: SetNull, map: "WoProdRunAlloc_shift_fkey")
   purgingOverrideBy User? @relation("WoRunPurgingOverrideBy", fields: [purgingOverrideByUserId], references: [id], onDelete: SetNull, map: "WoProdRunAlloc_purgeOvBy_fkey")
   physicalSetupOverrideBy User? @relation("WoRunPhysicalSetupOverrideBy", fields: [physicalSetupOverrideByUserId], references: [id], onDelete: SetNull, map: "WoProdRunAlloc_setupOvBy_fkey")
+  startConfirmation WorkOrderProductionRunStartConfirmation?
+  productionEntries ProductionEntry[]
 
   @@unique([workOrderId, fgItemId, runSequence], map: "WoProdRunAlloc_wo_fg_seq_key")
   @@index([workOrderId], map: "WoProdRunAlloc_wo_idx")
@@ -3376,6 +3405,7 @@ model WorkOrderProductionRunAllocation {
   @@index([fgItemId], map: "WoProdRunAlloc_fg_idx")
   @@index([machineId], map: "WoProdRunAlloc_machine_idx")
   @@index([shiftId], map: "WoProdRunAlloc_shift_idx")
+  @@index([isActive], map: "WoProdRunAlloc_isActive_idx")
 }
 
 /// NO_QTY locked RS: draft machine production-run allocations before WO create.
@@ -3442,6 +3472,84 @@ model MachineMaterialState {
   @@index([materialState], map: "MachMatState_materialState_idx")
   @@index([sourceWorkOrderId], map: "MachMatState_sourceWo_idx")
   @@index([confirmedByUserId], map: "MachMatState_confirmedBy_idx")
+}
+
+/// Production-start confirmation for one planned machine-run allocation (actual purging + state).
+/// Traceability event type for posted RM write-off: PURGING_CONSUMPTION (stock = RM_WASTAGE + reason PURGING).
+model WorkOrderProductionRunStartConfirmation {
+  id                         Int                        @id @default(autoincrement())
+  workOrderId                Int
+  runAllocationId            Int                        @unique(map: "WoRunStartConf_runAlloc_key")
+  machineId                  Int
+  fgItemId                   Int
+  workOrderLineId            Int?
+  bomId                      Int?
+  bomRevisionLabel           String?                    @db.VarChar(64)
+  status                     ProdRunStartConfirmStatus  @default(CONFIRMED)
+
+  plannedProfileFingerprint  String?                    @db.VarChar(64)
+  targetProfileFingerprint   String?                    @db.VarChar(64)
+  plannedPurgingRequired     Boolean                    @default(false)
+  plannedDetectionStatus     PurgingDetectionStatus     @default(CONFIRMATION_REQUIRED)
+  plannedDetectionReason     String?                    @db.VarChar(500)
+  plannedPurgeQtyGrams       Decimal                    @default(0) @db.Decimal(18, 4)
+
+  actualMaterialCondition    ProdStartMaterialCondition
+  actualSetupCondition       ProdStartSetupCondition
+  suggestedPurgingRequired   Boolean
+  suggestedPurgingReason     String?                    @db.VarChar(500)
+  actualPurgingRequired      Boolean
+  purgeOverrideReason        String?                    @db.VarChar(500)
+  purgeOverrideByUserId      Int?
+  purgeOverrideAt            DateTime?
+
+  actualPurgeQtyGrams        Decimal                    @default(0) @db.Decimal(18, 4)
+  purgeVarianceGrams         Decimal                    @default(0) @db.Decimal(18, 4)
+
+  machineStateVersionBefore  Int?
+  machineStateVersionAfter   Int?
+  confirmedByUserId          Int
+  confirmedAt                DateTime                   @default(now())
+  /// Client retry key — unique when present (idempotent confirm).
+  idempotencyKey             String?                    @unique(map: "WoRunStartConf_idem_key") @db.VarChar(64)
+  createdAt                  DateTime                   @default(now())
+  updatedAt                  DateTime                   @updatedAt
+
+  workOrder       WorkOrder                         @relation(fields: [workOrderId], references: [id], onDelete: Cascade, map: "WoRunStartConf_wo_fkey")
+  runAllocation   WorkOrderProductionRunAllocation  @relation(fields: [runAllocationId], references: [id], onDelete: Restrict, map: "WoRunStartConf_runAlloc_fkey")
+  machine         Machine                           @relation(fields: [machineId], references: [id], onDelete: Restrict, map: "WoRunStartConf_machine_fkey")
+  fgItem          Item                              @relation("WoRunStartConfFg", fields: [fgItemId], references: [id], onDelete: Restrict, map: "WoRunStartConf_fg_fkey")
+  confirmedBy     User                              @relation("WoRunStartConfConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: Restrict, map: "WoRunStartConf_confBy_fkey")
+  purgeOverrideBy User?                             @relation("WoRunStartConfPurgeOverrideBy", fields: [purgeOverrideByUserId], references: [id], onDelete: SetNull, map: "WoRunStartConf_purgeOvBy_fkey")
+  purgeRmLines    WorkOrderProductionRunPurgeRmLine[]
+
+  @@index([workOrderId], map: "WoRunStartConf_wo_idx")
+  @@index([machineId], map: "WoRunStartConf_machine_idx")
+  @@index([fgItemId], map: "WoRunStartConf_fg_idx")
+  @@index([status], map: "WoRunStartConf_status_idx")
+  @@index([confirmedByUserId], map: "WoRunStartConf_confBy_idx")
+}
+
+/// Leaf-RM allocation lines for a start-confirmation purge (PURGING_CONSUMPTION).
+model WorkOrderProductionRunPurgeRmLine {
+  id                    Int     @id @default(autoincrement())
+  startConfirmationId   Int
+  itemId                Int
+  plannedQtyKg          Decimal @default(0) @db.Decimal(18, 6)
+  actualQtyKg           Decimal @db.Decimal(18, 6)
+  fromLocationId        Int
+  materialWastageNoteId Int?    @unique(map: "WoRunPurgeRm_mwn_key")
+  createdAt             DateTime @default(now())
+
+  startConfirmation   WorkOrderProductionRunStartConfirmation @relation(fields: [startConfirmationId], references: [id], onDelete: Cascade, map: "WoRunPurgeRm_conf_fkey")
+  item                Item                                    @relation("WoRunPurgeRmItem", fields: [itemId], references: [id], onDelete: Restrict, map: "WoRunPurgeRm_item_fkey")
+  fromLocation        Location                                @relation("WoRunPurgeRmFromLoc", fields: [fromLocationId], references: [id], onDelete: Restrict, map: "WoRunPurgeRm_fromLoc_fkey")
+  materialWastageNote MaterialWastageNote?                    @relation(fields: [materialWastageNoteId], references: [id], onDelete: SetNull, map: "WoRunPurgeRm_mwn_fkey")
+
+  @@index([startConfirmationId], map: "WoRunPurgeRm_conf_idx")
+  @@index([itemId], map: "WoRunPurgeRm_item_idx")
+  @@index([fromLocationId], map: "WoRunPurgeRm_fromLoc_idx")
+  @@unique([startConfirmationId, itemId], map: "WoRunPurgeRm_conf_item_key")
 }
 
 
@@ -3558,6 +3666,7 @@ model Machine {
   regularSoPlanningRunAllocations RegularSoPlanningRunAllocation[]
   workOrderProductionRunAllocations WorkOrderProductionRunAllocation[]
   requirementSheetPlannedRunAllocations RequirementSheetPlannedRunAllocation[]
+  productionRunStartConfirmations WorkOrderProductionRunStartConfirmation[]
   materialState MachineMaterialState?
 
   @@index([isActive, machineName])
@@ -3655,8 +3764,11 @@ model ProductionEntry {
   date            DateTime                      @default(now())
   /// DRAFT: editable; no RM stock issue; excluded from QC queue. APPROVED: locked; RM issued; eligible for QC.
   workflowStatus  ProductionEntryWorkflowStatus @default(DRAFT)
+  /// New-model machine-run planning: links PE to the confirmed planned run. Null = historical / legacy WO.
+  runAllocationId Int?
 
   workOrderLine   WorkOrderLine                  @relation(fields: [workOrderLineId], references: [id], onDelete: Cascade)
+  runAllocation   WorkOrderProductionRunAllocation? @relation(fields: [runAllocationId], references: [id], onDelete: Restrict, map: "Pe_runAlloc_fkey")
   qcEntries       QcEntry[]
   rmConsumptions  ProductionEntryRmConsumption[]
   dispatchFgTraceAllocations DispatchFgTraceAllocation[]
@@ -3664,6 +3776,7 @@ model ProductionEntry {
   @@index([workOrderLineId])
   @@index([date])
   @@index([workflowStatus])
+  @@index([runAllocationId], map: "Pe_runAlloc_idx")
 }
 
 /// Immutable RM standard vs actual snapshot per approved production batch (REGULAR).
@@ -3842,6 +3955,7 @@ model Location {
   materialReturnsFrom   MaterialReturnNote[] @relation("MaterialReturnFromLocation")
   materialReturnsTo     MaterialReturnNote[] @relation("MaterialReturnToLocation")
   materialWastageFrom   MaterialWastageNote[] @relation("MaterialWastageFromLocation")
+  woRunPurgeRmFrom      WorkOrderProductionRunPurgeRmLine[] @relation("WoRunPurgeRmFromLoc")
   materialAllocations   MaterialAllocation[]
 
   @@index([locationType])

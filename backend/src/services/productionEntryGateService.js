@@ -142,6 +142,8 @@ async function resolveProductionEntryGateContext(tx, workOrderLineId) {
  *   workOrderLineId: number;
  *   producedQty: number | string;
  *   excludeProductionId?: number;
+ *   runAllocationId?: number | null;
+ *   claimedMachineId?: number | null;
  *   woQtyToleranceMessageBuilder?: (args: { lineQty: number; allowedMaxQty: number; totalProducedQty: number; alreadyProduced?: number }) => string;
  * }} input
  */
@@ -191,6 +193,15 @@ async function assertProductionEntryAllowed(tx, input) {
     skipPmrGate: true,
   });
 
+  // 6b. Per-run machine start confirmation (legacy WOs with no allocations skip)
+  const { assertProductionRunStartConfirmed } = require("./productionRunStartConfirmationService");
+  const startGate = await assertProductionRunStartConfirmed(tx, {
+    workOrderId: ctx.wo.id,
+    fgItemId: ctx.wol.fgItemId,
+    runAllocationId: input.runAllocationId ?? null,
+    claimedMachineId: input.claimedMachineId ?? null,
+  });
+
   // 7. WO quantity tolerance validation
   const defaultMessageBuilder = ({ lineQty, allowedMaxQty, totalProducedQty, alreadyProduced = 0 }) => {
     const fmt = (n) => (Number.isInteger(n) ? String(n) : Number(n).toFixed(3));
@@ -208,7 +219,7 @@ async function assertProductionEntryAllowed(tx, input) {
     messageBuilder: input.woQtyToleranceMessageBuilder ?? defaultMessageBuilder,
   });
 
-  return { ...ctx, readiness: readinessResult };
+  return { ...ctx, readiness: readinessResult, productionRunStartGate: startGate };
 }
 
 module.exports = {

@@ -542,6 +542,14 @@
     @apply ring-2 ring-sky-500/40 ring-offset-2 ring-offset-slate-50;
   }
 
+  .erp-back-nav-primary:active:not(:disabled) {
+    @apply border-slate-400 bg-slate-100 text-slate-950 shadow-none;
+  }
+
+  .erp-back-nav-primary:disabled {
+    @apply cursor-not-allowed border-slate-200 bg-slate-50 text-slate-400 shadow-none;
+  }
+
   /** Legacy alias — operational pages should use erp-back-nav-primary via ERPBackNavigation. */
   .erp-back-nav-chip {
     @apply erp-back-nav-primary;

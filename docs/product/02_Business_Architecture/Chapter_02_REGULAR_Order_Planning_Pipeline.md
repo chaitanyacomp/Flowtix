@@ -196,7 +196,11 @@ Completing machine planning is the **Store handoff**. While handed off, Producti
 - Detect change / first load / unknown profile → plan purge where required.
 - **UNKNOWN** machine material state uses a **conservative purge** (purge planned; counted in RM readiness). UNKNOWN does **not** block Complete Machine Planning.
 
-**Future scope (not in this checkpoint):** actual purging consumption posting and shop-floor setup confirmation remain out of scope—planning detection and RM estimate only.
+**Execution checkpoint (2026-08-24):** After Store creates the Work Order and RM is issued, **Production** must **confirm production start** for each **planned machine run** before recording quantity on that run. The operator confirms **material currently in the machine** and **mould status** in the **Check Machine Before Start** modal. When purging is required, **actual purging** consumes **already-issued Production RM** via `PURGING_CONSUMPTION` MaterialWastageNote lines — **Store stock is not deducted again**. Purging is reported **separately from process wastage** (Lane C Production Report classification). Each **Production Entry** is linked to its **run allocation** when machine-run planning applies.
+
+**Historical compatibility:** Work Orders **without** machine-run allocations remain **legacy-compatible** — no start confirmation is required and Production Entry behaves as before.
+
+**Future scope (premium / next checkpoints):** **PLC / machine interlock** (automated start lock from machine signals) remains out of scope. **Shift-wise reports** and **Shift Over** are the **next checkpoint** after this production-start and actual-purging milestone.
 
 #### 6.2.4 Applied schema migrations
 
@@ -205,6 +209,7 @@ Completing machine planning is the **Store handoff**. While handed off, Producti
 | `20260823110000_work_order_planned_setup_count` | Planned setup count on Work Order context |
 | `20260823120000_wo_production_run_allocations` | Persisted WO / SO production-run allocations |
 | `20260823130000_regular_so_machine_planning_completed` | SO machine-planning completed snapshot (`machinePlanningCompleted`, completed at/by) |
+| `20260823200000_production_run_start_confirmation` | Per-run start confirmation; actual purging RM consumption (`PURGING_CONSUMPTION`); machine-state version lock; Production Entry `runAllocationId` link |
 
 ---
 
@@ -427,7 +432,8 @@ Control Tower does not execute Store/Purchase actions; it escalates visibility.
 | **RPL-14** | NO_QTY planning entry points **must not** appear as primary path for REGULAR orders. |
 | **RPL-15** | REGULAR_SO **Machine Run Planning** is Production-owned; **Store creates** the Work Order after handoff; **Admin** retains reopen/override authority. |
 | **RPL-16** | Machine **production runs**, **physical setups**, and **material purges** are distinct planning concepts; UNKNOWN material profile uses **conservative purge** without blocking Complete. |
-| **RPL-17** | Actual purging **consumption** and setup **confirmation** are future scope—detection and planned RM only in this checkpoint. |
+| **RPL-17** | **Production Run Start Confirmation** is required per planned machine run before quantity entry when run allocations exist; actual purging consumes issued Production RM only (no second Store deduction); purging is separate from process wastage; legacy WOs without runs remain compatible. |
+| **RPL-18** | **PLC / machine interlock** and **Shift Over / shift-wise reporting** are future checkpoints — not in this release. |
 
 ---
 
@@ -500,6 +506,7 @@ flowchart TB
 
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
+| 1.0.5 | 2026-08-24 | FT ERP Product Team | Production Run Start Confirmation + actual purging consumption (migration 20260823200000); execution gate before quantity entry |
 | 1.0.4 | 2026-08-23 | FT ERP Product Team | Machine Run Planning, purging detection, Store handoff, migrations 2026082311–130000 |
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial REGULAR Order planning pipeline |
 

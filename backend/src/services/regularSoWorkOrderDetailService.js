@@ -11,6 +11,7 @@ const { buildRegularSoPlanningSnapshotView } = require("./regularSoPlanningSnaps
 const { loadGrossIssuedByWorkOrder, loadReturnedByWorkOrder } = require("./materialReturnService");
 const { getApprovedProducedQtyByWorkOrderLineIds } = require("./productionMetrics");
 const { round3 } = require("./bomExplosionService");
+const { summarizeMaterialWastageByCategory } = require("./materialWastageService");
 
 const STOCK_EPS = 1e-6;
 
@@ -120,7 +121,7 @@ async function buildWorkOrderDetail(db, workOrderId, actorRole = null) {
         take: 5,
         select: { id: true, status: true, confirmedAt: true, createdAt: true },
       },
-      materialWastageNotes: { select: { qty: true } },
+      materialWastageNotes: { select: { qty: true, reason: true, remarks: true } },
     },
   });
   if (!wo) {
@@ -182,7 +183,9 @@ async function buildWorkOrderDetail(db, workOrderId, actorRole = null) {
   cumulativeReturned = round3(cumulativeReturned);
   const netIssued = round3(Math.max(0, cumulativeIssued - cumulativeReturned));
 
-  const wastageQty = round3((wo.materialWastageNotes || []).reduce((s, w) => s + n(w.qty), 0));
+  const wastageSummary = summarizeMaterialWastageByCategory(wo.materialWastageNotes || []);
+  const wastageQty = wastageSummary.processWastageQty;
+  const purgingConsumptionQty = wastageSummary.purgingConsumptionQty;
 
   const remainingIssueBalance = round3(Math.max(0, theoreticalRm - pmrIssued - pmrWaived));
   const supportedProductionCapacity =
@@ -303,6 +306,8 @@ async function buildWorkOrderDetail(db, workOrderId, actorRole = null) {
       cumulativeReturnedQty: cumulativeReturned,
       netIssuedQty: netIssued,
       wastageQty,
+      purgingConsumptionQty,
+      processWastageQty: wastageQty,
       remainingIssueBalance,
       supportedProductionCapacityQty: supportedProductionCapacity,
       pmrIssuedQty: pmrIssued,

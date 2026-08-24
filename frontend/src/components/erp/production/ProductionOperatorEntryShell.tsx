@@ -9,6 +9,7 @@ import {
   productionOperatorFieldLabelClass,
   productionOperatorQtyInputClass,
 } from "../../../lib/productionOperatorUx";
+import { PRODUCTION_ENTRY_AWAIT_RUN_CONFIRM_MESSAGE } from "../../../lib/productionNavigationStability";
 import { PRODUCTION_OPERATOR_ENTRY_GRID } from "../../../lib/productionOperatorWorkbenchLayout";
 import { Input } from "../../ui/input";
 import { Button } from "../../ui/button";
@@ -43,6 +44,8 @@ export type ProductionOperatorEntryFieldsProps = {
   prodQtyPlaceholder: string;
   unit?: string | null;
   disabled?: boolean;
+  /** When true, entire entry row (incl. date) is locked pending machine-run start confirmation. */
+  runStartConfirmLocked?: boolean;
   maxAllowedQty?: number | null;
   maxLabelPrefix?: string;
   producedQtyValid: boolean;
@@ -78,6 +81,7 @@ export function ProductionOperatorEntryFields({
   prodQtyPlaceholder,
   unit,
   disabled,
+  runStartConfirmLocked = false,
   maxAllowedQty,
   maxLabelPrefix,
   producedQtyValid,
@@ -103,23 +107,53 @@ export function ProductionOperatorEntryFields({
   warnings,
 }: ProductionOperatorEntryFieldsProps) {
   const unitLabel = formatProductionOperatorUnitLabel(unit);
+  const fieldsDisabled = Boolean(disabled || runStartConfirmLocked);
 
   return (
     <div className="space-y-1.5" data-testid="production-operator-entry-fields">
+      {runStartConfirmLocked ? (
+        <p
+          className="text-[12px] font-medium text-amber-900"
+          data-testid="production-entry-await-run-confirm"
+          role="status"
+        >
+          {PRODUCTION_ENTRY_AWAIT_RUN_CONFIRM_MESSAGE}
+        </p>
+      ) : null}
       <div className={PRODUCTION_OPERATOR_ENTRY_GRID}>
         <label className="grid shrink-0 gap-1 self-end">
           <span className={productionOperatorFieldLabelClass}>Date</span>
           <Input
             type="date"
-            className={productionOperatorDateInputClass}
+            data-testid="production-date-input"
+            className={cn(
+              productionOperatorDateInputClass,
+              fieldsDisabled && "pointer-events-none cursor-not-allowed opacity-50",
+            )}
             value={prodDate}
-            onChange={(e) => onProdDateChange(e.target.value)}
-            required
+            onChange={(e) => {
+              if (fieldsDisabled) return;
+              onProdDateChange(e.target.value);
+            }}
+            onClick={(e) => {
+              if (fieldsDisabled) {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+            }}
+            onKeyDown={(e) => {
+              if (fieldsDisabled) e.preventDefault();
+            }}
+            disabled={fieldsDisabled}
+            readOnly={fieldsDisabled}
+            required={!fieldsDisabled}
+            tabIndex={fieldsDisabled ? -1 : undefined}
+            aria-disabled={fieldsDisabled}
           />
         </label>
 
         <FieldShortcutHint
-          show={shortcutHints.activeFieldId === "prodQty"}
+          show={shortcutHints.activeFieldId === "prodQty" && !fieldsDisabled}
           hint={shortcutHints.activeFieldHintText ?? ""}
           placement="below-end"
           className="min-w-[12rem] shrink-0"
@@ -137,8 +171,12 @@ export function ProductionOperatorEntryFields({
                 className={productionOperatorQtyInputClass}
                 placeholder={prodQtyPlaceholder}
                 value={producedQtyStr}
-                disabled={disabled}
+                disabled={fieldsDisabled}
                 onKeyDown={(e) => {
+                  if (fieldsDisabled) {
+                    e.preventDefault();
+                    return;
+                  }
                   if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
                     onMarkProdQtyShortcut?.();
                     onProdQtyEnter?.();
@@ -157,7 +195,7 @@ export function ProductionOperatorEntryFields({
             type="button"
             variant="outline"
             className="h-12 shrink-0 px-3 text-[13px] font-semibold"
-            disabled={useRemainingDisabled}
+            disabled={useRemainingDisabled || fieldsDisabled}
             onClick={onUseRemaining}
             data-testid="use-remaining-qty-btn"
           >
@@ -168,7 +206,7 @@ export function ProductionOperatorEntryFields({
               type="button"
               variant="outline"
               className="h-12 shrink-0 px-3 text-[13px] font-semibold"
-              disabled={useRmSupportedMaxDisabled}
+              disabled={useRmSupportedMaxDisabled || fieldsDisabled}
               onClick={onUseRmSupportedMax}
               data-testid="use-rm-supported-max-btn"
             >
@@ -177,7 +215,7 @@ export function ProductionOperatorEntryFields({
           ) : null}
 
           <FieldShortcutHint
-            show={shortcutHints.activeFieldId === "prodSave"}
+            show={shortcutHints.activeFieldId === "prodSave" && !fieldsDisabled}
             hint={shortcutHints.activeFieldHintText ?? ""}
             placement="above"
             className="shrink-0"
@@ -190,7 +228,7 @@ export function ProductionOperatorEntryFields({
               onFocus={prodSaveFocusBind.onFocus}
               onBlur={prodSaveFocusBind.onBlur}
               onClick={() => onMarkProdSaveShortcut?.()}
-              disabled={posting || !createFormCanSubmit}
+              disabled={posting || !createFormCanSubmit || fieldsDisabled}
               {...(prodDemoHl ? { "data-demo-highlight": prodDemoHl } : {})}
             >
               {posting ? "Saving…" : PRODUCTION_SAVE_BUTTON_LABEL}
@@ -200,13 +238,15 @@ export function ProductionOperatorEntryFields({
       </div>
 
       <div className="space-y-0.5">
-        <ProductionOperatorQtyHelper maxAllowedQty={maxAllowedQty} unit={unit} labelPrefix={maxLabelPrefix} />
+        {!runStartConfirmLocked ? (
+          <ProductionOperatorQtyHelper maxAllowedQty={maxAllowedQty} unit={unit} labelPrefix={maxLabelPrefix} />
+        ) : null}
         {rmReadinessLoading ? (
           <p className="text-[11px] text-slate-500">Checking RM readiness…</p>
-        ) : showRmCapHint && rmAllowedNowQty != null && !rmProductionEntryBlocked ? (
+        ) : showRmCapHint && rmAllowedNowQty != null && !rmProductionEntryBlocked && !runStartConfirmLocked ? (
           <p className="text-[11px] text-emerald-800">RM cap: {rmAllowedNowQty}</p>
         ) : null}
-        {wolId > 0 && !producedQtyValid ? (
+        {wolId > 0 && !producedQtyValid && !fieldsDisabled ? (
           <p className="text-[11px] font-medium text-amber-800">Enter quantity.</p>
         ) : null}
       </div>
@@ -238,4 +278,3 @@ export function ProductionOperatorEntryShell({
     </section>
   );
 }
-

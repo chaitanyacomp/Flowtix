@@ -31,5 +31,52 @@ describe("rmWastageReportService", () => {
     assert.equal(data.kpis.totalNotes, 0);
     assert.equal(data.kpis.totalWastageQty, 0);
     assert.equal(data.kpis.totalWastageValue, 0);
+    assert.equal(data.kpis.processWastageQty, 0);
+    assert.equal(data.kpis.purgingConsumptionQty, 0);
+  });
+
+  it("separates PURGING_CONSUMPTION from process wastage KPIs", async () => {
+    const db = {
+      materialWastageNote: {
+        count: async () => 2,
+        findMany: async () => [
+          {
+            id: 1,
+            createdAt: new Date(),
+            docNo: "MWN-1",
+            workOrderId: 1,
+            workOrder: { docNo: "WO-1" },
+            itemId: 10,
+            item: { itemName: "RM-A", unit: "kg" },
+            qty: 2,
+            reason: "PROCESS_LOSS",
+            remarks: null,
+            createdBy: { name: "A" },
+          },
+          {
+            id: 2,
+            createdAt: new Date(),
+            docNo: "MWN-2",
+            workOrderId: 1,
+            workOrder: { docNo: "WO-1" },
+            itemId: 11,
+            item: { itemName: "RM-B", unit: "kg" },
+            qty: 4,
+            reason: "PURGING",
+            remarks: "[PURGING_CONSUMPTION] startConfirmationId=9",
+            createdBy: { name: "A" },
+          },
+        ],
+      },
+      grnLine: {
+        findFirst: async () => null,
+      },
+    };
+    const data = await buildRmWastageReport({}, db);
+    assert.equal(data.kpis.processWastageQty, 2);
+    assert.equal(data.kpis.purgingConsumptionQty, 4);
+    assert.equal(data.kpis.totalWastageQty, 6);
+    assert.equal(data.rows.find((r) => r.id === 2).category, "PURGING_CONSUMPTION");
+    assert.equal(data.rows.find((r) => r.id === 1).category, "PROCESS_WASTAGE");
   });
 });

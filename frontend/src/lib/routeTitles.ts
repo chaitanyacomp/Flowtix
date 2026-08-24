@@ -45,6 +45,7 @@ const TITLES: Record<string, string> = {
   "/purchase-bills/new": "New purchase bill",
   "/work-orders": "Work order",
   "/production": "Production Workspace",
+  "/shift-production": "Shift Production",
   "/production/material-requests": "Material Requests (queue)",
   "/production/rm-returns": "RM Returns",
   "/qc-entry": "Quality Inspection Workspace",
@@ -108,6 +109,9 @@ export function getPageTitle(pathname: string, search = ""): string {
   }
   if (pathname.startsWith("/sales-orders/") && pathname.endsWith("/requirement-sheets")) {
     return "Requirement sheet";
+  }
+  if (pathname.startsWith("/shift-production")) {
+    return "Shift Production";
   }
   if (pathname.startsWith("/requirement-sheets/") && pathname.endsWith("/wo-plan")) {
     return "WO planning";

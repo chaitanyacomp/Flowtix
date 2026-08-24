@@ -634,8 +634,9 @@ function getPrimaryCta(so: SoRow, role: string): { label: string; to: string; st
           state: { from: "sales-orders" },
         };
       }
-      if (!canCreateWo && role === "STORE" && op?.nextActionKey !== "CREATE_WO") {
+      if (!canCreateWo && role === "STORE") {
         // Store may still open prepare for RM review when machine planning is done but not READY_FOR_WO.
+        // (CREATE_WO branch already returned above.)
         if (op?.machinePlanningComplete) {
           return {
             ...woPreparePrimaryCta(so.id, op, role),

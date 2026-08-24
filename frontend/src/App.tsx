@@ -60,6 +60,8 @@ import { SalesBillEditPage } from "./pages/SalesBillEditPage";
 import { WorkOrdersPage } from "./pages/WorkOrdersPage";
 import { WorkOrderDetailPage } from "./pages/WorkOrderDetailPage";
 import { ProductionPage } from "./pages/ProductionPage";
+import { ShiftProductionPage } from "./pages/ShiftProductionPage";
+import { ShiftSessionWorkspacePage } from "./pages/ShiftSessionWorkspacePage";
 import { ProductionFlowLandingPage } from "./pages/ProductionFlowLandingPage";
 import { QcEntryPage } from "./pages/QcEntryPage";
 import { QcReportPage } from "./pages/QcReportPage";
@@ -139,6 +141,7 @@ import {
   RM_CONTROL_CENTER_ROLES,
   RM_PO_READ_ROLES,
   STOCK_WRITE_ROLES,
+  SHIFT_PRODUCTION_ROLES,
 } from "./config/erpRoles";
 import { GreenLevelWoPlacementPage } from "./pages/store/GreenLevelWoPlacementPage";
 import { DatabaseCleanupPage } from "./pages/DatabaseCleanupPage";
@@ -791,6 +794,22 @@ export default function App() {
           element={
             <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION"]}>
               <ProductionPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/shift-production"
+          element={
+            <ProtectedRoute allowedRoles={[...SHIFT_PRODUCTION_ROLES]}>
+              <ShiftProductionPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/shift-production/sessions/:sessionId"
+          element={
+            <ProtectedRoute allowedRoles={[...SHIFT_PRODUCTION_ROLES]}>
+              <ShiftSessionWorkspacePage />
             </ProtectedRoute>
           }
         />

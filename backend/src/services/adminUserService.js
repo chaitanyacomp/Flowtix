@@ -2,7 +2,7 @@ const bcrypt = require("bcryptjs");
 const { prisma: defaultPrisma } = require("../utils/prisma");
 const auditLog = require("./auditLog");
 
-const USER_ROLES = ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"];
+const USER_ROLES = ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "PRODUCTION_MANAGER", "QA"];
 const USER_PUBLIC_SELECT = {
   id: true,
   email: true,

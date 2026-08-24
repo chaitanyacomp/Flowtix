@@ -2100,20 +2100,25 @@ productionRouter.get(
           qcEntries: { where: QC_ENTRY_ACTIVE_WHERE },
         },
       });
-      const enriched = rows.map((row) => {
-        const producedQty = Number(row.producedQty);
-        const qcAcceptedQty = sumActiveQcAcceptedQty(row.qcEntries);
-        const qcRejectedQty = sumActiveQcRejectedQty(row.qcEntries);
-        const qcPendingQty = getProductionBatchQcPendingQty(producedQty, qcAcceptedQty, qcRejectedQty);
-        const orderType = row.workOrderLine?.workOrder?.salesOrder?.orderType;
-        return {
-          ...row,
-          ...(orderType != null ? { orderType } : {}),
-          qcAcceptedQty,
-          qcRejectedQty,
-          qcPendingQty,
-        };
-      });
+      const enriched = await Promise.all(
+        rows.map(async (row) => {
+          const producedQty = Number(row.producedQty);
+          const qcAcceptedQty = sumActiveQcAcceptedQty(row.qcEntries);
+          const qcRejectedQty = sumActiveQcRejectedQty(row.qcEntries);
+          const qcPendingQty = getProductionBatchQcPendingQty(producedQty, qcAcceptedQty, qcRejectedQty);
+          const orderType = row.workOrderLine?.workOrder?.salesOrder?.orderType;
+          const { buildProductionEntryShiftLinkSummary } = require("../services/productionEntryShiftLinkService");
+          const shiftLink = await buildProductionEntryShiftLinkSummary(prisma, row);
+          return {
+            ...row,
+            ...(orderType != null ? { orderType } : {}),
+            qcAcceptedQty,
+            qcRejectedQty,
+            qcPendingQty,
+            shiftLink,
+          };
+        }),
+      );
       if (withoutQc) {
         return res.json(enriched.filter((row) => row.qcPendingQty > REPORT_QUEUE_EPS));
       }
@@ -2272,6 +2277,20 @@ productionRouter.post(
               ? Number(body.runAllocationId)
               : null;
 
+        const {
+          assertProductionEntryMutationAllowedForShiftLock,
+        } = require("../services/machineShiftProductionQtyLockService");
+        await assertProductionEntryMutationAllowedForShiftLock(tx, {
+          workOrderId: gate.wo.id,
+          runAllocationId: resolvedRunAllocationId,
+        });
+
+        const { resolveShiftLinkFieldsForCreate } = require("../services/productionEntryShiftLinkService");
+        const shiftLinkFields = await resolveShiftLinkFieldsForCreate(tx, {
+          workOrderId: gate.wo.id,
+          runAllocationId: resolvedRunAllocationId,
+        });
+
         const prod = await tx.productionEntry.create({
           data: {
             docNo: await allocateDocNo(tx, { docType: DocType.PRODUCTION_ENTRY, date: entryDate ?? new Date() }),
@@ -2282,11 +2301,15 @@ productionRouter.post(
               ? { runAllocationId: resolvedRunAllocationId }
               : {}),
             ...(entryDate ? { date: entryDate } : {}),
+            ...shiftLinkFields,
           },
         });
 
+        const { buildProductionEntryShiftLinkSummary } = require("../services/productionEntryShiftLinkService");
+        const shiftLink = await buildProductionEntryShiftLinkSummary(tx, prod);
+
         const woAfter = await tx.workOrder.findUnique({ where: { id: gate.wo.id } });
-        return { wo: woAfter ?? gate.wo, prod, draft: true };
+        return { wo: woAfter ?? gate.wo, prod, draft: true, shiftLink };
       });
 
       return res.status(201).json(result);
@@ -2339,6 +2362,16 @@ productionRouter.put(
           throw err;
         }
         await assertProductionEntryHasNoQcHistory(tx, id);
+
+        const {
+          assertProductionEntryMutationAllowedForShiftLock,
+        } = require("../services/machineShiftProductionQtyLockService");
+        await assertProductionEntryMutationAllowedForShiftLock(tx, {
+          workOrderId: existing.workOrderLine.workOrderId,
+          runAllocationId: existing.runAllocationId ?? null,
+          shiftSessionId: existing.shiftSessionId ?? null,
+          shiftRunSegmentId: existing.shiftRunSegmentId ?? null,
+        });
 
         await lockWorkOrderLineForUpdate(tx, existing.workOrderLineId);
 
@@ -2400,6 +2433,16 @@ productionRouter.delete(
           throw err;
         }
         await assertProductionEntryHasNoQcHistory(tx, id);
+
+        const {
+          assertProductionEntryMutationAllowedForShiftLock,
+        } = require("../services/machineShiftProductionQtyLockService");
+        await assertProductionEntryMutationAllowedForShiftLock(tx, {
+          workOrderId: existing.workOrderLine.workOrderId,
+          runAllocationId: existing.runAllocationId ?? null,
+          shiftSessionId: existing.shiftSessionId ?? null,
+          shiftRunSegmentId: existing.shiftRunSegmentId ?? null,
+        });
 
         const woId = existing.workOrderLine.workOrderId;
         await tx.productionEntry.delete({ where: { id } });
@@ -2717,6 +2760,16 @@ productionRouter.post(
         await assertProductionEntryHasNoQcHistory(tx, id);
 
         const wol = prod.workOrderLine;
+        const {
+          assertProductionEntryMutationAllowedForShiftLock,
+        } = require("../services/machineShiftProductionQtyLockService");
+        await assertProductionEntryMutationAllowedForShiftLock(tx, {
+          workOrderId: wol.workOrderId,
+          runAllocationId: prod.runAllocationId ?? null,
+          shiftSessionId: prod.shiftSessionId ?? null,
+          shiftRunSegmentId: prod.shiftRunSegmentId ?? null,
+        });
+
         await lockWorkOrderLineForUpdate(tx, wol.id);
         const fgItemId = wol.fgItemId;
         const producedQty = Number(prod.producedQty);

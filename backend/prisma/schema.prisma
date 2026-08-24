@@ -16,6 +16,7 @@ enum UserRole {
   STORE
   PURCHASE
   PRODUCTION
+  PRODUCTION_MANAGER
   QA
 }
 
@@ -697,6 +698,24 @@ model User {
   rmAllowanceApprovalsIssued                RmAllowanceApprovalRequest[]   @relation("RmAllowanceApprovalIssuedBy")
   regularSoBufferApprovalsRequested         RegularSoBufferApprovalRequest[] @relation("RegularSoBufferApprovalRequestedBy")
   regularSoBufferApprovalsReviewed          RegularSoBufferApprovalRequest[] @relation("RegularSoBufferApprovalReviewedBy")
+
+  // Phase 1 Shift Production runtime lifecycle (database foundation only).
+  shiftSessionsStartedByUser                MachineShiftSession[]                    @relation("ShiftSessStartedBy")
+  shiftSessionsEndedByUser                  MachineShiftSession[]                    @relation("ShiftSessEndedBy")
+  machineShiftSessionOperatorsChangedByUser MachineShiftSessionOperator[]
+  shiftRunSegmentsStartedByUser             MachineShiftSessionRunSegment[]          @relation("MSSSegStartedBy")
+  shiftRunSegmentsClosedByUser              MachineShiftSessionRunSegment[]          @relation("MSSSegClosedBy")
+  shiftDowntimeIncidentsStartedByUser       MachineShiftDowntimeIncident[]           @relation("MSSDoStartedBy")
+  shiftDowntimeIncidentsEndedByUser         MachineShiftDowntimeIncident[]           @relation("MSSDoEndedBy")
+  shiftReportVersionsDeclaredByUser         ShiftProductionReportVersion[]           @relation("ShiftRptVerDeclaredBy")
+  shiftReportVersionsSubmittedByUser        ShiftProductionReportVersion[]           @relation("ShiftRptVerSubmittedBy")
+  shiftReportVersionsVerifiedByUser         ShiftProductionReportVersion[]           @relation("ShiftRptVerVerifiedBy")
+  shiftReportVersionsReturnedByUser         ShiftProductionReportVersion[]           @relation("ShiftRptVerReturnedBy")
+  shiftReopenRequestsRequestedByUser        ShiftSessionReopenRequest[]              @relation("ShiftReopenRequestedBy")
+  shiftReopenRequestsDecidedByUser          ShiftSessionReopenRequest[]              @relation("ShiftReopenDecidedBy")
+  shiftReportAdjustRequestsRequestedByUser  ShiftProductionReportAdjustmentRequest[] @relation("ShiftAdjRequestedBy")
+  shiftReportAdjustRequestsDecidedByUser    ShiftProductionReportAdjustmentRequest[] @relation("ShiftAdjDecidedBy")
+  shiftReportAdjustRequestsAppliedByUser    ShiftProductionReportAdjustmentRequest[] @relation("ShiftAdjAppliedBy")
 }
 
 /// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
@@ -977,6 +996,8 @@ model Item {
   woRunStartConfirmationsFg         WorkOrderProductionRunStartConfirmation[] @relation("WoRunStartConfFg")
   woRunPurgeRmLines                 WorkOrderProductionRunPurgeRmLine[]       @relation("WoRunPurgeRmItem")
   requirementSheetPlannedRunAllocations RequirementSheetPlannedRunAllocation[] @relation("RsPlannedRunFg")
+  shiftProductionReportVersionLines      ShiftProductionReportVersionLine[]
+  shiftProductionReportAdjustmentLines   ShiftProductionReportAdjustmentLine[]
 
   @@index([itemType])
   @@index([isActive])
@@ -3006,6 +3027,7 @@ model WorkOrder {
   productionShortfallResolutions  ProductionShortfallResolution[]
   carryForwardPendingSources      CarryForwardPending[]           @relation("CfPendingSourceWo")
   dispatchFgTraceAllocations      DispatchFgTraceAllocation[]
+  machineShiftRunSegments         MachineShiftSessionRunSegment[]
 
   @@index([status])
   @@index([salesOrderId])
@@ -3398,6 +3420,7 @@ model WorkOrderProductionRunAllocation {
   physicalSetupOverrideBy User? @relation("WoRunPhysicalSetupOverrideBy", fields: [physicalSetupOverrideByUserId], references: [id], onDelete: SetNull, map: "WoProdRunAlloc_setupOvBy_fkey")
   startConfirmation WorkOrderProductionRunStartConfirmation?
   productionEntries ProductionEntry[]
+  shiftRunSegments        MachineShiftSessionRunSegment[]
 
   @@unique([workOrderId, fgItemId, runSequence], map: "WoProdRunAlloc_wo_fg_seq_key")
   @@index([workOrderId], map: "WoProdRunAlloc_wo_idx")
@@ -3668,6 +3691,8 @@ model Machine {
   requirementSheetPlannedRunAllocations RequirementSheetPlannedRunAllocation[]
   productionRunStartConfirmations WorkOrderProductionRunStartConfirmation[]
   materialState MachineMaterialState?
+  shiftSessions                         MachineShiftSession[]
+  shiftDowntimeIncidents                MachineShiftDowntimeIncident[]
 
   @@index([isActive, machineName])
   @@index([machineType, isActive])
@@ -3685,6 +3710,10 @@ model Operator {
   isActive         Boolean  @default(true)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
+
+  shiftSessionOperators       MachineShiftSessionOperator[]
+  primaryShiftSessions        MachineShiftSession[]
+  declaredShiftReportVersions ShiftProductionReportVersion[]
 
   @@index([isActive, operatorName])
 }
@@ -3706,8 +3735,429 @@ model Shift {
   regularSoPlanningRunAllocations RegularSoPlanningRunAllocation[]
   workOrderProductionRunAllocations WorkOrderProductionRunAllocation[]
   requirementSheetPlannedRunAllocations RequirementSheetPlannedRunAllocation[]
+  machineShiftSessions                  MachineShiftSession[]
 
   @@index([isActive, shiftName])
+}
+
+/// Phase 1: runtime Shift Production lifecycle (database foundation only).
+/// Phase 2 will wire APIs/services to enforce lifecycle gates and audit.
+enum MachineShiftSessionStatus {
+  /// Session started; operator can submit shift report.
+  OPEN
+  /// Session closed via Shift Over.
+  SHIFT_OVER
+}
+
+enum ShiftProductionReportVersionStatus {
+  DRAFT
+  SUBMITTED
+  RETURNED
+  VERIFIED
+}
+
+enum ShiftSessionReopenRequestStatus {
+  REQUESTED
+  APPROVED
+  DENIED
+}
+
+enum ShiftProductionReportAdjustmentStatus {
+  REQUESTED
+  APPROVED
+  DENIED
+  APPLIED
+}
+
+/// One runtime shift session per machine.
+/// Database-only MySQL generated column + unique index (not modeled in Prisma):
+/// `openMachId` INTEGER GENERATED ALWAYS AS (IF(`status` <> 'SHIFT_OVER', `machineId`, NULL)) VIRTUAL
+/// UNIQUE INDEX `uq_mss_open` (`openMachId`) — one non-closed session per machine.
+/// VIRTUAL (not STORED): InnoDB rejects STORED generated columns that reference a FK base column (`machineId`).
+model MachineShiftSession {
+  id Int @id @default(autoincrement())
+
+  machineId   Int
+  shiftId     Int?
+  /// Night shift uses the shift starting date.
+  sessionDate DateTime @db.Date
+
+  /// Automatically generated shift session number (format decided in Phase 2).
+  shiftSessionNo String @unique @db.VarChar(32)
+
+  status MachineShiftSessionStatus @default(OPEN)
+
+  /// Machine handover state at session start / Shift Over.
+  handoverState   MachineMaterialStateKind @default(UNKNOWN)
+  /// Required when handoverState is UNKNOWN (Shift Over); optional otherwise.
+  handoverRemarks String?                  @db.Text
+
+  /// One primary operator for the session.
+  primaryOperatorId Int
+
+  startedAt       DateTime  @default(now())
+  startedByUserId Int?
+  endedAt         DateTime?
+  endedByUserId   Int?
+
+  /// Reopen counters/history (Phase 2 will update).
+  reopenCount Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  machine         Machine  @relation(fields: [machineId], references: [id], onDelete: Restrict)
+  shift           Shift?   @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  primaryOperator Operator @relation(fields: [primaryOperatorId], references: [id], onDelete: Restrict)
+  startedByUser   User?    @relation("ShiftSessStartedBy", fields: [startedByUserId], references: [id], onDelete: SetNull)
+  endedByUser     User?    @relation("ShiftSessEndedBy", fields: [endedByUserId], references: [id], onDelete: SetNull)
+
+  sessionOperators  MachineShiftSessionOperator[]
+  runSegments       MachineShiftSessionRunSegment[]
+  productionEntries ProductionEntry[]
+  downtimeSegments  MachineShiftDowntimeSegment[]
+
+  shiftReport    ShiftProductionReport?
+  reopenRequests ShiftSessionReopenRequest[]
+
+  /// Supports composite FK from run segments: (sessionId, machineId) → (id, machineId).
+  @@unique([id, machineId], map: "uq_mss_id_mach")
+  @@index([machineId, sessionDate], map: "idx_mss_mach_date")
+  @@index([endedByUserId], map: "idx_mss_end_by")
+}
+
+/// Operator join/leave history for a shift session.
+model MachineShiftSessionOperator {
+  id Int @id @default(autoincrement())
+
+  sessionId  Int
+  operatorId Int
+
+  isPrimarySnapshot Boolean   @default(false)
+  joinedAt          DateTime  @default(now())
+  leftAt            DateTime?
+
+  joinedLeaveReason String? @db.Text
+
+  changedByUserId Int?
+  changedAt       DateTime @default(now())
+
+  session       MachineShiftSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  operator      Operator            @relation(fields: [operatorId], references: [id], onDelete: Restrict)
+  changedByUser User?               @relation(fields: [changedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, operatorId], map: "idx_mssop_sid_op")
+}
+
+enum MachineShiftRunSegmentStatus {
+  ACTIVE
+  CLOSED
+}
+
+/// One run / WO execution segment inside a shift session.
+/// Database-only MySQL generated column + unique index (not modeled in Prisma):
+/// `actMachId` INTEGER GENERATED ALWAYS AS (IF(`status` = 'ACTIVE', `machineId`, NULL)) VIRTUAL
+/// UNIQUE INDEX `uq_mssseg_act` (`actMachId`) — one ACTIVE run segment per machine.
+/// VIRTUAL (not STORED): InnoDB rejects STORED generated columns on `machineId` when that
+/// column is part of composite FK `mssseg_sess_mach_fk`. Migration adds `actMachId` AFTER
+/// the composite FK for the same CREATE-time restriction.
+/// Composite FK (sessionId, machineId) → MachineShiftSession(id, machineId) enforces
+/// run-segment machine consistency with the parent session.
+model MachineShiftSessionRunSegment {
+  id Int @id @default(autoincrement())
+
+  sessionId Int
+  machineId Int
+
+  /// Planned run allocation (new-model machine-run WOs).
+  runAllocationId Int?
+  /// Legacy / fallback WO link when run allocation is not present.
+  workOrderId     Int?
+
+  segmentNo Int @default(1)
+
+  status MachineShiftRunSegmentStatus @default(ACTIVE)
+
+  segmentStartedAt       DateTime @default(now())
+  segmentStartedByUserId Int?
+
+  /// Close audit (nullable for ACTIVE rows / backward compatibility).
+  closedAt       DateTime?
+  closedByUserId Int?
+  closeReason    String?   @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Composite FK enforces session.machineId == runSegment.machineId (no separate sessionId-only FK).
+  session       MachineShiftSession               @relation(fields: [sessionId, machineId], references: [id, machineId], onDelete: Cascade, map: "mssseg_sess_mach_fk")
+  runAllocation WorkOrderProductionRunAllocation? @relation(fields: [runAllocationId], references: [id], onDelete: SetNull)
+  workOrder     WorkOrder?                        @relation(fields: [workOrderId], references: [id], onDelete: SetNull)
+
+  segmentStartedByUser User? @relation("MSSSegStartedBy", fields: [segmentStartedByUserId], references: [id], onDelete: SetNull)
+  closedByUser         User? @relation("MSSSegClosedBy", fields: [closedByUserId], references: [id], onDelete: SetNull)
+
+  productionEntries ProductionEntry[]
+  downtimeIncidents MachineShiftDowntimeIncident[]
+  shiftReportLines  ShiftProductionReportVersionLine[]
+  adjustmentLines   ShiftProductionReportAdjustmentLine[]
+
+  @@index([sessionId, machineId], map: "idx_mssseg_sid_m")
+  @@index([machineId], map: "idx_mssseg_mach")
+  @@index([runAllocationId], map: "idx_mssseg_run")
+  @@index([closedByUserId], map: "idx_mssseg_closed_by")
+}
+
+/// Pause/resume downtime grouping; spans multiple shift sessions when downtime continues.
+model MachineShiftDowntimeIncident {
+  id Int @id @default(autoincrement())
+
+  machineId    Int
+  runSegmentId Int?
+
+  reason ProductionExecutionBlockReason
+
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  startedByUserId Int?
+  endedByUserId   Int?
+
+  remarks String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  machine    Machine                        @relation(fields: [machineId], references: [id], onDelete: Restrict)
+  runSegment MachineShiftSessionRunSegment? @relation(fields: [runSegmentId], references: [id], onDelete: SetNull)
+
+  startedByUser User? @relation("MSSDoStartedBy", fields: [startedByUserId], references: [id], onDelete: SetNull)
+  endedByUser   User? @relation("MSSDoEndedBy", fields: [endedByUserId], references: [id], onDelete: SetNull)
+
+  segments MachineShiftDowntimeSegment[]
+
+  @@index([machineId, startedAt], map: "idx_mssdo_mstart")
+}
+
+/// Shift-wise downtime segments (one incident can have many segments across sessions).
+model MachineShiftDowntimeSegment {
+  id Int @id @default(autoincrement())
+
+  sessionId  Int
+  incidentId Int
+
+  segmentStartAt DateTime
+  segmentEndAt   DateTime?
+
+  remarks String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session  MachineShiftSession          @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  incident MachineShiftDowntimeIncident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@unique([incidentId, sessionId], map: "uniq_mssds_inc_sid")
+  @@index([sessionId], map: "idx_mssds_sid")
+}
+
+/// Report header (1:1 with shift session).
+model ShiftProductionReport {
+  id        Int @id @default(autoincrement())
+  sessionId Int @unique
+
+  latestVersionNo Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session  MachineShiftSession            @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  versions ShiftProductionReportVersion[]
+}
+
+/// Immutable shift report version rows (version history).
+model ShiftProductionReportVersion {
+  id       Int @id @default(autoincrement())
+  reportId Int
+
+  versionNo Int
+  status    ShiftProductionReportVersionStatus @default(DRAFT)
+
+  previousVersionId Int?
+
+  /// Mandatory operator declaration (null on DRAFT until explicit submit).
+  declaredOperatorId Int?
+  declaredByUserId   Int?
+  declaredAt         DateTime?
+
+  /// Submission / verification / return timestamps.
+  submittedAt       DateTime?
+  submittedByUserId Int?
+
+  verifiedAt       DateTime?
+  verifiedByUserId Int?
+
+  returnedAt       DateTime?
+  returnedByUserId Int?
+  returnReason     String?   @db.Text
+
+  /// Totals for the version.
+  grossOutputQty     Decimal @default(0) @db.Decimal(18, 3)
+  productionScrapQty Decimal @default(0) @db.Decimal(18, 3)
+  qtySentToQc        Decimal @default(0) @db.Decimal(18, 3)
+
+  remarks String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  report          ShiftProductionReport          @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  previousVersion ShiftProductionReportVersion?  @relation("ShiftRptPrev", fields: [previousVersionId], references: [id], onDelete: SetNull)
+  nextVersions    ShiftProductionReportVersion[] @relation("ShiftRptPrev")
+
+  declaredOperator Operator? @relation(fields: [declaredOperatorId], references: [id], onDelete: Restrict)
+  declaredByUser   User?     @relation("ShiftRptVerDeclaredBy", fields: [declaredByUserId], references: [id], onDelete: Restrict, map: "ShiftRptVer_declaredBy")
+
+  submittedByUser User? @relation("ShiftRptVerSubmittedBy", fields: [submittedByUserId], references: [id], onDelete: SetNull)
+  verifiedByUser  User? @relation("ShiftRptVerVerifiedBy", fields: [verifiedByUserId], references: [id], onDelete: SetNull)
+  returnedByUser  User? @relation("ShiftRptVerReturnedBy", fields: [returnedByUserId], references: [id], onDelete: SetNull)
+
+  lines                        ShiftProductionReportVersionLine[]
+  /// Adjustment requests that target this version (the superseded VERIFIED row).
+  adjustmentRequests           ShiftProductionReportAdjustmentRequest[] @relation("ShiftAdjTargetVersion")
+  /// At most one adjustment request may point here as the applied corrected version.
+  appliedFromAdjustmentRequest ShiftProductionReportAdjustmentRequest?  @relation("ShiftAdjAppliedVersion")
+
+  @@unique([reportId, versionNo], map: "uniq_srpt_ver")
+  @@index([reportId, status], map: "idx_srpt_ver_stat")
+}
+
+/// Report line details for each WO/run segment during the shift.
+model ShiftProductionReportVersionLine {
+  id Int @id @default(autoincrement())
+
+  reportVersionId Int
+  runSegmentId    Int?
+  itemId          Int
+
+  grossOutputQty     Decimal @default(0) @db.Decimal(18, 3)
+  productionScrapQty Decimal @default(0) @db.Decimal(18, 3)
+  qtySentToQc        Decimal @default(0) @db.Decimal(18, 3)
+
+  remarks String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reportVersion ShiftProductionReportVersion   @relation(fields: [reportVersionId], references: [id], onDelete: Cascade)
+  runSegment    MachineShiftSessionRunSegment? @relation(fields: [runSegmentId], references: [id], onDelete: SetNull)
+  item          Item                           @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@unique([reportVersionId, runSegmentId, itemId], map: "uniq_srp_line")
+  @@index([reportVersionId], map: "idx_srp_line_rv")
+  @@index([itemId], map: "idx_srp_line_item")
+}
+
+/// Reopen requests for a shift session (manager/admin controlled in Phase 2).
+model ShiftSessionReopenRequest {
+  id        Int @id @default(autoincrement())
+  sessionId Int
+
+  requestedByUserId Int
+  requestedAt       DateTime @default(now())
+  reopenReason      String   @db.Text
+
+  status          ShiftSessionReopenRequestStatus @default(REQUESTED)
+  decidedByUserId Int?
+  decidedAt       DateTime?
+  /// Optional manager/admin note on approve or deny.
+  decisionNote    String?                         @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session         MachineShiftSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  requestedByUser User                @relation("ShiftReopenRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  decidedByUser   User?               @relation("ShiftReopenDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, status], map: "idx_sess_reopen")
+}
+
+/// Historical requests to adjust a previously verified shift report version.
+/// Database-only MySQL generated column + unique index (not modeled in Prisma):
+/// `unresVerId` INTEGER GENERATED ALWAYS AS (
+///   IF(`status` IN ('REQUESTED','APPROVED'), `reportVersionId`, NULL)
+/// ) VIRTUAL
+/// UNIQUE INDEX `uq_srpt_adj_unres` (`unresVerId`) — one unresolved adjustment per target version.
+/// VIRTUAL (not STORED): InnoDB rejects STORED generated columns that reference a FK base column (`reportVersionId`).
+model ShiftProductionReportAdjustmentRequest {
+  id              Int @id @default(autoincrement())
+  /// Target VERIFIED version being corrected (never mutated).
+  reportVersionId Int
+
+  requestedByUserId Int
+  requestedAt       DateTime @default(now())
+  adjustReason      String   @db.Text
+
+  /// Proposed corrected header totals (validated against proposed lines).
+  proposedGrossOutputQty     Decimal @db.Decimal(18, 3)
+  proposedProductionScrapQty Decimal @db.Decimal(18, 3)
+  proposedQtySentToQc        Decimal @db.Decimal(18, 3)
+
+  status          ShiftProductionReportAdjustmentStatus @default(REQUESTED)
+  decidedByUserId Int?
+  decidedAt       DateTime?
+  /// Optional on approve; required on deny (enforced in service).
+  decisionNote    String?                               @db.Text
+
+  appliedAt              DateTime?
+  appliedByUserId        Int?
+  /// Corrected immutable VERIFIED version created on apply.
+  appliedReportVersionId Int?
+
+  /// Optional free-text remarks (not a substitute for proposed lines/totals).
+  remarks String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reportVersion        ShiftProductionReportVersion          @relation("ShiftAdjTargetVersion", fields: [reportVersionId], references: [id], onDelete: Cascade, map: "srpt_adj_tgt_ver_fk")
+  appliedReportVersion ShiftProductionReportVersion?         @relation("ShiftAdjAppliedVersion", fields: [appliedReportVersionId], references: [id], onDelete: SetNull, map: "srpt_adj_app_ver_fk")
+  proposedLines        ShiftProductionReportAdjustmentLine[]
+  requestedByUser      User                                  @relation("ShiftAdjRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict, map: "srpt_adj_req_by_fk")
+  decidedByUser        User?                                 @relation("ShiftAdjDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull, map: "srpt_adj_dec_by_fk")
+  appliedByUser        User?                                 @relation("ShiftAdjAppliedBy", fields: [appliedByUserId], references: [id], onDelete: SetNull, map: "srpt_adj_app_by_fk")
+
+  @@unique([appliedReportVersionId], map: "uniq_srpt_adj_app_ver")
+  @@index([reportVersionId, status], map: "idx_srpt_adj")
+  @@index([appliedByUserId], map: "idx_srpt_adj_by")
+}
+
+/// Proposed corrected lines stored with the adjustment request (applied only from this snapshot).
+model ShiftProductionReportAdjustmentLine {
+  id Int @id @default(autoincrement())
+
+  adjustmentRequestId Int
+  runSegmentId        Int
+  itemId              Int
+
+  grossOutputQty     Decimal @db.Decimal(18, 3)
+  productionScrapQty Decimal @db.Decimal(18, 3)
+  qtySentToQc        Decimal @db.Decimal(18, 3)
+
+  remarks String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  adjustmentRequest ShiftProductionReportAdjustmentRequest @relation(fields: [adjustmentRequestId], references: [id], onDelete: Cascade, map: "srpt_adj_ln_req_fk")
+  runSegment        MachineShiftSessionRunSegment          @relation(fields: [runSegmentId], references: [id], onDelete: Restrict, map: "srpt_adj_ln_seg_fk")
+  item              Item                                   @relation(fields: [itemId], references: [id], onDelete: Restrict, map: "srpt_adj_ln_item_fk")
+
+  @@unique([adjustmentRequestId, runSegmentId, itemId], map: "uniq_srpt_adj_ln")
+  @@index([adjustmentRequestId], map: "idx_srpt_adj_ln_req")
+  @@index([runSegmentId], map: "idx_srpt_adj_ln_seg")
+  @@index([itemId], map: "idx_srpt_adj_ln_item")
 }
 
 /// FG Production Standard Master (Step 4). Capacity of an FG on a machine. Soft-deactivate only.
@@ -3767,8 +4217,17 @@ model ProductionEntry {
   /// New-model machine-run planning: links PE to the confirmed planned run. Null = historical / legacy WO.
   runAllocationId Int?
 
+  /// Phase 1 (Shift Production): nullable links to shift session + run segment.
+  /// No runtime gates are enforced yet.
+  shiftSessionId    Int?
+  shiftRunSegmentId Int?
+
   workOrderLine   WorkOrderLine                  @relation(fields: [workOrderLineId], references: [id], onDelete: Cascade)
   runAllocation   WorkOrderProductionRunAllocation? @relation(fields: [runAllocationId], references: [id], onDelete: Restrict, map: "Pe_runAlloc_fkey")
+
+  shiftSession    MachineShiftSession?           @relation(fields: [shiftSessionId], references: [id], onDelete: SetNull)
+  shiftRunSegment MachineShiftSessionRunSegment? @relation(fields: [shiftRunSegmentId], references: [id], onDelete: SetNull)
+
   qcEntries       QcEntry[]
   rmConsumptions  ProductionEntryRmConsumption[]
   dispatchFgTraceAllocations DispatchFgTraceAllocation[]
@@ -3777,6 +4236,8 @@ model ProductionEntry {
   @@index([date])
   @@index([workflowStatus])
   @@index([runAllocationId], map: "Pe_runAlloc_idx")
+  @@index([shiftSessionId], map: "Pe_shiftSess_idx")
+  @@index([shiftRunSegmentId], map: "Pe_shiftSeg_idx")
 }
 
 /// Immutable RM standard vs actual snapshot per approved production batch (REGULAR).

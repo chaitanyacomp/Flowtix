@@ -25,7 +25,7 @@ const updateBodySchema = z.object({
   isActive: z.boolean().optional(),
 });
 
-const READ_ROLES = ["ADMIN", "PRODUCTION", "STORE"];
+const READ_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER", "STORE"];
 const WRITE_ROLES = ["ADMIN", "PRODUCTION"];
 
 shiftsRouter.get("/", requireAuth, requireRole(READ_ROLES), async (req, res, next) => {

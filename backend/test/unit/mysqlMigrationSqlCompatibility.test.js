@@ -158,4 +158,57 @@ describe("MySQL Prisma migration SQL compatibility", () => {
     assert.match(sql, /UNIQUE\s+INDEX\s+`WoProdRunAlloc_wo_fg_seq_key`/i);
     assert.match(sql, /UNIQUE\s+INDEX\s+`RsPlanRunAlloc_rs_fg_seq_key`/i);
   });
+
+  it("shift production lifecycle phase-1 migration uses MySQL backticks and short identifiers", () => {
+    const file = path.join(
+      MIGRATIONS_DIR,
+      "20260824120000_shift_production_lifecycle_phase1",
+      "migration.sql",
+    );
+    assert.ok(fs.existsSync(file), "shift production lifecycle phase-1 migration.sql missing");
+    const sql = stripSqlComments(fs.readFileSync(file, "utf8"));
+    assert.match(sql, /CREATE\s+TABLE\s+`MachineShiftSession`/i);
+    assert.match(sql, /CREATE\s+TABLE\s+`ShiftProductionReportAdjustmentRequest`/i);
+    assert.match(sql, /CREATE\s+TABLE\s+`ShiftProductionReportAdjustmentLine`/i);
+    assert.match(sql, /`proposedGrossOutputQty`\s+DECIMAL\(18,\s*3\)\s+NOT\s+NULL/i);
+    assert.match(sql, /`decisionNote`\s+TEXT\s+NULL/i);
+    assert.match(sql, /`appliedReportVersionId`\s+INTEGER\s+NULL/i);
+    assert.match(sql, /`unresVerId`\s+INTEGER\s+GENERATED\s+ALWAYS\s+AS/i);
+    assert.match(sql, /`openMachId`\s+INTEGER\s+GENERATED\s+ALWAYS\s+AS/i);
+    assert.match(sql, /`openMachId`[\s\S]*?\bVIRTUAL\b/i);
+    assert.match(sql, /`unresVerId`[\s\S]*?\bVIRTUAL\b/i);
+    assert.doesNotMatch(sql, /`openMachId`[\s\S]*?\bSTORED\b/i);
+    assert.doesNotMatch(sql, /`unresVerId`[\s\S]*?\bSTORED\b/i);
+    assert.match(sql, /UNIQUE\s+INDEX\s+`uq_srpt_adj_unres`\(`unresVerId`\)/i);
+    assert.match(sql, /UNIQUE\s+INDEX\s+`uniq_srpt_adj_app_ver`/i);
+    assert.match(sql, /UNIQUE\s+INDEX\s+`uniq_srpt_adj_ln`/i);
+    assert.match(sql, /CONSTRAINT\s+`srpt_adj_app_ver_fk`/i);
+    assert.match(sql, /`handoverRemarks`\s+TEXT\s+NULL/i);
+    assert.match(sql, /`declaredAt`\s+DATETIME\(3\)\s+NULL/i);
+    assert.doesNotMatch(sql, /`declaredAt`\s+DATETIME\(3\)\s+NOT\s+NULL\s+DEFAULT/i);
+    assert.doesNotMatch(sql, /CREATE\s+TABLE\s+"/i);
+    assert.doesNotMatch(sql, /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS/i);
+    const identifiers = [...sql.matchAll(/`([A-Za-z0-9_]+)`/g)].map((m) => m[1]);
+    const tooLong = [...new Set(identifiers)].filter((name) => name.length > 64);
+    assert.deepEqual(
+      tooLong,
+      [],
+      `MySQL identifiers exceed 64 chars:\n${tooLong.map((n) => `${n.length} ${n}`).join("\n")}`,
+    );
+  });
+
+  it("production manager role migration extends UserRole enum additively", () => {
+    const file = path.join(MIGRATIONS_DIR, "20260824130000_production_manager_role", "migration.sql");
+    assert.ok(fs.existsSync(file), "production manager role migration.sql missing");
+    const sql = stripSqlComments(fs.readFileSync(file, "utf8"));
+    assert.match(sql, /ALTER\s+TABLE\s+`User`/i);
+    assert.match(sql, /MODIFY\s+COLUMN\s+`role`\s+ENUM\(/i);
+    assert.match(sql, /'PRODUCTION_MANAGER'/i);
+    assert.match(sql, /'ADMIN'/i);
+    assert.match(sql, /'PRODUCTION'/i);
+    assert.match(sql, /'QA'/i);
+    assert.doesNotMatch(sql, /ALTER\s+TABLE\s+"/i);
+    assert.doesNotMatch(sql, /DROP\s+COLUMN/i);
+    assert.doesNotMatch(sql, /DELETE\s+FROM/i);
+  });
 });

@@ -69,6 +69,8 @@ export type ProductionOperatorEntryFieldsProps = {
   prodDemoHl?: string;
   saveButtonTitle?: string;
   warnings?: string[];
+  /** Read-only shift session linkage after create/load. */
+  shiftLinkHint?: string | null;
 };
 
 /** Aligned MES entry row — Date · primary Qty · actions on one baseline (FT-PD-066). */
@@ -105,6 +107,7 @@ export function ProductionOperatorEntryFields({
   prodDemoHl,
   saveButtonTitle,
   warnings,
+  shiftLinkHint,
 }: ProductionOperatorEntryFieldsProps) {
   const unitLabel = formatProductionOperatorUnitLabel(unit);
   const fieldsDisabled = Boolean(disabled || runStartConfirmLocked);
@@ -240,6 +243,15 @@ export function ProductionOperatorEntryFields({
       <div className="space-y-0.5">
         {!runStartConfirmLocked ? (
           <ProductionOperatorQtyHelper maxAllowedQty={maxAllowedQty} unit={unit} labelPrefix={maxLabelPrefix} />
+        ) : null}
+        {shiftLinkHint ? (
+          <p
+            className="text-[11px] leading-snug text-slate-500"
+            data-testid="production-shift-link-hint"
+            role="status"
+          >
+            {shiftLinkHint}
+          </p>
         ) : null}
         {rmReadinessLoading ? (
           <p className="text-[11px] text-slate-500">Checking RM readiness…</p>

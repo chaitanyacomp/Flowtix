@@ -7,6 +7,7 @@ const PRODUCTION_VISIBLE_NAV_KEYS = new Set([
   "plan-dash",
   "wo",
   "prod",
+  "shift-prod",
   "rm-control-center",
 ]);
 
@@ -44,6 +45,12 @@ export function isWorkOrderRegisterNavActive(pathname: string): boolean {
   if (p === "/work-orders") return true;
   if (p.startsWith("/work-orders/")) return true;
   return false;
+}
+
+/** Shift Production landing + active session workspace. */
+export function isShiftProductionNavActive(pathname: string): boolean {
+  const p = stripPathQuery(pathname);
+  return p === "/shift-production" || p.startsWith("/shift-production/");
 }
 
 /** Production Flow nav keys shown after role + production allow-list filters. */

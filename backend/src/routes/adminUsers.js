@@ -5,7 +5,7 @@ const adminUserService = require("../services/adminUserService");
 
 const adminUsersRouter = express.Router();
 
-const ROLE_ENUM = z.enum(["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"]);
+const ROLE_ENUM = z.enum(["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "PRODUCTION_MANAGER", "QA"]);
 
 function requestAuditMeta(req) {
   const rawIp = req.ip || req.socket?.remoteAddress || "";

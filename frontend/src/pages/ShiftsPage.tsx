@@ -196,11 +196,12 @@ export function ShiftsPage() {
       return;
     }
     if ("error" in durationPreview) {
-      setError(durationPreview.error);
-      toast.showError(durationPreview.error);
-      if (/identical/i.test(durationPreview.error)) {
+      const previewError = durationPreview.error ?? "Invalid shift times";
+      setError(previewError);
+      toast.showError(previewError);
+      if (/identical/i.test(previewError)) {
         queueFocus({ target: "end-time", force: true });
-      } else if (/break/i.test(durationPreview.error)) {
+      } else if (/break/i.test(previewError)) {
         queueFocus({ target: "break-minutes", force: true });
       } else {
         queueFocus({ target: "start-time", force: true });

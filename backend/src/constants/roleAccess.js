@@ -4,7 +4,20 @@ const ROLE_ACCESS = Object.freeze({
   ADMIN: Object.freeze({ landingPath: "/dashboard", permissions: Object.freeze(["dashboard:admin", "users:manage"]) }),
   STORE: Object.freeze({ landingPath: "/dashboard", permissions: Object.freeze(["dashboard:store", "stock:read", "stock:write"]) }),
   PURCHASE: Object.freeze({ landingPath: "/dashboard", permissions: Object.freeze(["dashboard:purchase", "purchase:read", "purchase:write"]) }),
-  PRODUCTION: Object.freeze({ landingPath: "/dashboard", permissions: Object.freeze(["dashboard:production", "production:read", "production:write"]) }),
+  PRODUCTION: Object.freeze({
+    landingPath: "/dashboard",
+    permissions: Object.freeze(["dashboard:production", "production:read", "production:write"]),
+  }),
+  PRODUCTION_MANAGER: Object.freeze({
+    landingPath: "/dashboard",
+    permissions: Object.freeze([
+      "dashboard:production",
+      "production:read",
+      "production:write",
+      "production:manage",
+      "shift:manage",
+    ]),
+  }),
   QA: Object.freeze({ landingPath: "/dashboard", permissions: Object.freeze(["dashboard:qa", "quality:read", "quality:write"]) }),
 });
 

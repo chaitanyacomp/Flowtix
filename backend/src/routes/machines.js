@@ -37,8 +37,8 @@ const updateBodySchema = z.object({
   isActive: z.boolean().optional(),
 });
 
-/** Production master — readable by ops roles that will use machines later. */
-const READ_ROLES = ["ADMIN", "PRODUCTION", "STORE"];
+/** Production master — readable by ops roles that use machines (Shift Production includes PRODUCTION_MANAGER). */
+const READ_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER", "STORE"];
 /** Maintain like other production masters (ADMIN); PRODUCTION may also maintain. */
 const WRITE_ROLES = ["ADMIN", "PRODUCTION"];
 

@@ -14,6 +14,8 @@ export type ProductionRunStartEntryGate = {
   loading: boolean;
   confirmedRunCount: number;
   entryBlocked: boolean;
+  /** Machine for the selected confirmed run — used for shift qty-lock checks. */
+  selectedMachineId?: number | null;
 };
 
 type Props = {
@@ -95,8 +97,12 @@ export function ProductionRunStartConfirmPanel({
       selectedRunAllocationId:
         mode === "MACHINE_RUN_PLANNING" ? selectedRunAllocationId : undefined,
     });
-    return { mode, loading, confirmedRunCount, entryBlocked };
-  }, [data, confirmedRunCount, loading, error, selectedRunAllocationId]);
+    const selectedMachineId =
+      selectedRunAllocationId != null
+        ? (fgRuns.find((r) => r.runAllocationId === selectedRunAllocationId)?.machine?.id ?? null)
+        : null;
+    return { mode, loading, confirmedRunCount, entryBlocked, selectedMachineId };
+  }, [data, confirmedRunCount, loading, error, selectedRunAllocationId, fgRuns]);
 
   React.useEffect(() => {
     onEntryGateChange?.(entryGate);

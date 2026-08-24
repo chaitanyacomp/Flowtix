@@ -197,6 +197,7 @@ function createApp(options = {}) {
   app.use("/api/machines", machinesRouter);
   app.use("/api/operators", operatorsRouter);
   app.use("/api/shifts", shiftsRouter);
+  app.use("/api/machine-shift-sessions", require("./routes/machineShiftSessions").machineShiftSessionsRouter);
   app.use("/api/fg-production-standards", fgProductionStandardsRouter);
   app.use("/api/locations", locationsRouter);
   app.use("/api/scrap", scrapRouter);

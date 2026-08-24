@@ -1,12 +1,19 @@
 /**
- * Single source of truth for ERP user roles (Phase 2).
+ * Single source of truth for ERP user roles (Phase 2 + Shift Production manager).
  *
- * Approved roles: ADMIN, STORE, PURCHASE, PRODUCTION, QA
+ * Approved roles: ADMIN, STORE, PURCHASE, PRODUCTION, PRODUCTION_MANAGER, QA
  *
  * Domain/workflow terminology (QC stages, DISPATCH transaction types, etc.) is unchanged —
  * only JWT `user.role` and permission arrays use QA / STORE / PURCHASE here.
  */
-const ERP_ROLES = Object.freeze(["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"]);
+const ERP_ROLES = Object.freeze([
+  "ADMIN",
+  "STORE",
+  "PURCHASE",
+  "PRODUCTION",
+  "PRODUCTION_MANAGER",
+  "QA",
+]);
 
 /** Every active role in the app. */
 const ALL_APP_ROLES = ERP_ROLES;
@@ -89,6 +96,11 @@ const PRODUCTION_WRITE_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
 const PRODUCTION_READ_ROLES = Object.freeze(["ADMIN", "PRODUCTION", "STORE", "QA"]);
 const PRODUCTION_DASHBOARD_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
 const WO_PREPARE_CREATION_DASHBOARD_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
+
+/** Shift Production lifecycle — view sessions/reports. */
+const SHIFT_SESSION_VIEW_ROLES = Object.freeze(["ADMIN", "PRODUCTION_MANAGER", "PRODUCTION"]);
+/** Shift Production lifecycle — roles that may attempt manager actions (PRODUCTION only via fallback helper). */
+const SHIFT_SESSION_MANAGER_ROLES = Object.freeze(["ADMIN", "PRODUCTION_MANAGER", "PRODUCTION"]);
 
 /** QA — inspection posting, QA reports, hold/rejection (domain statuses still use QC_* names). */
 const QA_WRITE_ROLES = Object.freeze(["ADMIN", "QA"]);
@@ -184,6 +196,8 @@ module.exports = {
   PRODUCTION_READ_ROLES,
   PRODUCTION_DASHBOARD_ROLES,
   WO_PREPARE_CREATION_DASHBOARD_ROLES,
+  SHIFT_SESSION_VIEW_ROLES,
+  SHIFT_SESSION_MANAGER_ROLES,
   // qa
   QA_WRITE_ROLES,
   QA_PAGE_ROLES,

@@ -229,10 +229,10 @@ export function FgProductionStandardsPage() {
     const q = query.debouncedSearch;
     return rows.filter(
       (r) =>
-        matchesNameSearch(r.itemName, q) ||
-        matchesNameSearch(r.machineName, q) ||
-        matchesNameSearch(r.machineCode, q) ||
-        matchesNameSearch(String(r.cycleTimeSeconds), q),
+        matchesNameSearch(r.itemName ?? "", q) ||
+        matchesNameSearch(r.machineName ?? "", q) ||
+        matchesNameSearch(r.machineCode ?? "", q) ||
+        matchesNameSearch(String(r.cycleTimeSeconds ?? ""), q),
     );
   }, [rows, query.debouncedSearch]);
 

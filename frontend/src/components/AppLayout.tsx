@@ -80,12 +80,14 @@ import {
   MONTHLY_PLANNING_READ_ROLES,
   RM_CONTROL_CENTER_ROLES,
   PLANNING_DASHBOARD_ROLES,
+  SHIFT_PRODUCTION_ROLES,
 } from "../config/erpRoles";
 import { isStoreNavItemVisible } from "../lib/storeNavFilter";
 import { isPurchaseNavItemVisible } from "../lib/purchaseNavFilter";
 import {
   isProductionNavItemVisible,
   isRequirementCyclePlanningNavActive,
+  isShiftProductionNavActive,
   isWorkOrderRegisterNavActive,
   REQUIREMENT_CYCLE_PLANNING_HREF,
 } from "../lib/productionNavFilter";
@@ -304,6 +306,13 @@ const navGroups: NavGroup[] = [
       },
       { to: "/work-orders?flow=REGULAR_SO", navKey: "wo", label: "Work Order", roles: ["ADMIN", "STORE", "PRODUCTION"], icon: <Factory className="h-4 w-4 shrink-0" />, end: true },
       { to: "/production", navKey: "prod", label: "Production Workspace", roles: ["ADMIN", "PRODUCTION"], icon: <GitBranch className="h-4 w-4 shrink-0" /> },
+      {
+        to: "/shift-production",
+        navKey: "shift-prod",
+        label: "Shift Production",
+        roles: [...SHIFT_PRODUCTION_ROLES],
+        icon: <Clock className="h-4 w-4 shrink-0" />,
+      },
       {
         to: "/production/material-requests",
         navKey: "pmr",
@@ -601,7 +610,9 @@ export function AppLayout() {
                             ? isRequirementCyclePlanningNavActive(pathname)
                             : item.navKey === "wo"
                               ? isWorkOrderRegisterNavActive(pathname)
-                              : isActive;
+                              : item.navKey === "shift-prod"
+                                ? isShiftProductionNavActive(pathname)
+                                : isActive;
                         return cn("erp-nav-link text-[13px] leading-snug", active ? "erp-nav-link-active" : "");
                       }}
                     >

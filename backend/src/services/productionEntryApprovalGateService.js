@@ -107,6 +107,16 @@ async function approveProductionEntryWithLedgerPosting(tx, input) {
   const orderType = wol.workOrder?.salesOrder?.orderType;
   const isRegular = orderType != null && orderType !== "NO_QTY";
 
+  const {
+    assertProductionEntryMutationAllowedForShiftLock,
+  } = require("./machineShiftProductionQtyLockService");
+  await assertProductionEntryMutationAllowedForShiftLock(tx, {
+    workOrderId: wol.workOrderId,
+    runAllocationId: prod.runAllocationId ?? null,
+    shiftSessionId: prod.shiftSessionId ?? null,
+    shiftRunSegmentId: prod.shiftRunSegmentId ?? null,
+  });
+
   await assertProductionEntryAllowed(tx, {
     workOrderLineId: wol.id,
     producedQty: prod.producedQty,
@@ -127,12 +137,26 @@ async function approveProductionEntryWithLedgerPosting(tx, input) {
     data: { workflowStatus: PE_APPROVED },
   });
 
+  // Soft shift link: preserve historical; best-effort only when both null.
+  const { ensureShiftLinkOnProductionEntryApprove } = require("./productionEntryShiftLinkService");
+  let prodForLink = await tx.productionEntry.findUnique({
+    where: { id: productionEntryId },
+    include: { workOrderLine: { select: { workOrderId: true } } },
+  });
+  if (prodForLink) {
+    await ensureShiftLinkOnProductionEntryApprove(tx, prodForLink);
+    prodForLink = await tx.productionEntry.findUnique({
+      where: { id: productionEntryId },
+      include: { workOrderLine: { select: { workOrderId: true } } },
+    });
+  }
+
   if (!isRegular) {
     await ensureProductionExecutionRecord(tx, wol.workOrderId);
   }
 
   return {
-    prod,
+    prod: prodForLink ?? prod,
     wol,
     wo: wol.workOrder,
     isRegular,

@@ -2,9 +2,9 @@
  * Single source of truth for ERP user roles (frontend).
  * Mirrors `backend/src/constants/erpRoles.js` — keep them in sync.
  *
- * Phase 2 approved roles: ADMIN, STORE, PURCHASE, PRODUCTION, QA
+ * Approved roles: ADMIN, STORE, PURCHASE, PRODUCTION, PRODUCTION_MANAGER, QA
  */
-export const ERP_ROLES = ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"] as const;
+export const ERP_ROLES = ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "PRODUCTION_MANAGER", "QA"] as const;
 
 export type ErpRole = (typeof ERP_ROLES)[number];
 
@@ -82,9 +82,9 @@ export const WO_MACHINE_RUN_WRITE_ROLES = ["ADMIN", "PRODUCTION"] as const;
 export const REGULAR_SO_WO_CREATE_ROLES = ["ADMIN", "STORE"] as const;
 /** STORE — Green Level replenishment WO placement (monthly plan handoff) */
 export const GREEN_LEVEL_WO_PLACEMENT_ROLES = ["ADMIN", "STORE"] as const;
-export const PRODUCTION_WRITE_ROLES = ["ADMIN", "PRODUCTION"] as const;
-export const PRODUCTION_READ_ROLES = ["ADMIN", "PRODUCTION", "STORE", "QA"] as const;
-export const PRODUCTION_DASHBOARD_ROLES = ["ADMIN", "PRODUCTION"] as const;
+export const PRODUCTION_WRITE_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER"] as const;
+export const PRODUCTION_READ_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER", "STORE", "QA"] as const;
+export const PRODUCTION_DASHBOARD_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER"] as const;
 export const WO_PREPARE_CREATION_DASHBOARD_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
 
 /** QA (user role; workflow/domain strings may still say QC) */
@@ -120,6 +120,9 @@ export const REPORTS_WITH_ACCOUNTS_ROLES = REPORTS_ROLES;
 export const MONTHLY_PLANNING_READ_ROLES = ["ADMIN", "STORE", "PURCHASE"] as const;
 export const MONTHLY_PLANNING_WRITE_ROLES = ["ADMIN", "STORE"] as const;
 export const MONTHLY_PLANNING_PURCHASE_REVIEW_ROLES = ["ADMIN", "PURCHASE"] as const;
+
+/** Shift Production (machine shift sessions) — view + operate */
+export const SHIFT_PRODUCTION_ROLES = ["ADMIN", "PRODUCTION_MANAGER", "PRODUCTION"] as const;
 
 /** Legacy aliases */
 export const PURCHASE_WITH_ACCOUNTS_ROLES = PURCHASE_BILL_READ_ROLES;

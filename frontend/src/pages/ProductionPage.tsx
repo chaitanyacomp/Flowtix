@@ -102,6 +102,11 @@ import { ProductionNoQtyWorkQueuePanel } from "../components/erp/production/Prod
 import { ERPBackNavigation } from "../components/erp/foundation/ERPBackNavigation";
 import type { ProductionRunStartEntryGate } from "../components/erp/production/ProductionRunStartConfirmPanel";
 import {
+  fetchOpenShiftSession,
+  fetchShiftSession,
+  SHIFT_REPORT_PRODUCTION_LOCKED_MESSAGE,
+} from "../lib/machineShiftSessionApi";
+import {
   shouldEmbedNoQtyRecentEntriesInLoggingWorkbench,
   shouldShowNoQtyOperatorWorkstationChrome,
   shouldShowProductionWorkspaceCompactLayout,
@@ -307,6 +312,14 @@ type ProdEntryRow = {
   qcAcceptedQty?: number;
   qcRejectedQty?: number;
   qcPendingQty?: number;
+  /** Soft link to open Machine Shift Session (server-resolved). */
+  shiftLink?: {
+    linked?: boolean;
+    shiftSessionId?: number | null;
+    shiftSessionNo?: string | null;
+    shiftRunSegmentId?: number | null;
+    shiftRunSegmentLabel?: string | null;
+  } | null;
   workOrderLine: {
     id: number;
     fgItem: { itemName: string; unit?: string };
@@ -533,6 +546,7 @@ export function ProductionPage() {
     loading: false,
     confirmedRunCount: 0,
     entryBlocked: false,
+    selectedMachineId: null,
   });
   const onRunStartEntryGateChange = React.useCallback((gate: ProductionRunStartEntryGate) => {
     setRunStartEntryGate(gate);
@@ -810,6 +824,8 @@ export function ProductionPage() {
     [setProducedQtyStr],
   );
   const [posting, setPosting] = React.useState(false);
+  /** Last create response shift link — shown until entries refresh supplies shiftLink. */
+  const [lastCreatedShiftLink, setLastCreatedShiftLink] = React.useState<ProdEntryRow["shiftLink"]>(null);
 
   const demoProdQtyPrefilledRef = React.useRef(false);
   React.useEffect(() => {
@@ -1028,6 +1044,7 @@ export function ProductionPage() {
       loading: false,
       confirmedRunCount: 0,
       entryBlocked: false,
+      selectedMachineId: null,
     });
   }, [effectiveScopedWoId]);
 
@@ -1335,6 +1352,7 @@ export function ProductionPage() {
         loading: false,
         confirmedRunCount: 0,
         entryBlocked: false,
+        selectedMachineId: null,
       });
       resetScopedProductionWorkspaceState();
       const href = productionHrefFromProductionWorkspace({
@@ -2276,6 +2294,7 @@ export function ProductionPage() {
         loading: false,
         confirmedRunCount: 0,
         entryBlocked: false,
+        selectedMachineId: null,
       });
       clearWoLineSelection({ force: true });
       urlSelectionAppliedRef.current = false;
@@ -2329,6 +2348,7 @@ export function ProductionPage() {
         loading: false,
         confirmedRunCount: 0,
         entryBlocked: false,
+        selectedMachineId: null,
       });
       clearWoLineSelection({ force: true });
       urlSelectionAppliedRef.current = false;
@@ -2588,6 +2608,90 @@ export function ProductionPage() {
 
   const regularCreateFormLockedByDraft = Boolean(latestDraftForSelectedWoLine);
 
+  const productionShiftLinkHint = React.useMemo(() => {
+    const fromEntry =
+      latestDraftForSelectedWoLine?.latest?.shiftLink ??
+      (wolId > 0
+        ? entries.find((e) => Number(e.workOrderLine?.id ?? 0) === wolId)?.shiftLink
+        : null) ??
+      lastCreatedShiftLink ??
+      null;
+    if (!fromEntry) {
+      // After load with no PE yet — do not imply a failed match until create/load has a row.
+      return null;
+    }
+    if (fromEntry.linked && fromEntry.shiftSessionNo) {
+      return `Linked to Shift ${fromEntry.shiftSessionNo}`;
+    }
+    return "No active matching shift";
+  }, [latestDraftForSelectedWoLine, wolId, entries, lastCreatedShiftLink]);
+
+  React.useEffect(() => {
+    setLastCreatedShiftLink(null);
+  }, [wolId]);
+
+  const [shiftProductionQtyLocked, setShiftProductionQtyLocked] = React.useState(false);
+  const [shiftProductionQtyLockReason, setShiftProductionQtyLockReason] = React.useState<string | null>(
+    null,
+  );
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const sessionIdFromEntry =
+      latestDraftForSelectedWoLine?.latest?.shiftLink?.shiftSessionId ??
+      (wolId > 0
+        ? entries.find((e) => Number(e.workOrderLine?.id ?? 0) === wolId)?.shiftLink?.shiftSessionId
+        : null) ??
+      lastCreatedShiftLink?.shiftSessionId ??
+      null;
+    const machineId = runStartEntryGate.selectedMachineId ?? null;
+
+    async function loadLock() {
+      try {
+        if (sessionIdFromEntry != null && Number(sessionIdFromEntry) > 0) {
+          const res = await fetchShiftSession(Number(sessionIdFromEntry));
+          if (cancelled) return;
+          setShiftProductionQtyLocked(Boolean(res.session?.productionQtyLocked));
+          setShiftProductionQtyLockReason(res.session?.productionQtyLockReason ?? null);
+          return;
+        }
+        if (machineId != null && machineId > 0) {
+          const res = await fetchOpenShiftSession(machineId);
+          if (cancelled) return;
+          const sess = res.session;
+          setShiftProductionQtyLocked(Boolean(sess?.productionQtyLocked));
+          setShiftProductionQtyLockReason(sess?.productionQtyLockReason ?? null);
+          return;
+        }
+        if (!cancelled) {
+          setShiftProductionQtyLocked(false);
+          setShiftProductionQtyLockReason(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setShiftProductionQtyLocked(false);
+          setShiftProductionQtyLockReason(null);
+        }
+      }
+    }
+
+    void loadLock();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    latestDraftForSelectedWoLine,
+    wolId,
+    entries,
+    lastCreatedShiftLink,
+    runStartEntryGate.selectedMachineId,
+    liveTick,
+  ]);
+
+  const shiftQtyLockMessage =
+    shiftProductionQtyLockReason ||
+    (shiftProductionQtyLocked ? SHIFT_REPORT_PRODUCTION_LOCKED_MESSAGE : null);
+
   const selectedMetrics = React.useMemo(() => {
     if (!selected) return null;
     const approved = selected.approvedProducedQty ?? 0;
@@ -2716,6 +2820,7 @@ export function ProductionPage() {
       !productionQuantityCompleted &&
       !woProductionLifecycleBlocked &&
       !regularCreateFormLockedByDraft &&
+      !shiftProductionQtyLocked &&
       !shouldHideRegularProductionEntryForReport(regularSoCoverage) &&
       !(navigateNoQtyContext && noQtyBlockProductionEntry) &&
       !runStartEntryBlocked &&
@@ -3790,6 +3895,10 @@ export function ProductionPage() {
   async function onPost(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    if (shiftProductionQtyLocked) {
+      setError(shiftQtyLockMessage ?? SHIFT_REPORT_PRODUCTION_LOCKED_MESSAGE);
+      return;
+    }
     if (regularCreateFormLockedByDraft) {
       setError(
         "A draft production batch already exists for this line. Edit, approve, or cancel it above before recording another batch.",
@@ -3841,7 +3950,10 @@ export function ProductionPage() {
     const prevWol = wolId;
     setPosting(true);
     try {
-      await apiFetch("/api/production/production-entries", {
+      const created = await apiFetch<{
+        prod?: ProdEntryRow;
+        shiftLink?: ProdEntryRow["shiftLink"];
+      }>("/api/production/production-entries", {
         method: "POST",
         body: JSON.stringify({
           workOrderLineId: wolId,
@@ -3852,6 +3964,9 @@ export function ProductionPage() {
             : {}),
         }),
       });
+      if (created?.shiftLink) {
+        setLastCreatedShiftLink(created.shiftLink);
+      }
       setEditing(null);
       resetProducedQtyField();
       const { flatLines: nextFlat } = await refresh();
@@ -3871,6 +3986,10 @@ export function ProductionPage() {
   async function saveEditDraft() {
     if (!editing) return;
     setError(null);
+    if (shiftProductionQtyLocked) {
+      setError(shiftQtyLockMessage ?? SHIFT_REPORT_PRODUCTION_LOCKED_MESSAGE);
+      return;
+    }
     const editQtyNum = Number(editQty);
     if (!Number.isFinite(editQtyNum) || editQtyNum <= 0) {
       setError("Produced qty is required.");
@@ -4107,6 +4226,10 @@ export function ProductionPage() {
   }
 
   async function approveDraftDirect(id: number, approvalExtras: ApprovalExtras = {}) {
+    if (shiftProductionQtyLocked) {
+      setError(shiftQtyLockMessage ?? SHIFT_REPORT_PRODUCTION_LOCKED_MESSAGE);
+      return;
+    }
     const row = entries.find((e) => e.id === id);
     const greenLevelBatch =
       navigateGreenLevelContext || isGreenLevelProductionEntry(row);
@@ -4197,6 +4320,10 @@ export function ProductionPage() {
   }
 
   function approveDraft(id: number) {
+    if (shiftProductionQtyLocked) {
+      setError(shiftQtyLockMessage ?? SHIFT_REPORT_PRODUCTION_LOCKED_MESSAGE);
+      return;
+    }
     const review = draftFinalizationReview(id);
     const hardened = navigateNoQtyContext || navigateGreenLevelContext || isGreenLevelProductionEntry(review?.row);
     if (review && hardened) {
@@ -4242,6 +4369,10 @@ export function ProductionPage() {
 
   async function confirmReverseModal() {
     if (!reverseModalEntry || !isAdmin) return;
+    if (shiftProductionQtyLocked) {
+      setReverseModalError(shiftQtyLockMessage ?? SHIFT_REPORT_PRODUCTION_LOCKED_MESSAGE);
+      return;
+    }
     if (!canOfferProductionReverse(reverseModalEntry, isAdmin)) {
       setReverseModalError("This entry cannot be reversed from Production (QC already completed or not reversible).");
       return;
@@ -4289,6 +4420,10 @@ export function ProductionPage() {
   }
 
   async function deleteDraft(id: number) {
+    if (shiftProductionQtyLocked) {
+      setError(shiftQtyLockMessage ?? SHIFT_REPORT_PRODUCTION_LOCKED_MESSAGE);
+      return;
+    }
     if (!window.confirm("Delete this draft production batch?")) return;
     setError(null);
     setRowBusy(id);
@@ -5211,7 +5346,7 @@ export function ProductionPage() {
       producedQtyStr={producedQtyStr}
       prodQtyPlaceholder={operatorProdQtyPlaceholder}
       unit={selected?.fgItem.unit ?? null}
-      disabled={rmProductionEntryBlocked || productionQuantityCompleted}
+      disabled={rmProductionEntryBlocked || productionQuantityCompleted || shiftProductionQtyLocked}
       runStartConfirmLocked={runStartEntryBlocked}
       maxAllowedQty={productionEntryMaxQty}
       maxLabelPrefix={
@@ -5221,7 +5356,12 @@ export function ProductionPage() {
       wolId={wolId}
       rmReadinessLoading={rmReadinessLoading}
       rmAllowedNowQty={rmAllowedNowQty}
-      rmProductionEntryBlocked={rmProductionEntryBlocked || productionQuantityCompleted || runStartEntryBlocked}
+      rmProductionEntryBlocked={
+        rmProductionEntryBlocked ||
+        productionQuantityCompleted ||
+        runStartEntryBlocked ||
+        shiftProductionQtyLocked
+      }
       showRmCapHint={!productionOperatorIdentityProps && !hardenedWoSummary}
       posting={posting}
       createFormCanSubmit={createFormCanSubmit}
@@ -5231,7 +5371,8 @@ export function ProductionPage() {
         (selectedMetrics?.remainingQty ?? 0) <= 0 ||
         Boolean(rmProductionEntryBlocked) ||
         productionQuantityCompleted ||
-        runStartEntryBlocked
+        runStartEntryBlocked ||
+        shiftProductionQtyLocked
       }
       onUseRemaining={fillOperatorRemainingQty}
       showUseRmSupportedMax={Boolean(showRegularRmReadiness || fromNoQtySo) && rmEntryQtyCap != null}
@@ -5251,9 +5392,17 @@ export function ProductionPage() {
       prodDemoHl={prodDemoHl}
       saveButtonTitle={
         opts?.saveButtonTitle ??
-        (runStartEntryBlocked ? PRODUCTION_ENTRY_AWAIT_RUN_CONFIRM_MESSAGE : undefined)
+        (shiftProductionQtyLocked
+          ? shiftQtyLockMessage ?? SHIFT_REPORT_PRODUCTION_LOCKED_MESSAGE
+          : runStartEntryBlocked
+            ? PRODUCTION_ENTRY_AWAIT_RUN_CONFIRM_MESSAGE
+            : undefined)
       }
-      warnings={productionWarnings}
+      warnings={[
+        ...(productionWarnings ?? []),
+        ...(shiftQtyLockMessage ? [shiftQtyLockMessage] : []),
+      ]}
+      shiftLinkHint={productionShiftLinkHint}
     />
   );
 

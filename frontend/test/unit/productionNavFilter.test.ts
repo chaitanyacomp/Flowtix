@@ -19,6 +19,7 @@ const PRODUCTION_FLOW_ITEMS = [
   { navKey: "no-qty-agreements", roles: [...PLANNING_DASHBOARD_ROLES] },
   { navKey: "wo", roles: ["ADMIN", "STORE", "PRODUCTION"] },
   { navKey: "prod", roles: ["ADMIN", "PRODUCTION"] },
+  { navKey: "shift-prod", roles: ["ADMIN", "PRODUCTION_MANAGER", "PRODUCTION"] },
 ];
 
 describe("productionNavFilter — Requirement & Cycle Planning", () => {
@@ -26,7 +27,7 @@ describe("productionNavFilter — Requirement & Cycle Planning", () => {
     expect(isProductionNavItemVisible("PRODUCTION", "plan-dash")).toBe(true);
     expect(listVisibleProductionFlowNavKeys("PRODUCTION", PRODUCTION_FLOW_ITEMS)).toContain("plan-dash");
     expect(listVisibleProductionFlowNavKeys("PRODUCTION", PRODUCTION_FLOW_ITEMS)).toEqual(
-      expect.arrayContaining(["plan-dash", "wo", "prod"]),
+      expect.arrayContaining(["plan-dash", "wo", "prod", "shift-prod"]),
     );
     expect(listVisibleProductionFlowNavKeys("PRODUCTION", PRODUCTION_FLOW_ITEMS)).not.toContain("no-qty-agreements");
   });

@@ -1,5 +1,4 @@
 import * as React from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { cn } from "../../lib/utils";
@@ -12,9 +11,10 @@ import {
 } from "../../lib/gstinValidation";
 import { Plus, Star, Trash2 } from "lucide-react";
 import { ErpModal } from "./ErpModal";
+import { ErpModalFrame } from "./ErpModalFrame";
 
 /** Shared layout tokens for Customer / Supplier master forms */
-export const partyMasterFormClass = "space-y-3";
+export const partyMasterFormClass = "flex min-h-0 flex-1 flex-col";
 export const partyMasterGridClass = "mt-2 grid gap-3 sm:grid-cols-2";
 export const partyMasterRegisteredSectionClass =
   "rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-3 shadow-sm ring-1 ring-slate-100/80";
@@ -52,15 +52,16 @@ export function PartyMasterModal({
 }) {
   const titleId = React.useId();
   return (
-    <ErpModal onClose={onClose} aria-labelledby={titleId}>
-      <Card className="erp-modal-shell max-h-[90vh] w-full max-w-3xl overflow-hidden">
-        <CardHeader className="border-b border-slate-100 px-4 py-3">
-          <CardTitle id={titleId} className="text-base font-semibold text-slate-900">
-            {title}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="max-h-[calc(90vh-4.25rem)] overflow-y-auto px-4 py-3">{children}</CardContent>
-      </Card>
+    <ErpModal onClose={onClose} aria-labelledby={titleId} closeOnBackdropClick draggable>
+      <ErpModalFrame
+        title={title}
+        titleId={titleId}
+        onClose={onClose}
+        size="lg"
+        closeButtonTestId="party-master-modal-close"
+      >
+        {children}
+      </ErpModalFrame>
     </ErpModal>
   );
 }
@@ -452,14 +453,14 @@ export function PartyMasterFormFooter({
   submitLabel: string;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 pt-3">
+    <>
       <Button type="button" variant="outline" className="h-9" onClick={onCancel} disabled={submitting}>
         Cancel
       </Button>
       <Button type="submit" className="h-9" disabled={submitting}>
         {submitting ? "Saving…" : submitLabel}
       </Button>
-    </div>
+    </>
   );
 }
 

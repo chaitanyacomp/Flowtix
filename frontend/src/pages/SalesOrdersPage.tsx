@@ -31,6 +31,7 @@ import {
 } from "../components/sales/SalesCommercialInvoiceView";
 import { Button } from "../components/ui/button";
 import { ErpModal } from "../components/erp/ErpModal";
+import { ErpModalFrame, ErpModalFrameBody, ErpModalFrameFooter } from "../components/erp/ErpModalFrame";
 import { REGULAR_TERMS } from "../lib/flowTerminology";
 import { woPreparePositionLabel, woPreparePrimaryCta, woPreparePrepareHref, type WoPrepareOperational } from "../lib/woPrepareOperationalStage";
 import { formatProcessStageDisplayLabel } from "../lib/operationalErrorPresentation";
@@ -2474,13 +2475,10 @@ export function SalesOrdersPage() {
       ) : null}
 
       {noQtyCreateOpen ? (
-        <ErpModal onClose={requestCloseNoQtyCreateModal}>
-          <Card className="w-full max-w-lg rounded-lg border border-slate-200 bg-white shadow-lg">
-            <CardHeader>
-              <CardTitle className="text-base">Create No Qty SO</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={saveNoQtyCreate} className="erp-form space-y-3">
+        <ErpModal onClose={requestCloseNoQtyCreateModal} closeOnBackdropClick>
+          <ErpModalFrame size="md" title="Create No Qty SO" onClose={requestCloseNoQtyCreateModal}>
+            <form onSubmit={saveNoQtyCreate} className="flex min-h-0 flex-1 flex-col">
+              <ErpModalFrameBody className="erp-form space-y-3">
                 <div className="erp-form-field">
                   <span className="erp-form-label">SO type</span>
                   <Input value="No Qty SO" disabled />
@@ -2572,26 +2570,25 @@ export function SalesOrdersPage() {
                     + Add item
                   </Button>
                 </div>
-
-                <div className="flex gap-2 pt-2">
-                  <Button type="button" variant="outline" onClick={requestCloseNoQtyCreateModal} disabled={savingNoQty}>
-                    Cancel
-                  </Button>
-                  <Button
-                    type="submit"
-                    disabled={
-                      savingNoQty ||
-                      noQtyCustomerId <= 0 ||
-                      noQtyPoRef.trim() === "" ||
-                      noQtyLines.filter((l) => Number(l.itemId) > 0).length === 0
-                    }
-                  >
-                    {savingNoQty ? "Saving…" : "Save"}
-                  </Button>
-                </div>
-              </form>
-            </CardContent>
-          </Card>
+              </ErpModalFrameBody>
+              <ErpModalFrameFooter>
+                <Button type="button" variant="outline" onClick={requestCloseNoQtyCreateModal} disabled={savingNoQty}>
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={
+                    savingNoQty ||
+                    noQtyCustomerId <= 0 ||
+                    noQtyPoRef.trim() === "" ||
+                    noQtyLines.filter((l) => Number(l.itemId) > 0).length === 0
+                  }
+                >
+                  {savingNoQty ? "Saving…" : "Save"}
+                </Button>
+              </ErpModalFrameFooter>
+            </form>
+          </ErpModalFrame>
         </ErpModal>
       ) : null}
 
@@ -3429,15 +3426,14 @@ export function SalesOrdersPage() {
       ) : null}
 
       {editSo ? (
-        <ErpModal onClose={requestCloseEditSoModal}>
-          <Card className="w-full max-w-lg rounded-lg border border-slate-200 bg-white shadow-lg">
-            <CardHeader>
-              <CardTitle className="text-base">
-                Edit draft — Sales Order No: {displaySalesOrderNo(editSo.id, editSo.docNo)}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form ref={editFormRef} onSubmit={saveEdit} className="erp-form space-y-3">
+        <ErpModal onClose={requestCloseEditSoModal} closeOnBackdropClick>
+          <ErpModalFrame
+            size="md"
+            onClose={requestCloseEditSoModal}
+            title={`Edit draft — Sales Order No: ${displaySalesOrderNo(editSo.id, editSo.docNo)}`}
+          >
+            <form ref={editFormRef} onSubmit={saveEdit} className="flex min-h-0 flex-1 flex-col">
+              <ErpModalFrameBody className="erp-form space-y-3">
                 <p className="text-sm text-slate-600">
                   {editSo.orderType === "NORMAL" ? (
                     <>
@@ -3717,7 +3713,8 @@ export function SalesOrdersPage() {
                     );
                   })}
                 </div>
-                <div className="flex gap-2 pt-2">
+              </ErpModalFrameBody>
+              <ErpModalFrameFooter>
                   <Button type="button" variant="outline" onClick={requestCloseEditSoModal} disabled={savingEdit}>
                     Cancel
                   </Button>
@@ -3737,10 +3734,9 @@ export function SalesOrdersPage() {
                       {savingEdit ? "Saving…" : "Save"}
                     </Button>
                   </FieldShortcutHint>
-                </div>
-              </form>
-            </CardContent>
-          </Card>
+              </ErpModalFrameFooter>
+            </form>
+          </ErpModalFrame>
         </ErpModal>
       ) : null}
 

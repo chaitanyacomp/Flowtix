@@ -26,6 +26,7 @@ import {
   PartyMasterTextArea,
   type PartyLocationDraft,
 } from "./partyMasterUi";
+import { ErpModalFrameBody, ErpModalFrameFooter } from "./ErpModalFrame";
 
 export type DeliveryAddressDraft = PartyLocationDraft;
 
@@ -295,6 +296,7 @@ export function CustomerMasterForm({ states, onCancel, onSaved, editingId, onDir
 
   return (
     <form onSubmit={onSubmit} className={partyMasterFormClass}>
+      <ErpModalFrameBody className="space-y-3">
       <PartyMasterSection variant="registered" title="Registered entity">
         <div className={partyMasterGridClass}>
           <PartyMasterField label="Customer name" className="sm:col-span-2">
@@ -370,12 +372,15 @@ export function CustomerMasterForm({ states, onCancel, onSaved, editingId, onDir
       </PartyMasterSection>
 
       {error ? <PartyMasterFormError message={error} /> : null}
+      </ErpModalFrameBody>
 
-      <PartyMasterFormFooter
-        onCancel={onCancel}
-        submitting={submitting}
-        submitLabel={editingId ? "Save customer" : "Create customer"}
-      />
+      <ErpModalFrameFooter>
+        <PartyMasterFormFooter
+          onCancel={onCancel}
+          submitting={submitting}
+          submitLabel={editingId ? "Save customer" : "Create customer"}
+        />
+      </ErpModalFrameFooter>
     </form>
   );
 }

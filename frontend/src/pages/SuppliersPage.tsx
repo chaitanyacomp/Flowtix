@@ -315,7 +315,6 @@ export function SuppliersPage() {
         <MasterEmptyState
           title="No suppliers yet"
           description="Add a supplier master to capture GST details and supply locations."
-          action={addBtn}
         />
       ) : filtered.length === 0 ? (
         <MasterNoResultsState query={query.debouncedSearch || "filters"} onClear={clearFilters} />

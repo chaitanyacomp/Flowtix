@@ -19,6 +19,7 @@ import {
 } from "../components/erp/CommercialWorkflowStrip";
 import { NO_QTY_TERMS } from "../lib/flowTerminology";
 import { ErpModal } from "../components/erp/ErpModal";
+import { ErpModalFrame, ErpModalFrameBody, ErpModalFrameFooter } from "../components/erp/ErpModalFrame";
 import {
   type QuoteLineDraft,
   defaultQuoteLineDraft,
@@ -657,16 +658,19 @@ export function QuotationsPage() {
       ) : null}
 
       {editQ ? (
-        <ErpModal onClose={requestCloseEditModal}>
-          <Card className="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
-            <CardHeader className="shrink-0 pb-2">
-              <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+        <ErpModal onClose={requestCloseEditModal} closeOnBackdropClick>
+          <ErpModalFrame
+            size="lg"
+            onClose={requestCloseEditModal}
+            title={
+              <div className="flex flex-wrap items-center gap-2 text-base font-semibold text-slate-900">
                 <span>Edit quotation {editQ.quotationNo || `#${editQ.id}`}</span>
                 {flowTypeBadge(editQ.flowTypeSnapshot)}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="overflow-y-auto">
-              <form onSubmit={saveEdit} className="erp-form">
+              </div>
+            }
+          >
+            <form onSubmit={saveEdit} className="flex min-h-0 flex-1 flex-col">
+              <ErpModalFrameBody className="erp-form space-y-3">
                 {quoteLines.map((l, i) => (
                   <div key={`eq-${i}`} className="erp-form-line-card">
                     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
@@ -769,17 +773,17 @@ export function QuotationsPage() {
                   <span className="erp-form-label">Terms</span>
                   <Input value={terms} onChange={(e) => setTerms(e.target.value)} />
                 </div>
-                <div className="flex gap-2">
-                  <Button type="button" variant="outline" onClick={requestCloseEditModal} disabled={saving}>
-                    Cancel
-                  </Button>
-                  <Button type="submit" disabled={saving}>
-                    {saving ? "Saving…" : "Save"}
-                  </Button>
-                </div>
-              </form>
-            </CardContent>
-          </Card>
+              </ErpModalFrameBody>
+              <ErpModalFrameFooter>
+                <Button type="button" variant="outline" onClick={requestCloseEditModal} disabled={saving}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={saving}>
+                  {saving ? "Saving…" : "Save"}
+                </Button>
+              </ErpModalFrameFooter>
+            </form>
+          </ErpModalFrame>
         </ErpModal>
       ) : null}
     </div>

@@ -26,6 +26,7 @@ import { useShortcutHints } from "../../hooks/useShortcutHints";
 import { FieldShortcutHint } from "../../components/ui/FieldShortcutHint";
 import { FIELD_HINT_GRID_NAV, FIELD_HINT_PO_SUPPLIER, FIELD_HINT_SAVE } from "../../lib/shortcutHintCopy";
 import { ErpModal } from "../../components/erp/ErpModal";
+import { ErpModalFrame, ErpModalFrameBody, ErpModalFrameFooter } from "../../components/erp/ErpModalFrame";
 import {
   buildInitialPoLine,
   computeLineAmount,
@@ -903,14 +904,16 @@ export function RmPurchaseListPage() {
         <ErpModal
           onClose={requestCloseNewPoModal}
           aria-labelledby="rm-po-new-title"
+          closeOnBackdropClick
         >
-          <Card className="erp-modal-shell max-h-[90vh] overflow-y-auto rounded-xl border-slate-200/90 shadow-xl ring-1 ring-slate-200/50">
-            <CardHeader className="border-b border-slate-100 bg-gradient-to-b from-slate-50/95 to-white pb-3">
-              <CardTitle id="rm-po-new-title" className="text-base font-semibold text-slate-900">
-                New purchase order
-              </CardTitle>
-            </CardHeader>
-            <CardContent ref={newPoModalFormRef} className="space-y-3">
+          <ErpModalFrame
+            size="xl"
+            titleId="rm-po-new-title"
+            title="New purchase order"
+            onClose={requestCloseNewPoModal}
+          >
+            <div className="flex min-h-0 flex-1 flex-col">
+              <ErpModalFrameBody ref={newPoModalFormRef} className="space-y-3">
               {error ? (
                 <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
               ) : null}
@@ -1143,7 +1146,8 @@ export function RmPurchaseListPage() {
                   Add line
                 </Button>
               </div>
-              <div className="flex flex-wrap gap-2 pt-1">
+              </ErpModalFrameBody>
+              <ErpModalFrameFooter>
                 <Button
                   type="button"
                   variant="outline"
@@ -1171,9 +1175,9 @@ export function RmPurchaseListPage() {
                     {creatingPo ? "Saving…" : "Save & open"}
                   </Button>
                 </FieldShortcutHint>
-              </div>
-            </CardContent>
-          </Card>
+              </ErpModalFrameFooter>
+            </div>
+          </ErpModalFrame>
         </ErpModal>
       ) : null}
     </PageContainer>

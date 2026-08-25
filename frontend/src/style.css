@@ -1392,8 +1392,42 @@
     @apply w-full max-w-md overflow-x-hidden overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg;
   }
 
+  /** Overflow-safe Add/Edit modal chrome (header + scroll body + sticky footer). */
+  .erp-modal-frame {
+    @apply flex w-[calc(100vw-2rem)] max-h-[min(90vh,56rem)] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg;
+  }
+
+  .erp-modal-frame__header {
+    @apply flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-3;
+  }
+
+  .erp-modal-frame__content {
+    @apply flex min-h-0 flex-1 flex-col overflow-hidden;
+  }
+
+  .erp-modal-frame__body {
+    @apply min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-3 pb-6;
+    scrollbar-gutter: stable;
+  }
+
+  .erp-modal-frame__footer {
+    @apply flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-slate-200 bg-white px-4 py-3 shadow-[0_-8px_16px_-16px_rgba(0,0,0,0.55)];
+  }
+
   .erp-modal-backdrop {
     @apply fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overflow-x-hidden bg-black/40 p-4 sm:items-center sm:p-4;
+  }
+
+  .erp-modal-panel {
+    @apply max-w-full;
+  }
+
+  .erp-modal-panel--draggable [data-erp-modal-drag-handle] {
+    @apply cursor-grab select-none;
+  }
+
+  .erp-modal-panel--draggable [data-erp-modal-drag-handle]:active {
+    @apply cursor-grabbing;
   }
 
   /** Sticky operational anchor (extends to edges of padded erp-main). */

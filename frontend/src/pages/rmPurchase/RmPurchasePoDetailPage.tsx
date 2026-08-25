@@ -21,6 +21,7 @@ import {
   FIELD_HINT_SAVE,
 } from "../../lib/shortcutHintCopy";
 import { ErpModal } from "../../components/erp/ErpModal";
+import { ErpModalFrame, ErpModalFrameBody, ErpModalFrameFooter } from "../../components/erp/ErpModalFrame";
 import { GrnPostReceiptModal } from "../../components/rmPurchase/GrnPostReceiptModal";
 import { ShortCloseProcurementDialog } from "../../components/rmPurchase/ShortCloseProcurementDialog";
 import { canOfferProcurementShortClose } from "../../lib/procurementShortClose";
@@ -1334,14 +1335,19 @@ export function RmPurchasePoDetailPage() {
             setSupplierPoNumberError(null);
           }}
           aria-labelledby="rm-po-edit-title"
+          closeOnBackdropClick
         >
-          <Card className="erp-modal-shell max-h-[90vh] overflow-y-auto">
-            <CardHeader className="pb-2">
-              <CardTitle id="rm-po-edit-title" className="text-base">
-                Edit {formatRmPoNo(po.id)}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
+          <ErpModalFrame
+            size="xl"
+            titleId="rm-po-edit-title"
+            title={`Edit ${formatRmPoNo(po.id)}`}
+            onClose={() => {
+              setEditOpen(false);
+              setSupplierPoNumberError(null);
+            }}
+          >
+            <div className="flex min-h-0 flex-1 flex-col">
+              <ErpModalFrameBody className="space-y-3">
               {relaxedTax ? (
                 <p className="rounded-md border border-amber-200 bg-amber-50/90 px-3 py-2 text-xs text-amber-950">
                   Testing mode: missing master fields use server fallbacks on save.
@@ -1558,7 +1564,8 @@ export function RmPurchasePoDetailPage() {
                   Add line
                 </Button>
               ) : null}
-              <div className="flex flex-wrap gap-2 pt-2">
+              </ErpModalFrameBody>
+              <ErpModalFrameFooter>
                 <Button type="button" variant="outline" onClick={() => setEditOpen(false)} disabled={savingPo}>
                   Close
                 </Button>
@@ -1581,9 +1588,9 @@ export function RmPurchasePoDetailPage() {
                     {savingPo ? "Saving…" : "Save changes"}
                   </Button>
                 </FieldShortcutHint>
-              </div>
-            </CardContent>
-          </Card>
+              </ErpModalFrameFooter>
+            </div>
+          </ErpModalFrame>
         </ErpModal>
       ) : null}
 

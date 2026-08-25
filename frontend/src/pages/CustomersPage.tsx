@@ -315,7 +315,6 @@ export function CustomersPage() {
         <MasterEmptyState
           title="No customers yet"
           description="Add a customer master to capture GST details and delivery locations."
-          action={addBtn}
         />
       ) : filtered.length === 0 ? (
         <MasterNoResultsState query={query.debouncedSearch || "filters"} onClear={clearFilters} />

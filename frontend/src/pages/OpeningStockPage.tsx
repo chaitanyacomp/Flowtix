@@ -10,6 +10,7 @@ import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../hooks/useAuth";
 import { Pencil, CheckCircle2, Plus, Trash2, Undo2, X } from "lucide-react";
 import { ErpModal } from "../components/erp/ErpModal";
+import { ErpModalFrame, ErpModalFrameBody, ErpModalFrameFooter } from "../components/erp/ErpModalFrame";
 
 type StockBucket = "USABLE" | "QC_HOLD" | "QC_PENDING" | "REWORK" | "SCRAP";
 type OpeningStockStatus = "DRAFT" | "APPROVED";
@@ -448,71 +449,66 @@ export function OpeningStockPage() {
       </div>
 
       {showForm ? (
-        <ErpModal onClose={closeForm}>
-          <Card className="erp-modal-shell flex w-[calc(100vw-2rem)] max-w-[640px] max-h-[85vh] flex-col overflow-hidden">
-            <div className="sticky top-0 z-[2] flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-3">
-              <div className="text-base font-semibold text-slate-900">{editingId != null ? "Edit Opening Stock" : "Add Opening Stock"}</div>
-              <Button type="button" variant="ghost" size="icon" className="h-9 w-9 shrink-0" aria-label="Close" onClick={closeForm}>
-                <X className="h-5 w-5" />
-              </Button>
-            </div>
-            <CardContent className="min-h-0 flex-1 p-0">
-              <form onSubmit={onSubmit} className="flex min-h-0 flex-1 flex-col">
-                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 pb-10">
-                  <div className="grid gap-3">
+        <ErpModal onClose={closeForm} closeOnBackdropClick>
+          <ErpModalFrame
+            size="md"
+            className="max-w-[640px]"
+            title={editingId != null ? "Edit Opening Stock" : "Add Opening Stock"}
+            onClose={closeForm}
+          >
+            <form onSubmit={onSubmit} className="flex min-h-0 flex-1 flex-col">
+              <ErpModalFrameBody>
+                <div className="grid gap-3">
+                  <div className="erp-form-field">
+                    <span className="erp-form-label">Item</span>
+                    <select className="erp-select" value={itemId} onChange={(e) => setItemId(e.target.value === "" ? "" : Number(e.target.value))}>
+                      <option value="">Select item</option>
+                      {items.map((it) => (
+                        <option key={it.id} value={it.id}>
+                          {it.itemName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <div className="erp-form-field">
-                      <span className="erp-form-label">Item</span>
-                      <select className="erp-select" value={itemId} onChange={(e) => setItemId(e.target.value === "" ? "" : Number(e.target.value))}>
-                        <option value="">Select item</option>
-                        {items.map((it) => (
-                          <option key={it.id} value={it.id}>
-                            {it.itemName}
-                          </option>
-                        ))}
+                      <span className="erp-form-label">Opening Qty</span>
+                      <DecimalInput value={qtyStr} onValueChange={setQtyStr} placeholder="0" />
+                    </div>
+                    <div className="erp-form-field">
+                      <span className="erp-form-label">Bucket</span>
+                      <select className="erp-select" value={bucket} onChange={(e) => setBucket(e.target.value as StockBucket)}>
+                        <option value="USABLE">USABLE</option>
+                        <option value="QC_HOLD">QC_HOLD</option>
+                        <option value="QC_PENDING">QC_PENDING</option>
+                        <option value="REWORK">REWORK</option>
+                        <option value="SCRAP">SCRAP</option>
                       </select>
                     </div>
-
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="erp-form-field">
-                        <span className="erp-form-label">Opening Qty</span>
-                        <DecimalInput value={qtyStr} onValueChange={setQtyStr} placeholder="0" />
-                      </div>
-                      <div className="erp-form-field">
-                        <span className="erp-form-label">Bucket</span>
-                        <select className="erp-select" value={bucket} onChange={(e) => setBucket(e.target.value as StockBucket)}>
-                          <option value="USABLE">USABLE</option>
-                          <option value="QC_HOLD">QC_HOLD</option>
-                          <option value="QC_PENDING">QC_PENDING</option>
-                          <option value="REWORK">REWORK</option>
-                          <option value="SCRAP">SCRAP</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="erp-form-field">
-                      <span className="erp-form-label">Remarks</span>
-                      <Input value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Optional" />
-                    </div>
-
-                    <p className="text-xs text-slate-600">
-                      Saving a draft requires an administrator password. Approving posts stock to the ledger and has additional confirmation.
-                    </p>
                   </div>
-                </div>
 
-                <div className="sticky bottom-0 z-[2] border-t border-slate-200 bg-white px-4 py-3 shadow-[0_-8px_16px_-16px_rgba(0,0,0,0.55)]">
-                  <div className="flex flex-wrap justify-end gap-2">
-                    <Button type="button" variant="outline" onClick={closeForm} disabled={saving}>
-                      Cancel
-                    </Button>
-                    <Button type="submit" disabled={saving}>
-                      {saving ? "Saving..." : "Continue…"}
-                    </Button>
+                  <div className="erp-form-field">
+                    <span className="erp-form-label">Remarks</span>
+                    <Input value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Optional" />
                   </div>
+
+                  <p className="text-xs text-slate-600">
+                    Saving a draft requires an administrator password. Approving posts stock to the ledger and has additional confirmation.
+                  </p>
                 </div>
-              </form>
-            </CardContent>
-          </Card>
+              </ErpModalFrameBody>
+
+              <ErpModalFrameFooter>
+                <Button type="button" variant="outline" onClick={closeForm} disabled={saving}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={saving}>
+                  {saving ? "Saving..." : "Continue…"}
+                </Button>
+              </ErpModalFrameFooter>
+            </form>
+          </ErpModalFrame>
         </ErpModal>
       ) : null}
 

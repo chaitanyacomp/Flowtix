@@ -1,6 +1,5 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -17,6 +16,7 @@ import {
 } from "../components/erp/CommercialWorkflowStrip";
 import { NO_QTY_TERMS } from "../lib/flowTerminology";
 import { ErpModal } from "../components/erp/ErpModal";
+import { ErpModalFrame, ErpModalFrameBody, ErpModalFrameFooter } from "../components/erp/ErpModalFrame";
 import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 
@@ -889,13 +889,10 @@ export function EnquiriesPage() {
 
       {/* EDIT MODAL (kept) */}
       {editRow ? (
-        <ErpModal onClose={() => setEditRow(null)}>
-          <Card className="erp-modal-shell-md max-h-[90vh]">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">Edit enquiry #{editRow.id}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={saveEdit} className="erp-form min-w-0">
+        <ErpModal onClose={() => setEditRow(null)} closeOnBackdropClick>
+          <ErpModalFrame size="sm" title={`Edit enquiry #${editRow.id}`} onClose={() => setEditRow(null)}>
+            <form onSubmit={saveEdit} className="flex min-h-0 flex-1 flex-col">
+              <ErpModalFrameBody className="erp-form min-w-0 space-y-3">
                 <div className="erp-form-field">
                   <span className="erp-form-label">Customer</span>
                   <select
@@ -994,22 +991,22 @@ export function EnquiriesPage() {
                 >
                   Add line
                 </Button>
-                <div className="flex gap-2 pt-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setEditRow(null)}
-                    disabled={savingEdit}
-                  >
-                    Cancel
-                  </Button>
-                  <Button type="submit" disabled={savingEdit}>
-                    {savingEdit ? "Saving…" : "Save"}
-                  </Button>
-                </div>
-              </form>
-            </CardContent>
-          </Card>
+              </ErpModalFrameBody>
+              <ErpModalFrameFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setEditRow(null)}
+                  disabled={savingEdit}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={savingEdit}>
+                  {savingEdit ? "Saving…" : "Save"}
+                </Button>
+              </ErpModalFrameFooter>
+            </form>
+          </ErpModalFrame>
         </ErpModal>
       ) : null}
     </div>

@@ -1,5 +1,4 @@
 import * as React from "react";
-import { Card, CardContent } from "../components/ui/card";
 import { apiFetch } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -7,12 +6,13 @@ import { NativeSelect } from "../components/ui/native-select";
 import { DecimalInput } from "../components/ui/DecimalInput";
 import { useAuth } from "../hooks/useAuth";
 import { useToast } from "../contexts/ToastContext";
-import { Pencil, Trash2, X } from "lucide-react";
+import { Pencil, Trash2 } from "lucide-react";
 import { normalizeMasterNameDisplay, normalizeMasterNameKey } from "../lib/masterNameNormalize";
 import { BulkDeleteConfirmModal } from "../components/masters/BulkDeleteConfirmModal";
 import { ItemStockStatusBadge } from "../components/erp/ItemStockStatusBadge";
 import { itemStockStatusFromItemFields, parseItemQtyStr, type ItemStockStatus } from "../lib/itemStockStatus";
 import { ErpModal } from "../components/erp/ErpModal";
+import { ErpModalFrame, ErpModalFrameBody, ErpModalFrameFooter } from "../components/erp/ErpModalFrame";
 import { DependencyLifecycleModal, type DependencySummary } from "../components/masters/DependencyLifecycleModal";
 import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { confirmLeaveIfDirty } from "../lib/unsavedChangesPolicy";
@@ -845,7 +845,6 @@ export function ItemsPage() {
         <MasterEmptyState
           title="No items yet"
           description="Add raw materials, finished goods, or semi-finished items to the master list."
-          action={addActions}
         />
       ) : filtered.length === 0 ? (
         <MasterNoResultsState query={query.debouncedSearch || "filters"} onClear={clearFilters} />
@@ -970,25 +969,25 @@ export function ItemsPage() {
       />
 
       {showForm ? (
-        <ErpModal onClose={requestCloseForm}>
-          <Card className="erp-modal-shell flex w-[calc(100vw-2rem)] max-w-[900px] max-h-[85vh] flex-col overflow-hidden">
-            <div className="sticky top-0 z-[2] flex items-center justify-between gap-2 border-b border-slate-200 bg-white px-4 py-3">
+        <ErpModal onClose={requestCloseForm} closeOnBackdropClick draggable>
+          <ErpModalFrame
+            size="xl"
+            onClose={requestCloseForm}
+            closeButtonTestId="item-master-modal-close"
+            title={
               <div className="min-w-0">
                 <div className="text-base font-semibold text-slate-900">
                   {editingId != null ? "Edit Item" : `Add Item — ${itemTypeLabel(creatingType)}`}
                 </div>
                 <div className="text-xs text-slate-500">{itemTypeLabel(creatingType)}</div>
-              </div>              <div className="flex items-center gap-1.5">
-                <Button type="button" variant="outline" size="sm" className="h-9" onClick={quickFillDefaults}>
-                  Quick Fill Defaults
-                </Button>
-                <Button type="button" variant="ghost" size="icon" className="h-9 w-9 shrink-0" aria-label="Close" onClick={requestCloseForm}>
-                  <X className="h-5 w-5" />
-                </Button>
               </div>
-            </div>
-
-            <CardContent className="min-h-0 flex-1 p-0">
+            }
+            headerActions={
+              <Button type="button" variant="outline" size="sm" className="h-9" onClick={quickFillDefaults}>
+                Quick Fill Defaults
+              </Button>
+            }
+          >
               <form
                 ref={itemFormRef}
                 onSubmit={onSubmit}
@@ -1012,12 +1011,7 @@ export function ItemsPage() {
                   }
                 }}
               >
-                <div className="relative min-h-0 flex-1">
-                  <div
-                    ref={itemFormScrollRef}
-                    className="min-h-0 h-full overflow-y-auto px-4 py-3 pb-12"
-                    style={{ scrollbarGutter: "stable" }}
-                  >
+                <ErpModalFrameBody ref={itemFormScrollRef}>
                     <div className="grid gap-3 md:grid-cols-2">
                       {/* LEFT: Basic Details + Tax Info */}
                       <div className="space-y-3">
@@ -1309,22 +1303,18 @@ export function ItemsPage() {
                     {error ? (
                       <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>
                     ) : null}
-                  </div>
-                </div>
+                </ErpModalFrameBody>
 
-                <div className="sticky bottom-0 z-[2] border-t border-slate-200 bg-white px-4 py-3 shadow-[0_-8px_16px_-16px_rgba(0,0,0,0.55)]">
-                  <div className="flex flex-wrap justify-end gap-2">
+                <ErpModalFrameFooter>
                     <Button type="button" variant="outline" onClick={requestCloseForm} disabled={saving}>
                       Cancel
                     </Button>
                     <Button type="submit" disabled={saving}>
                       {saving ? "Saving..." : editingId != null ? "Save" : "Create"}
                     </Button>
-                  </div>
-                </div>
+                </ErpModalFrameFooter>
               </form>
-            </CardContent>
-          </Card>
+          </ErpModalFrame>
         </ErpModal>
       ) : null}
     </MasterListPageShell>

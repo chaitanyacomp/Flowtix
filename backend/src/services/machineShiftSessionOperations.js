@@ -48,6 +48,7 @@ module.exports = {
 
   // Report (Step 2B)
   REPORT_VERSION_STATUS: report.REPORT_VERSION_STATUS,
+  ZERO_PRODUCTION_REASONS: report.ZERO_PRODUCTION_REASONS,
   saveShiftReportDraft: report.saveShiftReportDraft,
   submitShiftReport: report.submitShiftReport,
   returnShiftReport: report.returnShiftReport,

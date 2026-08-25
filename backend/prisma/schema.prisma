@@ -3766,6 +3766,16 @@ enum ShiftProductionReportVersionStatus {
   VERIFIED
 }
 
+/// Controlled reasons for a valid zero-output Shift Report (not CANCELLED).
+enum ShiftZeroProductionReason {
+  NO_WORK_ORDER
+  MACHINE_BREAKDOWN
+  MATERIAL_UNAVAILABLE
+  POWER_FAILURE
+  PLANNED_MAINTENANCE
+  OTHER
+}
+
 enum ShiftSessionReopenRequestStatus {
   REQUESTED
   APPROVED
@@ -4023,6 +4033,10 @@ model ShiftProductionReportVersion {
   qtySentToQc        Decimal @default(0) @db.Decimal(18, 3)
 
   remarks String? @db.Text
+
+  /// Set when this version records a valid zero-output shift (no fake lines).
+  zeroProductionReason  ShiftZeroProductionReason?
+  zeroProductionRemarks String?                    @db.Text
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

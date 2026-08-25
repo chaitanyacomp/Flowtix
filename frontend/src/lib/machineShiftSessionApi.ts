@@ -111,6 +111,8 @@ export type ShiftReportVersion = {
   productionScrapQty: number;
   qtySentToQc: number;
   remarks?: string | null;
+  zeroProductionReason?: string | null;
+  zeroProductionRemarks?: string | null;
   pendingDraftCount?: number;
   pendingDraftQty?: number;
   lines: ShiftReportLine[];
@@ -378,16 +380,20 @@ export function continueShiftDowntime(
 export function saveShiftReportDraft(
   sessionId: number,
   body: {
-    lines: {
+    lines?: {
       runSegmentId: number;
       itemId: number;
       productionScrapQty: number;
       remarks?: string | null;
     }[];
     remarks?: string | null;
+    zeroProductionReason?: string | null;
+    zeroProductionRemarks?: string | null;
+    zeroProduction?: boolean;
   },
 ): Promise<{
   declared: false;
+  zeroProduction?: boolean;
   pendingDraftCount: number;
   pendingDraftQty: number;
   version: ShiftReportVersion;

@@ -106,6 +106,16 @@ async function requestShiftReportAdjustment(input, db = prisma) {
           "Historical adjustment is allowed only for a verified shift report version.",
         );
       }
+      const lineCount = await tx.shiftProductionReportVersionLine.count({
+        where: { reportVersionId },
+      });
+      if (lineCount === 0 || target.zeroProductionReason) {
+        throw domainError(
+          409,
+          "ADJUSTMENT_NOT_AVAILABLE_FOR_ZERO_REPORT",
+          "Historical adjustment is not available for a zero-production Shift Report with no lines.",
+        );
+      }
       const session = target.report?.session;
       if (!session || session.status !== SESSION_STATUS.SHIFT_OVER) {
         throw domainError(

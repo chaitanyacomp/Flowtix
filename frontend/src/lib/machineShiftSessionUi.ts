@@ -38,6 +38,12 @@ const ERROR_MESSAGES: Record<string, string> = {
   SHIFT_SESSION_CANNOT_CANCEL:
     "This shift cannot be cancelled because production, downtime, or a Shift Report has already started.",
   SHIFT_SESSION_ALREADY_CANCELLED: "This shift session was cancelled. Start a new shift if needed.",
+  ZERO_PRODUCTION_REASON_REQUIRED: "Select a reason when recording zero production for this shift.",
+  ZERO_PRODUCTION_REMARKS_REQUIRED: "Add remarks when the zero-production reason is Other.",
+  ZERO_PRODUCTION_NOT_ELIGIBLE:
+    "Zero production cannot be recorded when this shift already has approved production, scrap, or pending entries.",
+  ADJUSTMENT_NOT_AVAILABLE_FOR_ZERO_REPORT:
+    "Historical adjustment is not available for a zero-production Shift Report.",
   REPORT_AWAITING_MANAGER: "This Shift Report is submitted and waiting for manager review.",
   REPORT_ALREADY_VERIFIED: "This Shift Report is already verified.",
   REPORT_LINES_REQUIRED: "Add at least one Shift Report line before saving.",
@@ -318,6 +324,47 @@ export function canCancelShiftSession(
   if (!canShowManagerControls(caps)) return false;
   if (!session || String(session.status).toUpperCase() !== "OPEN") return false;
   return Boolean(session.canCancel);
+}
+
+export const SHIFT_QTY_LOCK_MSG_SUBMITTED =
+  "Shift Report submitted — production quantities are locked pending manager review.";
+export const SHIFT_QTY_LOCK_MSG_VERIFIED_OPEN =
+  "Shift Report verified — production quantities remain locked. Complete Shift Over.";
+export const SHIFT_QTY_LOCK_MSG_VERIFIED_SHIFT_OVER =
+  "Shift Report verified and Shift Over completed.";
+
+/**
+ * State-aware production-qty lock banner for Shift Report / Current Production Run.
+ * Prefers report + session status over the stale single backend lock reason string.
+ */
+export function shiftProductionQtyLockDisplayMessage(
+  session: Pick<ShiftSessionDetail, "status" | "productionQtyLocked" | "report"> | null | undefined,
+): string | null {
+  if (!session?.productionQtyLocked) return null;
+  const reportStatus = String(session.report?.latestVersion?.status ?? "").toUpperCase();
+  const sessionStatus = String(session.status ?? "").toUpperCase();
+
+  if (reportStatus === "VERIFIED" && sessionStatus === "SHIFT_OVER") {
+    return SHIFT_QTY_LOCK_MSG_VERIFIED_SHIFT_OVER;
+  }
+  if (reportStatus === "VERIFIED") {
+    return SHIFT_QTY_LOCK_MSG_VERIFIED_OPEN;
+  }
+  return SHIFT_QTY_LOCK_MSG_SUBMITTED;
+}
+
+export const ZERO_PRODUCTION_REASON_OPTIONS: { value: string; label: string }[] = [
+  { value: "NO_WORK_ORDER", label: "No work order available" },
+  { value: "MACHINE_BREAKDOWN", label: "Machine breakdown" },
+  { value: "MATERIAL_UNAVAILABLE", label: "Material unavailable" },
+  { value: "POWER_FAILURE", label: "Power failure" },
+  { value: "PLANNED_MAINTENANCE", label: "Planned maintenance" },
+  { value: "OTHER", label: "Other" },
+];
+
+export function zeroProductionReasonLabel(reason: string | null | undefined): string {
+  const key = String(reason ?? "").toUpperCase();
+  return ZERO_PRODUCTION_REASON_OPTIONS.find((o) => o.value === key)?.label ?? (key ? key.replace(/_/g, " ") : "—");
 }
 
 export function reportVersionStatusLabel(status: string | null | undefined): string {

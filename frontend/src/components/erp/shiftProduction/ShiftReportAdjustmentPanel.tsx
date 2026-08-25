@@ -22,6 +22,7 @@ import {
   formatIndiaDateTime,
   formatShiftQty,
   mapShiftApiError,
+  zeroProductionReasonLabel,
 } from "../../../lib/machineShiftSessionUi";
 
 type Props = {
@@ -201,6 +202,28 @@ export function ShiftReportAdjustmentPanel({
           Historical Adjustment
         </h2>
         <p className="mt-2 text-sm text-slate-600">No verified Shift Report is available to adjust.</p>
+      </section>
+    );
+  }
+
+  const zeroLineLessReport =
+    Boolean(targetVersion.zeroProductionReason) || !(targetVersion.lines?.length);
+  if (zeroLineLessReport) {
+    return (
+      <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" data-testid="shift-adjustment-panel">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+          Historical Adjustment
+        </h2>
+        <p className="mt-2 text-sm text-slate-600" data-testid="shift-adjustment-unavailable-zero">
+          Historical adjustment is not available for a zero-production Shift Report with no lines. Adjustment does not
+          invent production lines.
+        </p>
+        {targetVersion.zeroProductionReason ? (
+          <p className="mt-2 text-sm text-slate-700">
+            Recorded reason: {zeroProductionReasonLabel(targetVersion.zeroProductionReason)}
+            {targetVersion.zeroProductionRemarks ? ` — ${targetVersion.zeroProductionRemarks}` : ""}
+          </p>
+        ) : null}
       </section>
     );
   }

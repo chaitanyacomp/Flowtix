@@ -12,6 +12,12 @@ import {
   mergeShiftReportEditableLines,
   shiftLifecycleNextAction,
   shiftLifecycleStageLabel,
+  shiftProductionQtyLockDisplayMessage,
+  SHIFT_QTY_LOCK_MSG_SUBMITTED,
+  SHIFT_QTY_LOCK_MSG_VERIFIED_OPEN,
+  SHIFT_QTY_LOCK_MSG_VERIFIED_SHIFT_OVER,
+  zeroProductionReasonLabel,
+  ZERO_PRODUCTION_REASON_OPTIONS,
 } from "../../src/lib/machineShiftSessionUi";
 
 const reportPanelSrc = readFileSync(
@@ -222,6 +228,88 @@ describe("Step 4B — Shift Report lifecycle helpers", () => {
     expect(submitted.lines[0].qtySentToQc).toBe(9);
   });
 
+  it("labels controlled zero-production reasons", () => {
+    expect(ZERO_PRODUCTION_REASON_OPTIONS.map((o) => o.value)).toEqual([
+      "NO_WORK_ORDER",
+      "MACHINE_BREAKDOWN",
+      "MATERIAL_UNAVAILABLE",
+      "POWER_FAILURE",
+      "PLANNED_MAINTENANCE",
+      "OTHER",
+    ]);
+    expect(zeroProductionReasonLabel("NO_WORK_ORDER")).toMatch(/No work order/i);
+    expect(zeroProductionReasonLabel("OTHER")).toBe("Other");
+  });
+
+  it("uses state-aware production qty lock banner copy", () => {
+    expect(shiftProductionQtyLockDisplayMessage(baseSession({ productionQtyLocked: false }))).toBeNull();
+    expect(
+      shiftProductionQtyLockDisplayMessage(
+        baseSession({
+          productionQtyLocked: true,
+          productionQtyLockReason: "stale submitted text",
+          report: {
+            id: 1,
+            latestVersionNo: 1,
+            latestVersion: {
+              id: 9,
+              versionNo: 1,
+              status: "SUBMITTED",
+              grossOutputQty: 0,
+              productionScrapQty: 0,
+              qtySentToQc: 0,
+              lines: [],
+            },
+          },
+        }),
+      ),
+    ).toBe(SHIFT_QTY_LOCK_MSG_SUBMITTED);
+    expect(
+      shiftProductionQtyLockDisplayMessage(
+        baseSession({
+          status: "OPEN",
+          productionQtyLocked: true,
+          productionQtyLockReason: "stale submitted text",
+          report: {
+            id: 1,
+            latestVersionNo: 1,
+            latestVersion: {
+              id: 9,
+              versionNo: 1,
+              status: "VERIFIED",
+              grossOutputQty: 0,
+              productionScrapQty: 0,
+              qtySentToQc: 0,
+              lines: [],
+            },
+          },
+        }),
+      ),
+    ).toBe(SHIFT_QTY_LOCK_MSG_VERIFIED_OPEN);
+    expect(
+      shiftProductionQtyLockDisplayMessage(
+        baseSession({
+          status: "SHIFT_OVER",
+          productionQtyLocked: true,
+          productionQtyLockReason: "stale submitted text",
+          report: {
+            id: 1,
+            latestVersionNo: 1,
+            latestVersion: {
+              id: 9,
+              versionNo: 1,
+              status: "VERIFIED",
+              grossOutputQty: 0,
+              productionScrapQty: 0,
+              qtySentToQc: 0,
+              lines: [],
+            },
+          },
+        }),
+      ),
+    ).toBe(SHIFT_QTY_LOCK_MSG_VERIFIED_SHIFT_OVER);
+  });
+
   it("maps Step 4B API error codes to operator-safe messages", () => {
     expect(mapShiftApiError(new ApiRequestError("x", 409, "SHIFT_REPORT_HAS_UNAPPROVED_ENTRIES"))).toMatch(
       /Approve or remove the pending production entries/i,
@@ -244,6 +332,18 @@ describe("Step 4B — Shift Report lifecycle helpers", () => {
     expect(mapShiftApiError(new ApiRequestError("x", 403, "PRODUCTION_MANAGER_ACTION_REQUIRED"))).toMatch(
       /Production Manager/i,
     );
+    expect(mapShiftApiError(new ApiRequestError("x", 400, "ZERO_PRODUCTION_REASON_REQUIRED"))).toMatch(
+      /reason when recording zero/i,
+    );
+    expect(mapShiftApiError(new ApiRequestError("x", 400, "ZERO_PRODUCTION_REMARKS_REQUIRED"))).toMatch(
+      /Other/i,
+    );
+    expect(mapShiftApiError(new ApiRequestError("x", 409, "ZERO_PRODUCTION_NOT_ELIGIBLE"))).toMatch(
+      /approved production|pending entries/i,
+    );
+    expect(mapShiftApiError(new ApiRequestError("x", 409, "ADJUSTMENT_NOT_AVAILABLE_FOR_ZERO_REPORT"))).toMatch(
+      /zero-production/i,
+    );
   });
 });
 
@@ -265,6 +365,26 @@ describe("Step 4B — Shift Report UI wiring (source)", () => {
     expect(reportPanelSrc).toContain("Return for Correction");
     expect(reportPanelSrc).toContain("Verify Report");
     expect(reportPanelSrc).toContain("Shift Report History");
+  });
+
+  it("exposes Record Zero Production for line-less OPEN shifts", () => {
+    expect(reportPanelSrc).toContain("Record Zero Production");
+    expect(reportPanelSrc).toContain("zero-production-section");
+    expect(reportPanelSrc).toContain("ZERO_PRODUCTION_REASON_OPTIONS");
+    expect(reportPanelSrc).toContain("Save Zero Production Draft");
+    expect(reportPanelSrc).toContain("mistakenly started shift");
+    expect(reportPanelSrc).toContain("Cancel Shift");
+    expect(reportPanelSrc).toContain("zeroProductionReason");
+    expect(reportPanelSrc).toContain("Zero production:");
+  });
+
+  it("wires state-aware lock messaging into Shift Report and Current Production Run", () => {
+    expect(reportPanelSrc).toContain("shiftProductionQtyLockDisplayMessage");
+    expect(reportPanelSrc).not.toContain("session.productionQtyLockReason");
+    expect(workspaceSrc).toContain("shiftProductionQtyLockDisplayMessage");
+    expect(workspaceSrc).toContain("Current production run");
+    expect(workspaceSrc).toContain("shift-qty-locked-banner");
+    expect(workspaceSrc).not.toContain("session.productionQtyLockReason");
   });
 
   it("wires Shift Over and reopen UX copy", () => {

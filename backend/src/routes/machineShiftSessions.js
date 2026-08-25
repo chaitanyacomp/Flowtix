@@ -620,16 +620,30 @@ machineShiftSessionsRouter.post(
       const sessionId = parseId(req.params.sessionId, "sessionId");
       const body = z
         .object({
-          lines: z.array(reportLineSchema).min(1),
+          lines: z.array(reportLineSchema).default([]),
           remarks: z.string().max(2000).optional().nullable(),
           /** Optional header scrap total check only — calculated QC/gross ignored from client. */
           productionScrapQty: nonNegQty.optional(),
+          zeroProductionReason: z
+            .enum([
+              "NO_WORK_ORDER",
+              "MACHINE_BREAKDOWN",
+              "MATERIAL_UNAVAILABLE",
+              "POWER_FAILURE",
+              "PLANNED_MAINTENANCE",
+              "OTHER",
+            ])
+            .optional()
+            .nullable(),
+          zeroProductionRemarks: z.string().max(2000).optional().nullable(),
+          zeroProduction: z.boolean().optional(),
         })
         .strict()
         .parse(stripActorFields(req.body));
       const result = await ops.saveShiftReportDraft({ sessionId, ...body });
       return res.json({
         declared: false,
+        zeroProduction: Boolean(result.zeroProduction),
         pendingDraftCount: result.pendingDraftCount ?? 0,
         pendingDraftQty: result.pendingDraftQty ?? 0,
         version: mapReportVersion(result.version),

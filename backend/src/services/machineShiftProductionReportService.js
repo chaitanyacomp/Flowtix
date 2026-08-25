@@ -29,6 +29,17 @@ const REPORT_VERSION_STATUS = Object.freeze({
   VERIFIED: "VERIFIED",
 });
 
+const ZERO_PRODUCTION_REASONS = Object.freeze({
+  NO_WORK_ORDER: "NO_WORK_ORDER",
+  MACHINE_BREAKDOWN: "MACHINE_BREAKDOWN",
+  MATERIAL_UNAVAILABLE: "MATERIAL_UNAVAILABLE",
+  POWER_FAILURE: "POWER_FAILURE",
+  PLANNED_MAINTENANCE: "PLANNED_MAINTENANCE",
+  OTHER: "OTHER",
+});
+
+const ZERO_PRODUCTION_REASON_SET = Object.freeze(new Set(Object.values(ZERO_PRODUCTION_REASONS)));
+
 const IMMUTABLE_VERSION_STATUSES = Object.freeze(
   new Set([
     REPORT_VERSION_STATUS.SUBMITTED,
@@ -61,6 +72,96 @@ function normalizeRemarks(value) {
   if (value == null || value === "") return null;
   const text = String(value).trim().replace(/\s+/g, " ");
   return text ? text.slice(0, 2000) : null;
+}
+
+function normalizeZeroProductionReason(value, { required = false } = {}) {
+  if (value == null || value === "") {
+    if (required) {
+      throw domainError(
+        400,
+        "ZERO_PRODUCTION_REASON_REQUIRED",
+        "Select a reason when recording zero production for this shift.",
+      );
+    }
+    return null;
+  }
+  const key = String(value).trim().toUpperCase();
+  if (!ZERO_PRODUCTION_REASON_SET.has(key)) {
+    throw domainError(
+      400,
+      "ZERO_PRODUCTION_REASON_INVALID",
+      "Choose a valid zero-production reason.",
+    );
+  }
+  return key;
+}
+
+function normalizeZeroProductionRemarks(reason, remarks) {
+  const text = normalizeRemarks(remarks);
+  if (reason === ZERO_PRODUCTION_REASONS.OTHER && !text) {
+    throw domainError(
+      400,
+      "ZERO_PRODUCTION_REMARKS_REQUIRED",
+      "Add remarks when the zero-production reason is Other.",
+    );
+  }
+  return text;
+}
+
+function approvedQtyTotal(approvedByLine) {
+  let total = 0;
+  for (const row of approvedByLine?.values?.() || []) {
+    total = roundQty(total + Number(row.qtySentToQc || 0));
+  }
+  return total;
+}
+
+/**
+ * Zero-production report is allowed only on OPEN sessions with no approved PE,
+ * no scrap, and no linked DRAFT ProductionEntries.
+ */
+async function assertZeroProductionEligible(tx, sessionId, { productionScrapQty = 0 } = {}) {
+  const session = await loadSession(tx, sessionId);
+  if (session.status === SESSION_STATUS.CANCELLED) {
+    throw domainError(
+      409,
+      "SHIFT_SESSION_ALREADY_CANCELLED",
+      "This shift session was cancelled. Open a new shift if work needs to continue.",
+    );
+  }
+  if (session.status !== SESSION_STATUS.OPEN) {
+    throw domainError(
+      409,
+      "ZERO_PRODUCTION_NOT_ELIGIBLE",
+      "Zero production can only be recorded on an open shift session.",
+      { status: session.status },
+    );
+  }
+
+  const qtyCtx = await loadApprovedQtyContext(tx, sessionId);
+  const blockers = [];
+  const approvedTotal = approvedQtyTotal(qtyCtx.approvedByLine);
+  if (approvedTotal > QTY_EPS) blockers.push("APPROVED_PRODUCTION");
+  if (Number(productionScrapQty) > QTY_EPS) blockers.push("PRODUCTION_SCRAP");
+  if (Number(qtyCtx.pendingDraftCount) > 0) blockers.push("DRAFT_PRODUCTION_ENTRIES");
+
+  if (blockers.length) {
+    throw domainError(
+      409,
+      "ZERO_PRODUCTION_NOT_ELIGIBLE",
+      blockers.includes("DRAFT_PRODUCTION_ENTRIES")
+        ? "Approve or remove pending production entries before recording zero production."
+        : "Zero production cannot be recorded when this shift already has approved production or scrap.",
+      {
+        blockers,
+        approvedQty: approvedTotal,
+        productionScrapQty: Number(productionScrapQty) || 0,
+        pendingDraftCount: qtyCtx.pendingDraftCount,
+      },
+    );
+  }
+
+  return { session, qtyCtx, approvedTotal };
 }
 
 async function loadSession(tx, sessionId) {
@@ -330,6 +431,8 @@ async function createDraftVersionFrom(tx, report, sourceVersion) {
       productionScrapQty: sourceVersion.productionScrapQty,
       qtySentToQc: sourceVersion.qtySentToQc,
       remarks: sourceVersion.remarks ?? null,
+      zeroProductionReason: sourceVersion.zeroProductionReason ?? null,
+      zeroProductionRemarks: sourceVersion.zeroProductionRemarks ?? null,
       lines: {
         create: lineCopyData(sourceVersion.lines),
       },
@@ -422,10 +525,15 @@ async function ensureEditableDraftVersion(tx, sessionId) {
 
 /**
  * Save draft lines (no operator declaration). Idempotent overwrite of DRAFT lines only.
+ * Zero-production drafts: empty lines + controlled reason (valid idle/worked shift with no output).
  */
 async function saveShiftReportDraft(input, db = prisma) {
   const sessionId = normalizePositiveInt(input?.sessionId, "SESSION_ID_INVALID", "Shift session is required.");
   const remarks = normalizeRemarks(input?.remarks);
+  const clientLines = Array.isArray(input?.lines) ? input.lines : [];
+  const hasZeroReason =
+    input?.zeroProductionReason != null && String(input.zeroProductionReason).trim() !== "";
+  const wantsZero = hasZeroReason || Boolean(input?.zeroProduction);
 
   try {
     return await withShiftSessionTx(db, async (tx) => {
@@ -437,15 +545,87 @@ async function saveShiftReportDraft(input, db = prisma) {
         throw domainError(409, "REPORT_VERSION_IMMUTABLE", "Submitted, returned, or verified report versions cannot be changed.");
       }
 
-      const runSegmentsById = await loadSessionRunSegmentsMap(tx, sessionId);
       const qtyCtx = await loadApprovedQtyContext(tx, sessionId);
-      const { lines, totals } = normalizeAndValidateLines(input?.lines || [], {
+      const approvedTotal = approvedQtyTotal(qtyCtx.approvedByLine);
+
+      // Zero-production path: no fake lines.
+      if (wantsZero) {
+        const reason = normalizeZeroProductionReason(input?.zeroProductionReason, { required: true });
+        const zeroRemarks = normalizeZeroProductionRemarks(reason, input?.zeroProductionRemarks);
+        await assertZeroProductionEligible(tx, sessionId, { productionScrapQty: 0 });
+
+        await tx.shiftProductionReportVersionLine.deleteMany({ where: { reportVersionId: version.id } });
+        const updated = await tx.shiftProductionReportVersion.update({
+          where: { id: version.id },
+          data: {
+            grossOutputQty: 0,
+            productionScrapQty: 0,
+            qtySentToQc: 0,
+            remarks: remarks !== null ? remarks : version.remarks,
+            zeroProductionReason: reason,
+            zeroProductionRemarks: zeroRemarks,
+            declaredOperatorId: null,
+            declaredByUserId: null,
+            declaredAt: null,
+          },
+          include: { lines: { orderBy: { id: "asc" } } },
+        });
+
+        return {
+          session,
+          report,
+          version: updated,
+          declared: false,
+          zeroProduction: true,
+          pendingDraftCount: qtyCtx.pendingDraftCount,
+          pendingDraftQty: qtyCtx.pendingDraftQty,
+        };
+      }
+
+      // Existing zero draft re-saved without reason while still line-less → keep requiring explicit reason.
+      if (clientLines.length === 0 && version.zeroProductionReason) {
+        const reason = normalizeZeroProductionReason(version.zeroProductionReason, { required: true });
+        const zeroRemarks = normalizeZeroProductionRemarks(
+          reason,
+          input?.zeroProductionRemarks !== undefined
+            ? input.zeroProductionRemarks
+            : version.zeroProductionRemarks,
+        );
+        await assertZeroProductionEligible(tx, sessionId, { productionScrapQty: 0 });
+        await tx.shiftProductionReportVersionLine.deleteMany({ where: { reportVersionId: version.id } });
+        const updated = await tx.shiftProductionReportVersion.update({
+          where: { id: version.id },
+          data: {
+            grossOutputQty: 0,
+            productionScrapQty: 0,
+            qtySentToQc: 0,
+            remarks: remarks !== null ? remarks : version.remarks,
+            zeroProductionReason: reason,
+            zeroProductionRemarks: zeroRemarks,
+            declaredOperatorId: null,
+            declaredByUserId: null,
+            declaredAt: null,
+          },
+          include: { lines: { orderBy: { id: "asc" } } },
+        });
+        return {
+          session,
+          report,
+          version: updated,
+          declared: false,
+          zeroProduction: true,
+          pendingDraftCount: qtyCtx.pendingDraftCount,
+          pendingDraftQty: qtyCtx.pendingDraftQty,
+        };
+      }
+
+      const runSegmentsById = await loadSessionRunSegmentsMap(tx, sessionId);
+      const { lines, totals } = normalizeAndValidateLines(clientLines, {
         sessionId,
         runSegmentsById,
         approvedByLine: qtyCtx.approvedByLine,
       });
 
-      // Header overrides from client are ignored for calculated fields; scrap-only header optional.
       if (input?.productionScrapQty != null) {
         assertHeaderMatchesLines(
           {
@@ -456,6 +636,14 @@ async function saveShiftReportDraft(input, db = prisma) {
           totals,
         );
       }
+
+      // Positive production/scrap clears any prior zero-production marking.
+      const hasPositive =
+        Number(totals.grossOutputQty) > QTY_EPS ||
+        Number(totals.productionScrapQty) > QTY_EPS ||
+        Number(totals.qtySentToQc) > QTY_EPS ||
+        approvedTotal > QTY_EPS;
+      const clearZero = hasPositive;
 
       await tx.shiftProductionReportVersionLine.deleteMany({ where: { reportVersionId: version.id } });
       await tx.shiftProductionReportVersionLine.createMany({
@@ -477,7 +665,8 @@ async function saveShiftReportDraft(input, db = prisma) {
           productionScrapQty: totals.productionScrapQty,
           qtySentToQc: totals.qtySentToQc,
           remarks: remarks !== null ? remarks : version.remarks,
-          // Draft save must not set declaration.
+          zeroProductionReason: clearZero ? null : version.zeroProductionReason,
+          zeroProductionRemarks: clearZero ? null : version.zeroProductionRemarks,
           declaredOperatorId: null,
           declaredByUserId: null,
           declaredAt: null,
@@ -490,6 +679,7 @@ async function saveShiftReportDraft(input, db = prisma) {
         report,
         version: updated,
         declared: false,
+        zeroProduction: Boolean(updated.zeroProductionReason),
         pendingDraftCount: qtyCtx.pendingDraftCount,
         pendingDraftQty: qtyCtx.pendingDraftQty,
       };
@@ -563,7 +753,38 @@ async function submitShiftReport(input, db = prisma) {
       }
 
       if (!version.lines || version.lines.length === 0) {
-        throw domainError(400, "REPORT_LINES_REQUIRED", "Add at least one report line before submitting.");
+        if (!version.zeroProductionReason) {
+          throw domainError(400, "REPORT_LINES_REQUIRED", "Add at least one report line before submitting.");
+        }
+
+        const qtyCtx = await loadApprovedQtyContext(tx, sessionId);
+        assertNoUnapprovedLinkedEntries(qtyCtx);
+        await assertZeroProductionEligible(tx, sessionId, {
+          productionScrapQty: Number(version.productionScrapQty) || 0,
+        });
+
+        await assertOperatorParticipated(tx, sessionId, declaredOperatorId);
+
+        const now = new Date();
+        const submitted = await tx.shiftProductionReportVersion.update({
+          where: { id: version.id },
+          data: {
+            status: REPORT_VERSION_STATUS.SUBMITTED,
+            declaredOperatorId,
+            declaredByUserId,
+            declaredAt: now,
+            submittedAt: now,
+            submittedByUserId: declaredByUserId,
+            grossOutputQty: 0,
+            productionScrapQty: 0,
+            qtySentToQc: 0,
+            zeroProductionReason: version.zeroProductionReason,
+            zeroProductionRemarks: version.zeroProductionRemarks ?? null,
+          },
+          include: { lines: { orderBy: { id: "asc" } } },
+        });
+
+        return { session, report, version: submitted, submitted: true, alreadySubmitted: false };
       }
 
       const runSegmentsById = await loadSessionRunSegmentsMap(tx, sessionId);
@@ -580,6 +801,17 @@ async function submitShiftReport(input, db = prisma) {
         })),
         { sessionId, runSegmentsById, approvedByLine: qtyCtx.approvedByLine },
       );
+
+      const approvedTotal = approvedQtyTotal(qtyCtx.approvedByLine);
+      const hasPositive =
+        Number(totals.grossOutputQty) > QTY_EPS ||
+        Number(totals.productionScrapQty) > QTY_EPS ||
+        Number(totals.qtySentToQc) > QTY_EPS ||
+        approvedTotal > QTY_EPS;
+      if (version.zeroProductionReason && hasPositive) {
+        // Positive live production cannot remain marked zero.
+        // Fall through with cleared zero fields after recalc.
+      }
 
       await tx.shiftProductionReportVersionLine.deleteMany({ where: { reportVersionId: version.id } });
       await tx.shiftProductionReportVersionLine.createMany({
@@ -609,6 +841,8 @@ async function submitShiftReport(input, db = prisma) {
           grossOutputQty: totals.grossOutputQty,
           productionScrapQty: totals.productionScrapQty,
           qtySentToQc: totals.qtySentToQc,
+          zeroProductionReason: hasPositive ? null : version.zeroProductionReason,
+          zeroProductionRemarks: hasPositive ? null : version.zeroProductionRemarks,
         },
         include: { lines: { orderBy: { id: "asc" } } },
       });
@@ -730,14 +964,18 @@ async function verifyShiftReport(input, db = prisma) {
 
 module.exports = {
   REPORT_VERSION_STATUS,
+  ZERO_PRODUCTION_REASONS,
   IMMUTABLE_VERSION_STATUSES,
   QTY_EPS,
   toQty,
   qtyEqual,
   normalizeRemarks,
+  normalizeZeroProductionReason,
+  normalizeZeroProductionRemarks,
   normalizeAndValidateLines,
   normalizeProposedAdjustmentLines,
   assertHeaderMatchesLines,
+  assertZeroProductionEligible,
   loadSessionRunSegmentsMap,
   ensureShiftProductionReport,
   ensureEditableDraftVersion,

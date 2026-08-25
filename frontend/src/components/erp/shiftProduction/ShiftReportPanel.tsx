@@ -27,6 +27,9 @@ import {
   mergeShiftReportEditableLines,
   operatorDisplayName,
   reportVersionStatusLabel,
+  ZERO_PRODUCTION_REASON_OPTIONS,
+  zeroProductionReasonLabel,
+  shiftProductionQtyLockDisplayMessage,
 } from "../../../lib/machineShiftSessionUi";
 
 type DraftLineState = {
@@ -80,6 +83,8 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
   const [verifyOpen, setVerifyOpen] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [localError, setLocalError] = React.useState<string | null>(null);
+  const [zeroReason, setZeroReason] = React.useState("");
+  const [zeroRemarks, setZeroRemarks] = React.useState("");
 
   React.useEffect(() => {
     setLines(
@@ -94,7 +99,9 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
     setConfirmChecked(false);
     setDeclaredOperatorId("");
     setLocalError(null);
-  }, [merged.lines, latest?.id, latestStatus]);
+    setZeroReason(latest?.zeroProductionReason ?? "");
+    setZeroRemarks(latest?.zeroProductionRemarks ?? "");
+  }, [merged.lines, latest?.id, latestStatus, latest?.zeroProductionReason, latest?.zeroProductionRemarks]);
 
   const displayLines = React.useMemo(() => {
     return lines.map((row) => {
@@ -124,6 +131,11 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
 
   const readOnlySnapshot = latestStatus === "SUBMITTED" || latestStatus === "VERIFIED";
   const showReturnReason = latestStatus === "RETURNED" && latest?.returnReason;
+  const isZeroReport = Boolean(latest?.zeroProductionReason) && !(latest?.lines?.length);
+  const canRecordZero = editable && !readOnlySnapshot && !displayLines.length && pendingCount === 0;
+  const zeroRemarksRequired = zeroReason === "OTHER";
+  const canSaveZero =
+    Boolean(zeroReason) && (!zeroRemarksRequired || zeroRemarks.trim().length > 0) && !busy;
 
   async function saveDraft() {
     if (busy || !editable) return;
@@ -135,7 +147,7 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
       }
     }
     if (!lines.length) {
-      setLocalError("No approved production is linked to this shift yet. Record and approve production first.");
+      setLocalError("Use Record Zero Production below for a valid shift with no output, or produce and approve entries first.");
       return;
     }
     onBusy(true);
@@ -151,7 +163,6 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
       });
       setDraftSavedAt(new Date().toISOString());
       onNotice("Draft saved");
-      // Apply server quantities as authority
       setLines(
         (res.version.lines || []).map((l) => ({
           runSegmentId: l.runSegmentId,
@@ -161,6 +172,30 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
           meta: l,
         })),
       );
+      await onRefresh();
+    } catch (e) {
+      const msg = mapShiftApiError(e);
+      setLocalError(msg);
+      onNotice(msg);
+    } finally {
+      onBusy(false);
+    }
+  }
+
+  async function saveZeroDraft() {
+    if (busy || !editable || !canSaveZero) return;
+    setLocalError(null);
+    onBusy(true);
+    onNotice(null);
+    try {
+      await saveShiftReportDraft(session.id, {
+        lines: [],
+        zeroProduction: true,
+        zeroProductionReason: zeroReason,
+        zeroProductionRemarks: zeroRemarks.trim() ? zeroRemarks.trim() : null,
+      });
+      setDraftSavedAt(new Date().toISOString());
+      onNotice("Zero production draft saved");
       await onRefresh();
     } catch (e) {
       const msg = mapShiftApiError(e);
@@ -185,6 +220,14 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
             productionScrapQty: parseScrap(l.scrap) ?? 0,
             remarks: l.remarks.trim() ? l.remarks.trim() : null,
           })),
+        });
+        versionId = draftRes.version.id;
+      } else if (editable && (isZeroReport || canRecordZero) && zeroReason) {
+        const draftRes = await saveShiftReportDraft(session.id, {
+          lines: [],
+          zeroProduction: true,
+          zeroProductionReason: zeroReason,
+          zeroProductionRemarks: zeroRemarks.trim() ? zeroRemarks.trim() : null,
         });
         versionId = draftRes.version.id;
       }
@@ -263,7 +306,7 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
 
       {session.productionQtyLocked ? (
         <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950" role="status">
-          {session.productionQtyLockReason ||
+          {shiftProductionQtyLockDisplayMessage(session) ||
             "Shift Report submitted — production quantities are locked pending manager review."}
         </div>
       ) : null}
@@ -287,10 +330,78 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
       ) : null}
 
       {!displayLines.length ? (
-        <p className="rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-600">
-          No approved production is linked to this shift yet. Produce and approve entries in Production Workspace, then
-          refresh.
-        </p>
+        isZeroReport || canRecordZero ? (
+          <div
+            className="rounded-md border border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-700"
+            data-testid="zero-production-section"
+          >
+            <div className="font-semibold text-slate-900">Record Zero Production</div>
+            <p className="mt-1 text-slate-600">
+              Use this when the shift was valid but produced nothing (for example no work order, breakdown, or
+              material wait). This is not for a mistakenly started shift — use Cancel Shift for mistakes.
+            </p>
+            {(isZeroReport || readOnlySnapshot) && latest?.zeroProductionReason ? (
+              <div className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm">
+                <div>
+                  Reason: <span className="font-medium">{zeroProductionReasonLabel(latest.zeroProductionReason)}</span>
+                </div>
+                {latest.zeroProductionRemarks ? (
+                  <div className="mt-1 text-slate-600">Remarks: {latest.zeroProductionRemarks}</div>
+                ) : null}
+                <div className="mt-1 tabular-nums text-slate-600">
+                  QC 0 · Scrap 0 · Gross 0
+                </div>
+              </div>
+            ) : null}
+            {editable && !readOnlySnapshot ? (
+              <div className="mt-3 space-y-3">
+                <label className="block text-sm">
+                  <span className="mb-1 block font-medium text-slate-700">Reason (required)</span>
+                  <NativeSelect
+                    value={zeroReason}
+                    onChange={(e) => setZeroReason(e.target.value)}
+                    disabled={busy}
+                    data-testid="zero-production-reason"
+                  >
+                    <option value="">Select…</option>
+                    {ZERO_PRODUCTION_REASON_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block font-medium text-slate-700">
+                    Remarks{zeroRemarksRequired ? " (required)" : " (optional)"}
+                  </span>
+                  <textarea
+                    className="min-h-[72px] w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    value={zeroRemarks}
+                    onChange={(e) => setZeroRemarks(e.target.value)}
+                    disabled={busy}
+                    maxLength={2000}
+                    data-testid="zero-production-remarks"
+                  />
+                </label>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={!canSaveZero}
+                  onClick={() => void saveZeroDraft()}
+                  data-testid="zero-production-save"
+                >
+                  Save Zero Production Draft
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <p className="rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-600">
+            No approved production is linked to this shift yet. Produce and approve entries in Production Workspace, then
+            refresh — or ask a manager to Cancel Shift if this session was started by mistake.
+          </p>
+        )
       ) : (
         <div className="overflow-x-auto rounded-md border border-slate-200">
           <table className="w-full min-w-[720px] text-left text-sm">
@@ -406,7 +517,7 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
               >
                 <option value="">Select participant…</option>
                 {participants.map((p) => (
-                  <option key={p.id} value={p.operator!.id}>
+                  <option key={p.operator!.id} value={p.operator!.id}>
                     {operatorDisplayName(p.operator)}
                     {p.isPrimary ? " (Primary)" : ""}
                   </option>
@@ -415,7 +526,7 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
             </label>
           </div>
 
-          <label className="flex items-start gap-2 text-sm text-slate-800">
+          <label className="flex items-start gap-2 text-sm text-slate-700">
             <input
               type="checkbox"
               className="mt-1"
@@ -424,17 +535,21 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
               onChange={(e) => setConfirmChecked(e.target.checked)}
               data-testid="shift-report-confirm-checkbox"
             />
-            <span>I confirm that the production and scrap quantities entered above are correct.</span>
+            <span>
+              {isZeroReport || (canRecordZero && zeroReason)
+                ? "I confirm that this zero-production Shift Report is accurate for a valid worked or idle shift."
+                : "I confirm that the production and scrap quantities entered above are correct."}
+            </span>
           </label>
 
           <Button
             type="button"
             disabled={
               busy ||
-              !lines.length ||
-              pendingCount > 0 ||
+              !confirmChecked ||
               !declaredOperatorId ||
-              !confirmChecked
+              pendingCount > 0 ||
+              (!lines.length && !(isZeroReport || (canRecordZero && canSaveZero)))
             }
             onClick={() => setSubmitOpen(true)}
             data-testid="shift-report-submit-btn"
@@ -451,6 +566,17 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
               Declared by <span className="font-medium">{operatorDisplayName(latest.declaredOperator)}</span>
               {latest.declaredAt ? ` · ${formatIndiaDateTime(latest.declaredAt)}` : ""}
             </p>
+          ) : null}
+          {latest?.zeroProductionReason ? (
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+              <div>
+                Zero production reason:{" "}
+                <span className="font-medium">{zeroProductionReasonLabel(latest.zeroProductionReason)}</span>
+              </div>
+              {latest.zeroProductionRemarks ? (
+                <div className="mt-1 text-slate-600">Remarks: {latest.zeroProductionRemarks}</div>
+              ) : null}
+            </div>
           ) : null}
           <div className="text-sm text-slate-700">
             <div className="font-medium text-slate-800">Participating operators</div>
@@ -520,6 +646,12 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
                     QC {formatShiftQty(v.qtySentToQc)} · Scrap {formatShiftQty(v.productionScrapQty)} · Gross{" "}
                     {formatShiftQty(v.grossOutputQty)}
                   </div>
+                  {v.zeroProductionReason ? (
+                    <div>
+                      Zero production: {zeroProductionReasonLabel(v.zeroProductionReason)}
+                      {v.zeroProductionRemarks ? ` — ${v.zeroProductionRemarks}` : ""}
+                    </div>
+                  ) : null}
                   {v.declaredOperator ? (
                     <div>Declared: {operatorDisplayName(v.declaredOperator)}</div>
                   ) : null}
@@ -546,10 +678,17 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
             Submit this Shift Report for manager review? Production quantities for this shift will lock until the
             report is returned or the shift is reopened.
           </p>
-          <p className="mt-2 text-sm text-slate-600">
-            Totals — Qty Sent to QC {formatShiftQty(totals.qtySentToQc)}, Scrap {formatShiftQty(totals.scrap)}, Gross{" "}
-            {formatShiftQty(totals.gross)}.
-          </p>
+          {isZeroReport || (canRecordZero && zeroReason) ? (
+            <p className="mt-2 text-sm text-slate-600">
+              Zero production — {zeroProductionReasonLabel(zeroReason || latest?.zeroProductionReason)}. Totals QC 0 ·
+              Scrap 0 · Gross 0.
+            </p>
+          ) : (
+            <p className="mt-2 text-sm text-slate-600">
+              Totals — Qty Sent to QC {formatShiftQty(totals.qtySentToQc)}, Scrap {formatShiftQty(totals.scrap)}, Gross{" "}
+              {formatShiftQty(totals.gross)}.
+            </p>
+          )}
           <div className="mt-4 flex justify-end gap-2">
             <Button type="button" variant="outline" disabled={busy} onClick={() => setSubmitOpen(false)}>
               Cancel

@@ -49,6 +49,7 @@ import {
   shiftDisplayLabel,
   shiftLifecycleNextAction,
   shiftLifecycleStageLabel,
+  shiftProductionQtyLockDisplayMessage,
 } from "../lib/machineShiftSessionUi";
 import { cn } from "../lib/utils";
 import { ShiftReportPanel } from "../components/erp/shiftProduction/ShiftReportPanel";
@@ -437,7 +438,7 @@ export function ShiftSessionWorkspacePage() {
                     role="status"
                     data-testid="shift-qty-locked-banner"
                   >
-                    {session.productionQtyLockReason ||
+                    {shiftProductionQtyLockDisplayMessage(session) ||
                       "Shift Report submitted — production quantities are locked pending manager review."}
                   </p>
                 ) : null}
@@ -461,7 +462,7 @@ export function ShiftSessionWorkspacePage() {
                     role="status"
                     data-testid="shift-qty-locked-banner"
                   >
-                    {session.productionQtyLockReason ||
+                    {shiftProductionQtyLockDisplayMessage(session) ||
                       "Shift Report submitted — production quantities are locked pending manager review."}
                   </p>
                 ) : null}

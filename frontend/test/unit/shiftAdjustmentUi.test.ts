@@ -31,6 +31,9 @@ describe("Step 4C — Historical Adjustment UI", () => {
     );
     expect(mapShiftApiError(new ApiRequestError("x", 400, "DECISION_NOTE_REQUIRED"))).toMatch(/denying/i);
     expect(mapShiftApiError(new ApiRequestError("x", 409, "ADJUSTMENT_NOT_APPROVED"))).toMatch(/approved/i);
+    expect(mapShiftApiError(new ApiRequestError("x", 409, "ADJUSTMENT_NOT_AVAILABLE_FOR_ZERO_REPORT"))).toMatch(
+      /zero-production/i,
+    );
   });
 
   it("wires adjustment panel with reporting-only disclaimer and no raw IDs", () => {
@@ -47,6 +50,8 @@ describe("Step 4C — Historical Adjustment UI", () => {
     expect(panelSrc).not.toMatch(/requestedByUserId/);
     expect(panelSrc).not.toMatch(/appliedReportVersionId/);
     expect(panelSrc).toContain("if (busy");
+    expect(panelSrc).toContain("shift-adjustment-unavailable-zero");
+    expect(panelSrc).toMatch(/does not\s+invent production lines/);
     expect(workspaceSrc).toContain("ShiftReportAdjustmentPanel");
     expect(woReportSrc).not.toContain("Historical Adjustment");
   });

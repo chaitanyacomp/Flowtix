@@ -17,9 +17,13 @@ const {
   requestShiftSessionReopen,
   approveShiftSessionReopen,
   denyShiftSessionReopen,
+  requestShiftReportAdjustment,
   SYSTEM_CLOSE_REASON,
   REPORT_VERSION_STATUS,
 } = require("../../src/services/machineShiftSessionOperations");
+const {
+  getShiftSessionProductionQtyLock,
+} = require("../../src/services/machineShiftProductionQtyLockService");
 
 function seq(start = 1) {
   let n = start;
@@ -435,6 +439,8 @@ function createMemoryDb() {
           returnedAt: null,
           returnedByUserId: null,
           returnReason: null,
+          zeroProductionReason: null,
+          zeroProductionRemarks: null,
           ...rest,
         };
         versions.push(row);
@@ -457,6 +463,13 @@ function createMemoryDb() {
       },
     },
     shiftProductionReportVersionLine: {
+      count: async ({ where } = {}) => {
+        let rows = lines.slice();
+        if (where?.reportVersionId != null) {
+          rows = rows.filter((l) => l.reportVersionId === where.reportVersionId);
+        }
+        return rows.length;
+      },
       deleteMany: async ({ where }) => {
         for (let i = lines.length - 1; i >= 0; i -= 1) {
           if (lines[i].reportVersionId === where.reportVersionId) lines.splice(i, 1);
@@ -1107,6 +1120,276 @@ describe("Controlled shift session cancel", () => {
           actorUserId: 7,
         }, db),
       (e) => e.code === "SHIFT_SESSION_ALREADY_CANCELLED",
+    );
+  });
+});
+
+describe("Zero Production Shift Report", () => {
+  async function openBareSession(db) {
+    return startShiftSession(
+      {
+        machineId: 1,
+        shiftId: 10,
+        sessionDate: "2026-08-24",
+        startedByUserId: 7,
+        operators: [{ operatorId: 100, isPrimary: true }],
+      },
+      db,
+    );
+  }
+
+  it("allows no-WO zero draft → submit → verify → Shift Over with empty lines", async () => {
+    const db = createMemoryDb();
+    const session = await openBareSession(db);
+
+    const draft = await saveShiftReportDraft(
+      {
+        sessionId: session.id,
+        lines: [],
+        zeroProduction: true,
+        zeroProductionReason: "NO_WORK_ORDER",
+      },
+      db,
+    );
+    assert.equal(draft.zeroProduction, true);
+    assert.equal(draft.version.zeroProductionReason, "NO_WORK_ORDER");
+    assert.equal(draft.version.lines.length, 0);
+    assert.equal(Number(draft.version.grossOutputQty), 0);
+
+    const submitted = await submitShiftReport(
+      { sessionId: session.id, declaredOperatorId: 100, declaredByUserId: 7 },
+      db,
+    );
+    assert.equal(submitted.version.status, REPORT_VERSION_STATUS.SUBMITTED);
+    assert.equal(submitted.version.zeroProductionReason, "NO_WORK_ORDER");
+    assert.equal(submitted.version.lines.length, 0);
+
+    const lockSubmitted = await getShiftSessionProductionQtyLock(db, session.id);
+    assert.equal(lockSubmitted.productionQtyLocked, true);
+
+    const verified = await verifyShiftReport({ versionId: submitted.version.id, actorUserId: 9 }, db);
+    assert.equal(verified.version.status, REPORT_VERSION_STATUS.VERIFIED);
+
+    const closed = await completeShiftOver(
+      { sessionId: session.id, handoverState: "CLEARED", actorUserId: 7 },
+      db,
+    );
+    assert.equal(closed.session.status, "SHIFT_OVER");
+  });
+
+  it("requires controlled reason and OTHER remarks", async () => {
+    const db = createMemoryDb();
+    const session = await openBareSession(db);
+
+    await assert.rejects(
+      () =>
+        saveShiftReportDraft(
+          { sessionId: session.id, lines: [], zeroProduction: true },
+          db,
+        ),
+      (e) => e.code === "ZERO_PRODUCTION_REASON_REQUIRED",
+    );
+
+    await assert.rejects(
+      () =>
+        saveShiftReportDraft(
+          {
+            sessionId: session.id,
+            lines: [],
+            zeroProductionReason: "OTHER",
+          },
+          db,
+        ),
+      (e) => e.code === "ZERO_PRODUCTION_REMARKS_REQUIRED",
+    );
+
+    const ok = await saveShiftReportDraft(
+      {
+        sessionId: session.id,
+        lines: [],
+        zeroProductionReason: "OTHER",
+        zeroProductionRemarks: "Waiting on tooling from vendor",
+      },
+      db,
+    );
+    assert.equal(ok.version.zeroProductionReason, "OTHER");
+    assert.match(ok.version.zeroProductionRemarks, /tooling/i);
+  });
+
+  it("blocks zero report when linked DRAFT ProductionEntries remain", async () => {
+    const db = createMemoryDb();
+    const { session, runSegment } = await openSessionWithRun(db);
+    await db.productionEntry.create({
+      data: {
+        producedQty: 3,
+        workflowStatus: "DRAFT",
+        shiftSessionId: session.id,
+        shiftRunSegmentId: runSegment.id,
+        fgItemId: 66,
+        workOrderId: 50,
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        saveShiftReportDraft(
+          {
+            sessionId: session.id,
+            lines: [],
+            zeroProductionReason: "MATERIAL_UNAVAILABLE",
+          },
+          db,
+        ),
+      (e) =>
+        e.code === "ZERO_PRODUCTION_NOT_ELIGIBLE" &&
+        e.details?.blockers?.includes("DRAFT_PRODUCTION_ENTRIES"),
+    );
+  });
+
+  it("clears zero marking when positive production is saved", async () => {
+    const db = createMemoryDb();
+    const { session, runSegment } = await openSessionWithRun(db);
+
+    await saveShiftReportDraft(
+      {
+        sessionId: session.id,
+        lines: [],
+        zeroProductionReason: "MACHINE_BREAKDOWN",
+      },
+      db,
+    );
+    await seedApprovedPe(db, { sessionId: session.id, segmentId: runSegment.id, qty: 40 });
+
+    const withLines = await saveShiftReportDraft(
+      {
+        sessionId: session.id,
+        lines: [{ runSegmentId: runSegment.id, itemId: 66, productionScrapQty: 0 }],
+      },
+      db,
+    );
+    assert.equal(withLines.version.zeroProductionReason, null);
+    assert.equal(withLines.version.zeroProductionRemarks, null);
+    assert.equal(withLines.version.lines.length, 1);
+    assert.ok(Number(withLines.version.qtySentToQc) > 0);
+  });
+
+  it("return unlocks production qty lock; reopen restores editable draft", async () => {
+    const db = createMemoryDb();
+    const session = await openBareSession(db);
+    await saveShiftReportDraft(
+      {
+        sessionId: session.id,
+        lines: [],
+        zeroProductionReason: "POWER_FAILURE",
+        zeroProductionRemarks: null,
+      },
+      db,
+    );
+    const submitted = await submitShiftReport(
+      { sessionId: session.id, declaredOperatorId: 100, declaredByUserId: 7 },
+      db,
+    );
+    assert.equal((await getShiftSessionProductionQtyLock(db, session.id)).productionQtyLocked, true);
+
+    await returnShiftReport(
+      { versionId: submitted.version.id, returnReason: "Need more detail", actorUserId: 9 },
+      db,
+    );
+    assert.equal((await getShiftSessionProductionQtyLock(db, session.id)).productionQtyLocked, false);
+
+    const redraft = await saveShiftReportDraft(
+      {
+        sessionId: session.id,
+        lines: [],
+        zeroProductionReason: "POWER_FAILURE",
+        zeroProductionRemarks: "Grid outage until 14:00",
+      },
+      db,
+    );
+    assert.equal(redraft.version.status, REPORT_VERSION_STATUS.DRAFT);
+    assert.equal(redraft.version.zeroProductionReason, "POWER_FAILURE");
+
+    const resubmitted = await submitShiftReport(
+      { sessionId: session.id, declaredOperatorId: 100, declaredByUserId: 7, versionId: redraft.version.id },
+      db,
+    );
+    await verifyShiftReport({ versionId: resubmitted.version.id, actorUserId: 9 }, db);
+    await completeShiftOver({ sessionId: session.id, handoverState: "CLEARED", actorUserId: 7 }, db);
+
+    const reopenReq = await requestShiftSessionReopen({
+      sessionId: session.id,
+      reopenReason: "Need to capture late scrap note",
+      actorUserId: 7,
+    }, db);
+    await approveShiftSessionReopen({ requestId: reopenReq.request.id, actorUserId: 9 }, db);
+
+    const lockAfterReopen = await getShiftSessionProductionQtyLock(db, session.id);
+    assert.equal(lockAfterReopen.productionQtyLocked, false);
+    assert.equal(lockAfterReopen.latestReportStatus, REPORT_VERSION_STATUS.DRAFT);
+  });
+
+  it("cancelled session cannot create or submit a report", async () => {
+    const db = createMemoryDb();
+    const session = await openBareSession(db);
+    await cancelShiftSession({ sessionId: session.id, reason: "Wrong machine", actorUserId: 7 }, db);
+
+    await assert.rejects(
+      () =>
+        saveShiftReportDraft(
+          {
+            sessionId: session.id,
+            lines: [],
+            zeroProductionReason: "NO_WORK_ORDER",
+          },
+          db,
+        ),
+      (e) => e.code === "SHIFT_SESSION_ALREADY_CANCELLED",
+    );
+    await assert.rejects(
+      () =>
+        submitShiftReport({ sessionId: session.id, declaredOperatorId: 100, declaredByUserId: 7 }, db),
+      (e) => e.code === "SHIFT_SESSION_ALREADY_CANCELLED",
+    );
+  });
+
+  it("blocks historical adjustment for line-less zero verified report", async () => {
+    const db = createMemoryDb();
+    const session = await openBareSession(db);
+    await saveShiftReportDraft(
+      {
+        sessionId: session.id,
+        lines: [],
+        zeroProductionReason: "PLANNED_MAINTENANCE",
+      },
+      db,
+    );
+    const submitted = await submitShiftReport(
+      { sessionId: session.id, declaredOperatorId: 100, declaredByUserId: 7 },
+      db,
+    );
+    await verifyShiftReport({ versionId: submitted.version.id, actorUserId: 9 }, db);
+    await completeShiftOver({ sessionId: session.id, handoverState: "CLEARED", actorUserId: 7 }, db);
+
+    await assert.rejects(
+      () =>
+        requestShiftReportAdjustment(
+          {
+            reportVersionId: submitted.version.id,
+            adjustReason: "Invent a line",
+            actorUserId: 7,
+            lines: [
+              {
+                runSegmentId: 1,
+                itemId: 66,
+                grossOutputQty: 1,
+                productionScrapQty: 0,
+                qtySentToQc: 1,
+              },
+            ],
+          },
+          db,
+        ),
+      (e) => e.code === "ADJUSTMENT_NOT_AVAILABLE_FOR_ZERO_REPORT",
     );
   });
 });

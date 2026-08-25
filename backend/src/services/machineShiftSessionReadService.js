@@ -251,6 +251,8 @@ function mapReportVersion(v, ctx = null) {
     productionScrapQty,
     qtySentToQc,
     remarks: v.remarks ?? null,
+    zeroProductionReason: v.zeroProductionReason ?? null,
+    zeroProductionRemarks: v.zeroProductionRemarks ?? null,
     pendingDraftCount: ctx?.aggregation?.pendingDraftCount ?? 0,
     pendingDraftQty: roundQty(ctx?.aggregation?.pendingDraftQty ?? 0),
     lines,

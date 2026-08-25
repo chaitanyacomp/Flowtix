@@ -262,6 +262,13 @@ function createMemoryDb() {
       },
     },
     shiftProductionReportVersionLine: {
+      count: async ({ where } = {}) => {
+        let rows = lines.slice();
+        if (where?.reportVersionId != null) {
+          rows = rows.filter((l) => l.reportVersionId === where.reportVersionId);
+        }
+        return rows.length;
+      },
       deleteMany: async ({ where }) => {
         for (let i = lines.length - 1; i >= 0; i -= 1) {
           if (lines[i].reportVersionId === where.reportVersionId) lines.splice(i, 1);

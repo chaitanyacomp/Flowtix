@@ -13,6 +13,7 @@ import {
   hasErpRole,
 } from "../../src/config/erpRoles";
 import {
+  busyOperatorIdSet,
   canShowManagerControls,
   deriveMachineShiftUiStatus,
   indiaLocalDateYmd,
@@ -171,6 +172,31 @@ describe("Shift Production UI helpers", () => {
     expect(mapShiftApiError(new ApiRequestError("x", 409, "DOWNTIME_ALREADY_OPEN"))).toMatch(/already paused/i);
     expect(mapShiftApiError(new ApiRequestError("x", 409, "NO_ACTIVE_RUN_TO_PAUSE"))).toMatch(/Start a production run/i);
     expect(mapShiftApiError(new ApiRequestError("x", 409, "ACTIVE_RUN_SEGMENT_EXISTS"))).toMatch(/already active/i);
+    expect(
+      mapShiftApiError(
+        new ApiRequestError(
+          "This operator is already active on Press 1 (M1) (SS-26-0001). They must leave that machine before joining here.",
+          409,
+          "OPERATOR_ACTIVE_ON_ANOTHER_MACHINE",
+        ),
+      ),
+    ).toMatch(/Press 1 \(M1\)/);
+  });
+
+  it("excludes operators busy on another session from join candidates", () => {
+    const all = busyOperatorIdSet([
+      { operatorId: 1, sessionId: 10 },
+      { operatorId: 2, sessionId: 20 },
+    ]);
+    expect([...all].sort()).toEqual([1, 2]);
+    const joinFiltered = busyOperatorIdSet(
+      [
+        { operatorId: 1, sessionId: 10 },
+        { operatorId: 2, sessionId: 20 },
+      ],
+      10,
+    );
+    expect([...joinFiltered]).toEqual([2]);
   });
 
   it("defaults session date to India local YYYY-MM-DD", () => {
@@ -187,6 +213,7 @@ describe("StartShiftModal / workspace double-submit protection (source)", () => 
     expect(src).toContain("if (submitting) return");
     expect(src).toContain("Start Shift");
     expect(src).toContain("validateStartOperators");
+    expect(src).toContain("busyOperatorIds");
     expect(src).toContain("Night shifts use the starting date");
   });
 
@@ -194,6 +221,8 @@ describe("StartShiftModal / workspace double-submit protection (source)", () => 
     const src = readFileSync(resolve(__dirname, "../../src/pages/ShiftSessionWorkspacePage.tsx"), "utf8");
     expect(src).toContain("if (busy) return");
     expect(src).toContain("await refresh()");
+    expect(src).toContain("fetchBusyShiftOperators");
+    expect(src).toContain("busyOperatorIdSet");
     expect(src).toContain("Continue into this shift");
     expect(src).toContain("Downtime continued from previous shift");
     expect(src).toContain("Pause Production");
@@ -208,5 +237,7 @@ describe("StartShiftModal / workspace double-submit protection (source)", () => 
     expect(src).toContain("Production Manager is not assigned. You have temporary shift control.");
     expect(src).toContain("canShowManagerControls");
     expect(src).toContain("fetchOpenShiftSession");
+    expect(src).toContain("fetchBusyShiftOperators");
+    expect(src).toContain("busyOperatorIds");
   });
 });

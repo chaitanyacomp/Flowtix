@@ -41,7 +41,10 @@ function createMemoryDb() {
   const nextReopenId = seq(1);
   const nextPeId = seq(1);
 
-  const machines = new Map([[1, { id: 1, isActive: true, machineCode: "M1", machineName: "Press 1" }]]);
+  const machines = new Map([
+    [1, { id: 1, isActive: true, machineCode: "M1", machineName: "Press 1" }],
+    [2, { id: 2, isActive: true, machineCode: "M2", machineName: "Press 2" }],
+  ]);
   const shifts = new Map([[10, { id: 10, isActive: true, shiftCode: "NIGHT", shiftName: "Night" }]]);
   const operators = new Map([
     [100, { id: 100, isActive: true, operatorCode: "OP1", operatorName: "Alice" }],
@@ -50,6 +53,7 @@ function createMemoryDb() {
   const workOrders = new Map([[50, { id: 50, status: "IN_PROGRESS", docNo: "WO-R-26-0001" }]]);
   const runAllocations = new Map([
     [200, { id: 200, workOrderId: 50, machineId: 1, isActive: true, runSequence: 1 }],
+    [201, { id: 201, workOrderId: 50, machineId: 2, isActive: true, runSequence: 1 }],
   ]);
   const items = new Map([[66, { id: 66, itemName: "FG Widget" }]]);
 
@@ -63,6 +67,64 @@ function createMemoryDb() {
   const lines = [];
   const reopenRequests = [];
   const productionEntries = [];
+
+  function throwActiveOpConflict() {
+    const err = new Error("Unique constraint failed");
+    err.code = "P2002";
+    err.meta = { target: ["activeOpId"] };
+    throw err;
+  }
+
+  function assertActiveOpAvailable(operatorId, leftAt) {
+    if (leftAt != null) return;
+    if (sessionOperators.some((r) => r.operatorId === operatorId && r.leftAt == null)) {
+      throwActiveOpConflict();
+    }
+  }
+
+  function filterSessionOperators(where = {}) {
+    let rows = sessionOperators.slice();
+    if (where.sessionId != null) {
+      if (where.sessionId.not != null) {
+        rows = rows.filter((r) => r.sessionId !== where.sessionId.not);
+      } else {
+        rows = rows.filter((r) => r.sessionId === where.sessionId);
+      }
+    }
+    if (where.operatorId?.in) {
+      const set = new Set(where.operatorId.in);
+      rows = rows.filter((r) => set.has(r.operatorId));
+    } else if (where.operatorId != null) {
+      rows = rows.filter((r) => r.operatorId === where.operatorId);
+    }
+    if (where.leftAt === null) rows = rows.filter((r) => r.leftAt == null);
+    if (where.leftAt?.not != null) rows = rows.filter((r) => r.leftAt != null);
+    if (where.joinedLeaveReason != null) {
+      rows = rows.filter((r) => r.joinedLeaveReason === where.joinedLeaveReason);
+    }
+    return rows;
+  }
+
+  function enrichOperatorRow(row, include) {
+    if (!include) return row;
+    const out = { ...row };
+    if (include.session) {
+      const session = sessions.find((s) => s.id === row.sessionId);
+      out.session = session
+        ? {
+            id: session.id,
+            shiftSessionNo: session.shiftSessionNo,
+            status: session.status,
+            machineId: session.machineId,
+            machine: machines.get(session.machineId) || null,
+          }
+        : null;
+    }
+    if (include.operator) {
+      out.operator = operators.get(row.operatorId) || null;
+    }
+    return out;
+  }
 
   const tx = {
     machine: {
@@ -126,6 +188,7 @@ function createMemoryDb() {
         sessions.push(row);
         const createdOps = [];
         for (const op of data.sessionOperators?.create || []) {
+          assertActiveOpAvailable(op.operatorId, op.leftAt ?? null);
           const part = { id: nextOpPartId(), sessionId: id, ...op };
           sessionOperators.push(part);
           createdOps.push(part);
@@ -159,19 +222,20 @@ function createMemoryDb() {
       },
     },
     machineShiftSessionOperator: {
-      findMany: async ({ where } = {}) => {
-        let rows = sessionOperators.filter((r) => r.sessionId === where.sessionId);
-        if (where.leftAt === null) rows = rows.filter((r) => r.leftAt == null);
-        return rows;
+      findMany: async ({ where, orderBy, include } = {}) => {
+        let rows = filterSessionOperators(where);
+        if (orderBy?.id === "desc") rows = rows.slice().sort((a, b) => b.id - a.id);
+        else if (orderBy) rows = rows.slice().sort((a, b) => a.id - b.id);
+        return rows.map((r) => enrichOperatorRow(r, include));
       },
-      findFirst: async ({ where, orderBy } = {}) => {
-        let rows = sessionOperators.filter((r) => r.sessionId === where.sessionId);
-        if (where.operatorId != null) rows = rows.filter((r) => r.operatorId === where.operatorId);
-        if (where.leftAt === null) rows = rows.filter((r) => r.leftAt == null);
+      findFirst: async ({ where, orderBy, include } = {}) => {
+        let rows = filterSessionOperators(where);
         if (orderBy?.id === "desc") rows.sort((a, b) => b.id - a.id);
-        return rows[0] || null;
+        const row = rows[0] || null;
+        return row ? enrichOperatorRow(row, include) : null;
       },
       create: async ({ data }) => {
+        assertActiveOpAvailable(data.operatorId, data.leftAt ?? null);
         const row = { id: nextOpPartId(), ...data };
         sessionOperators.push(row);
         return row;
@@ -740,6 +804,11 @@ describe("Step 2B Shift Over + reopen", () => {
     );
     assert.equal(idem.alreadyShiftOver, true);
     assert.equal(idem.session.endedByUserId, 7);
+
+    const opParts = db._state.sessionOperators.filter((r) => r.sessionId === session.id);
+    assert.ok(opParts.length >= 1);
+    assert.ok(opParts.every((r) => r.leftAt != null));
+    assert.ok(opParts.every((r) => r.joinedLeaveReason === "SHIFT_OVER"));
   });
 
   it("approve reopen restores OPEN, increments reopenCount, copies VERIFIED to new DRAFT; deny keeps closed", async () => {
@@ -792,6 +861,14 @@ describe("Step 2B Shift Over + reopen", () => {
     );
     assert.equal(idem.alreadyApproved, true);
     assert.equal(idem.request.decisionNote, "OK to correct");
+
+    const actives = db._state.sessionOperators.filter((r) => r.sessionId === session.id && r.leftAt == null);
+    assert.ok(actives.length >= 1);
+    assert.equal(actives.filter((r) => r.operatorId === 100).length, 1);
+    assert.ok(actives.every((r) => r.joinedLeaveReason === "REOPEN_RESTORE"));
+    const history = db._state.sessionOperators.filter((r) => r.sessionId === session.id && r.operatorId === 100);
+    assert.ok(history.length >= 2);
+    assert.ok(history.some((r) => r.joinedLeaveReason === "SHIFT_OVER" && r.leftAt != null));
   });
 
   it("blocks reopen after a later session exists on the machine", async () => {
@@ -817,6 +894,63 @@ describe("Step 2B Shift Over + reopen", () => {
           db,
         ),
       (e) => e.code === "REOPEN_BLOCKED_NEXT_SESSION",
+    );
+  });
+
+  it("Shift Over releases operators; reopen does not create duplicate actives", async () => {
+    const db = createMemoryDb();
+    const { session, runSegment } = await openSessionWithRun(db);
+    await verifiedReportFlow(db, session, runSegment.id);
+    await completeShiftOver({
+      sessionId: session.id,
+      handoverState: "CLEARED",
+      actorUserId: 7,
+    }, db);
+
+    assert.equal(
+      db._state.sessionOperators.filter((r) => r.sessionId === session.id && r.leftAt == null).length,
+      0,
+    );
+
+    const other = await startShiftSession(
+      {
+        machineId: 2,
+        sessionDate: "2026-08-25",
+        operators: [{ operatorId: 101, isPrimary: true }],
+        startedByUserId: 7,
+      },
+      db,
+    );
+    assert.equal(other.status, "OPEN");
+
+    const req = await requestShiftSessionReopen(
+      { sessionId: session.id, reopenReason: "Fix scrap", actorUserId: 7 },
+      db,
+    );
+    const approved = await approveShiftSessionReopen(
+      { requestId: req.request.id, actorUserId: 9, decisionNote: "OK" },
+      db,
+    );
+    assert.equal(approved.approved, true);
+
+    const activesOnSession = db._state.sessionOperators.filter(
+      (r) => r.sessionId === session.id && r.leftAt == null,
+    );
+    assert.equal(activesOnSession.filter((r) => r.operatorId === 100).length, 1);
+    assert.equal(
+      db._state.sessionOperators.filter((r) => r.operatorId === 100 && r.leftAt == null).length,
+      1,
+    );
+
+    const again = await approveShiftSessionReopen(
+      { requestId: req.request.id, actorUserId: 99, decisionNote: "retry" },
+      db,
+    );
+    assert.equal(again.alreadyApproved, true);
+    assert.equal(
+      db._state.sessionOperators.filter((r) => r.sessionId === session.id && r.leftAt == null && r.operatorId === 100)
+        .length,
+      1,
     );
   });
 });

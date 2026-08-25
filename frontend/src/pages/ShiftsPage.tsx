@@ -275,7 +275,7 @@ export function ShiftsPage() {
     <MasterListPageShell>
       <MasterListHeader
         title="Shifts"
-        description="Production shift templates. Soft-deactivate only — not used for Start Shift sessions yet."
+        description="Reusable shift templates used when starting Shift Sessions. Overnight sessions use the shift’s starting date. Soft-deactivate only."
         actions={
           <Button type="button" size="sm" variant="outline" onClick={onNewShift} data-testid="shift-new-btn">
             New

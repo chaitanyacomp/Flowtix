@@ -32,7 +32,15 @@ function mapShiftSessionPersistenceError(e, ctx = {}) {
   const action = String(ctx.action || "");
 
   if (code === "P2002") {
-    if (/openMachId|uq_mss_open/i.test(target) || action === "startSession") {
+    // Check activeOpId before startSession fallback — otherwise start races map wrongly.
+    if (/activeOpId|uq_mssop_active_op/i.test(target)) {
+      return domainError(
+        409,
+        "OPERATOR_ACTIVE_ON_ANOTHER_MACHINE",
+        "This operator is already active on another open shift session. They must leave that machine before joining here.",
+      );
+    }
+    if (/openMachId|uq_mss_open/i.test(target)) {
       return domainError(
         409,
         "SHIFT_SESSION_ALREADY_OPEN",
@@ -86,6 +94,20 @@ function mapShiftSessionPersistenceError(e, ctx = {}) {
         409,
         "ADJUSTMENT_APPLIED_VERSION_CONFLICT",
         "This corrected report version is already linked to another adjustment.",
+      );
+    }
+    if (action === "joinOperator" || action === "changePrimary") {
+      return domainError(
+        409,
+        "OPERATOR_ACTIVE_ON_ANOTHER_MACHINE",
+        "This operator is already active on another open shift session. They must leave that machine before joining here.",
+      );
+    }
+    if (action === "startSession") {
+      return domainError(
+        409,
+        "SHIFT_SESSION_ALREADY_OPEN",
+        "This machine already has an open shift session. Finish or close that session before starting another.",
       );
     }
     return domainError(409, "SHIFT_SESSION_CONFLICT", "This change conflicts with an existing shift session record.");

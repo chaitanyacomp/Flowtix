@@ -25,6 +25,8 @@ module.exports = {
   joinSessionOperator: operators.joinSessionOperator,
   leaveSessionOperator: operators.leaveSessionOperator,
   changePrimaryOperator: operators.changePrimaryOperator,
+  listBusyOperatorsAcrossOpenSessions: operators.listBusyOperatorsAcrossOpenSessions,
+  SYSTEM_LEAVE_REASON: operators.SYSTEM_LEAVE_REASON,
 
   // Run segments
   startRunSegment: runSegments.startRunSegment,

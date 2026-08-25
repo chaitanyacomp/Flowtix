@@ -19,6 +19,7 @@ const {
   mapShiftSessionPersistenceError,
   normalizeSessionDate,
   SYSTEM_CLOSE_REASON,
+  listBusyOperatorsAcrossOpenSessions,
 } = require("../../src/services/machineShiftSessionOperations");
 
 function seq(start = 1) {
@@ -37,7 +38,14 @@ function createMemoryDb(seed = {}) {
   const nextIncidentId = seq(1);
   const nextDtSegId = seq(1);
 
-  const machines = new Map((seed.machines || [{ id: 1, isActive: true, machineCode: "M1", machineName: "Press 1" }]).map((m) => [m.id, m]));
+  const machines = new Map(
+    (
+      seed.machines || [
+        { id: 1, isActive: true, machineCode: "M1", machineName: "Press 1" },
+        { id: 2, isActive: true, machineCode: "M2", machineName: "Press 2" },
+      ]
+    ).map((m) => [m.id, m]),
+  );
   const shifts = new Map((seed.shifts || [{ id: 10, isActive: true, shiftCode: "NIGHT", shiftName: "Night" }]).map((s) => [s.id, s]));
   const operators = new Map(
     (
@@ -55,9 +63,68 @@ function createMemoryDb(seed = {}) {
     (
       seed.runAllocations || [
         { id: 200, workOrderId: 50, machineId: 1, isActive: true, runSequence: 1 },
+        { id: 201, workOrderId: 50, machineId: 2, isActive: true, runSequence: 1 },
       ]
     ).map((r) => [r.id, r]),
   );
+
+  function throwActiveOpConflict() {
+    const err = new Error("Unique constraint failed");
+    err.code = "P2002";
+    err.meta = { target: ["activeOpId"] };
+    throw err;
+  }
+
+  function assertActiveOpAvailable(operatorId, leftAt) {
+    if (leftAt != null) return;
+    if (sessionOperators.some((r) => r.operatorId === operatorId && r.leftAt == null)) {
+      throwActiveOpConflict();
+    }
+  }
+
+  function filterSessionOperators(where = {}) {
+    let rows = sessionOperators.slice();
+    if (where.sessionId != null) {
+      if (where.sessionId.not != null) {
+        rows = rows.filter((r) => r.sessionId !== where.sessionId.not);
+      } else {
+        rows = rows.filter((r) => r.sessionId === where.sessionId);
+      }
+    }
+    if (where.operatorId?.in) {
+      const set = new Set(where.operatorId.in);
+      rows = rows.filter((r) => set.has(r.operatorId));
+    } else if (where.operatorId != null) {
+      rows = rows.filter((r) => r.operatorId === where.operatorId);
+    }
+    if (where.leftAt === null) rows = rows.filter((r) => r.leftAt == null);
+    if (where.leftAt?.not != null) rows = rows.filter((r) => r.leftAt != null);
+    if (where.joinedLeaveReason != null) {
+      rows = rows.filter((r) => r.joinedLeaveReason === where.joinedLeaveReason);
+    }
+    return rows;
+  }
+
+  function enrichOperatorRow(row, include) {
+    if (!include) return row;
+    const out = { ...row };
+    if (include.session) {
+      const session = sessions.find((s) => s.id === row.sessionId);
+      out.session = session
+        ? {
+            id: session.id,
+            shiftSessionNo: session.shiftSessionNo,
+            status: session.status,
+            machineId: session.machineId,
+            machine: machines.get(session.machineId) || null,
+          }
+        : null;
+    }
+    if (include.operator) {
+      out.operator = operators.get(row.operatorId) || null;
+    }
+    return out;
+  }
 
   const sessions = [];
   const sessionOperators = [];
@@ -134,6 +201,7 @@ function createMemoryDb(seed = {}) {
         sessions.push(row);
         const createdOps = [];
         for (const op of data.sessionOperators?.create || []) {
+          assertActiveOpAvailable(op.operatorId, op.leftAt ?? null);
           const part = {
             id: nextOpPartId(),
             sessionId: id,
@@ -158,28 +226,33 @@ function createMemoryDb(seed = {}) {
       },
     },
     machineShiftSessionOperator: {
-      findMany: async ({ where, orderBy } = {}) => {
-        let rows = sessionOperators.filter((r) => r.sessionId === where.sessionId);
-        if (where.leftAt === null) rows = rows.filter((r) => r.leftAt == null);
-        if (orderBy) rows = rows.slice().sort((a, b) => a.id - b.id);
-        return rows;
+      findMany: async ({ where, orderBy, include } = {}) => {
+        let rows = filterSessionOperators(where);
+        if (orderBy?.id === "desc") rows = rows.slice().sort((a, b) => b.id - a.id);
+        else if (orderBy?.operatorId === "asc" || orderBy?.[0]?.operatorId === "asc") {
+          rows = rows.slice().sort((a, b) => a.operatorId - b.operatorId || a.id - b.id);
+        } else if (orderBy) rows = rows.slice().sort((a, b) => a.id - b.id);
+        return rows.map((r) => enrichOperatorRow(r, include));
       },
-      findFirst: async ({ where, orderBy } = {}) => {
-        let rows = sessionOperators.filter((r) => r.sessionId === where.sessionId);
-        if (where.operatorId != null) rows = rows.filter((r) => r.operatorId === where.operatorId);
-        if (where.leftAt === null) rows = rows.filter((r) => r.leftAt == null);
-        if (where.leftAt?.not != null) rows = rows.filter((r) => r.leftAt != null);
+      findFirst: async ({ where, orderBy, include } = {}) => {
+        let rows = filterSessionOperators(where);
         if (orderBy?.id === "desc") rows.sort((a, b) => b.id - a.id);
         if (orderBy?.leftAt === "desc") rows.sort((a, b) => (b.leftAt?.getTime?.() || 0) - (a.leftAt?.getTime?.() || 0));
-        return rows[0] || null;
+        const row = rows[0] || null;
+        return row ? enrichOperatorRow(row, include) : null;
       },
       create: async ({ data }) => {
+        assertActiveOpAvailable(data.operatorId, data.leftAt ?? null);
         const row = { id: nextOpPartId(), ...data };
         sessionOperators.push(row);
         return row;
       },
       update: async ({ where, data }) => {
         const row = sessionOperators.find((r) => r.id === where.id);
+        const nextLeftAt = data.leftAt !== undefined ? data.leftAt : row.leftAt;
+        if (row.leftAt != null && nextLeftAt == null) {
+          assertActiveOpAvailable(row.operatorId, null);
+        }
         Object.assign(row, data);
         return row;
       },
@@ -508,6 +581,145 @@ describe("operator management", () => {
     );
     assert.equal(idem.changed, false);
   });
+
+  it("rejects start when operator is already active on another machine", async () => {
+    const db = createMemoryDb();
+    await startShiftSession(
+      {
+        machineId: 1,
+        sessionDate: "2026-08-24",
+        operators: [{ operatorId: 100, isPrimary: true }],
+      },
+      db,
+    );
+    await assert.rejects(
+      () =>
+        startShiftSession(
+          {
+            machineId: 2,
+            sessionDate: "2026-08-24",
+            operators: [{ operatorId: 100, isPrimary: true }],
+          },
+          db,
+        ),
+      (e) => e.code === "OPERATOR_ACTIVE_ON_ANOTHER_MACHINE" && e.statusCode === 409,
+    );
+  });
+
+  it("rejects join when operator is already active on another machine", async () => {
+    const db = createMemoryDb();
+    const a = await startShiftSession(
+      {
+        machineId: 1,
+        sessionDate: "2026-08-24",
+        operators: [{ operatorId: 100, isPrimary: true }],
+      },
+      db,
+    );
+    const b = await startShiftSession(
+      {
+        machineId: 2,
+        sessionDate: "2026-08-24",
+        operators: [{ operatorId: 101, isPrimary: true }],
+      },
+      db,
+    );
+    await assert.rejects(
+      () =>
+        joinSessionOperator(
+          { sessionId: b.id, operatorId: 100, changeReason: "cross join", actorUserId: 1 },
+          db,
+        ),
+      (e) =>
+        e.code === "OPERATOR_ACTIVE_ON_ANOTHER_MACHINE" &&
+        e.statusCode === 409 &&
+        /Press 1/i.test(e.message) &&
+        e.details?.machineCode === "M1",
+    );
+    const busy = await listBusyOperatorsAcrossOpenSessions(db);
+    assert.ok(busy.some((r) => r.operatorId === 100 && r.sessionId === a.id));
+    assert.ok(busy.some((r) => r.operatorId === 101 && r.sessionId === b.id));
+  });
+
+  it("maps concurrent activeOpId unique conflict to OPERATOR_ACTIVE_ON_ANOTHER_MACHINE", async () => {
+    const db = createMemoryDb();
+    await startShiftSession(
+      {
+        machineId: 1,
+        sessionDate: "2026-08-24",
+        operators: [{ operatorId: 100, isPrimary: true }],
+      },
+      db,
+    );
+    const b = await startShiftSession(
+      {
+        machineId: 2,
+        sessionDate: "2026-08-24",
+        operators: [{ operatorId: 101, isPrimary: true }],
+      },
+      db,
+    );
+    // Simulate race: assert passed elsewhere, create hits uq_mssop_active_op
+    await assert.rejects(
+      () =>
+        db.machineShiftSessionOperator.create({
+          data: {
+            sessionId: b.id,
+            operatorId: 100,
+            isPrimarySnapshot: false,
+            joinedAt: new Date(),
+            leftAt: null,
+            joinedLeaveReason: "race",
+          },
+        }),
+      (e) => e.code === "P2002" && /activeOpId/i.test(String(e.meta?.target)),
+    );
+    const mapped = mapShiftSessionPersistenceError(
+      { code: "P2002", meta: { target: ["activeOpId"] } },
+      { action: "startSession" },
+    );
+    assert.equal(mapped.code, "OPERATOR_ACTIVE_ON_ANOTHER_MACHINE");
+    assert.equal(mapped.statusCode, 409);
+  });
+
+  it("allows leave then join another machine", async () => {
+    const db = createMemoryDb();
+    const a = await startShiftSession(
+      {
+        machineId: 1,
+        sessionDate: "2026-08-24",
+        operators: [
+          { operatorId: 100, isPrimary: true },
+          { operatorId: 101, isPrimary: false },
+        ],
+      },
+      db,
+    );
+    const b = await startShiftSession(
+      {
+        machineId: 2,
+        sessionDate: "2026-08-24",
+        operators: [{ operatorId: 102, isPrimary: true }],
+      },
+      db,
+    );
+
+    await leaveSessionOperator(
+      { sessionId: a.id, operatorId: 101, changeReason: "Moving to Press 2", actorUserId: 1 },
+      db,
+    );
+    const joined = await joinSessionOperator(
+      { sessionId: b.id, operatorId: 101, changeReason: "Relief on Press 2", actorUserId: 1 },
+      db,
+    );
+    assert.equal(joined.created, true);
+    assert.equal(joined.participation.sessionId, b.id);
+    assert.equal(joined.participation.leftAt, null);
+
+    const historyA = db._state.sessionOperators.filter((r) => r.sessionId === a.id && r.operatorId === 101);
+    assert.equal(historyA.length, 1);
+    assert.ok(historyA[0].leftAt);
+  });
 });
 
 describe("run segments", () => {
@@ -669,7 +881,13 @@ describe("downtime", () => {
     const priorStart = new Date(paused.downtimeSegment.segmentStartAt);
 
     // Close session1 without resolving downtime (Shift Over is Step 2B — mark SHIFT_OVER manually for test)
-    db._state.sessions.find((s) => s.id === session1.id).status = "SHIFT_OVER";
+    const s1 = db._state.sessions.find((s) => s.id === session1.id);
+    s1.status = "SHIFT_OVER";
+    const now = new Date();
+    for (const part of db._state.sessionOperators.filter((r) => r.sessionId === session1.id && r.leftAt == null)) {
+      part.leftAt = now;
+      part.joinedLeaveReason = "SHIFT_OVER";
+    }
 
     const session2 = await startShiftSession(
       {
@@ -699,5 +917,11 @@ describe("downtime", () => {
     const mapped = mapShiftSessionPersistenceError(e, { action: "startSession" });
     assert.equal(mapped.code, "SHIFT_SESSION_ALREADY_OPEN");
     assert.equal(mapped.statusCode, 409);
+
+    const opBusy = mapShiftSessionPersistenceError(
+      { code: "P2002", meta: { target: ["activeOpId"] } },
+      { action: "startSession" },
+    );
+    assert.equal(opBusy.code, "OPERATOR_ACTIVE_ON_ANOTHER_MACHINE");
   });
 });

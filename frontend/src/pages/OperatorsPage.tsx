@@ -253,7 +253,7 @@ export function OperatorsPage() {
     <MasterListPageShell>
       <MasterListHeader
         title="Operators"
-        description="Production operator register. Soft-deactivate only — not assigned to machines or shifts yet."
+        description="Shop-floor operator register. Operators can join and leave Shift Sessions. Soft-deactivate only."
         actions={
           <Button type="button" size="sm" variant="outline" onClick={onNewOperator} data-testid="operator-new-btn">
             New

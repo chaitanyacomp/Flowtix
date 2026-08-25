@@ -16,6 +16,11 @@ const {
   normalizeChangeReason,
 } = require("./machineShiftSessionService");
 
+/** System leave reason stamped on Shift Over (preserved in history). */
+const SYSTEM_LEAVE_REASON = Object.freeze({
+  SHIFT_OVER: "SHIFT_OVER",
+});
+
 async function listActiveParticipations(tx, sessionId) {
   return tx.machineShiftSessionOperator.findMany({
     where: { sessionId, leftAt: null },
@@ -28,6 +33,216 @@ async function findActiveParticipation(tx, sessionId, operatorId) {
     where: { sessionId, operatorId, leftAt: null },
     orderBy: { id: "desc" },
   });
+}
+
+/**
+ * Active participations for operators (leftAt null), optionally excluding one session.
+ */
+async function findActiveParticipationsForOperators(tx, operatorIds, opts = {}) {
+  const ids = [...new Set((operatorIds || []).map((n) => Number(n)).filter((n) => Number.isFinite(n) && n > 0))];
+  if (!ids.length) return [];
+  const where = {
+    operatorId: { in: ids },
+    leftAt: null,
+  };
+  if (opts.excludeSessionId != null) {
+    where.sessionId = { not: Number(opts.excludeSessionId) };
+  }
+  return tx.machineShiftSessionOperator.findMany({
+    where,
+    include: {
+      session: {
+        select: {
+          id: true,
+          shiftSessionNo: true,
+          status: true,
+          machineId: true,
+          machine: { select: { id: true, machineCode: true, machineName: true } },
+        },
+      },
+    },
+    orderBy: [{ id: "asc" }],
+  });
+}
+
+function formatBusyMachineLabel(row) {
+  const m = row?.session?.machine;
+  if (!m) return null;
+  const name = String(m.machineName || "").trim();
+  const code = String(m.machineCode || "").trim();
+  if (name && code) return `${name} (${code})`;
+  return name || code || null;
+}
+
+/**
+ * Reject when any operator already has leftAt=null on another session.
+ */
+async function assertOperatorsAvailableAcrossMachines(tx, operatorIds, opts = {}) {
+  const busy = await findActiveParticipationsForOperators(tx, operatorIds, opts);
+  if (!busy.length) return;
+
+  const first = busy[0];
+  const machineLabel = formatBusyMachineLabel(first);
+  const sessionNo = first.session?.shiftSessionNo ? String(first.session.shiftSessionNo) : null;
+  let message =
+    "This operator is already active on another open shift session. They must leave that machine before joining here.";
+  if (machineLabel && sessionNo) {
+    message = `This operator is already active on ${machineLabel} (${sessionNo}). They must leave that machine before joining here.`;
+  } else if (machineLabel) {
+    message = `This operator is already active on ${machineLabel}. They must leave that machine before joining here.`;
+  } else if (sessionNo) {
+    message = `This operator is already active on shift ${sessionNo}. They must leave that machine before joining here.`;
+  }
+
+  throw domainError(409, "OPERATOR_ACTIVE_ON_ANOTHER_MACHINE", message, {
+    operatorId: first.operatorId,
+    sessionId: first.sessionId,
+    shiftSessionNo: sessionNo,
+    machineId: first.session?.machineId ?? first.session?.machine?.id ?? null,
+    machineCode: first.session?.machine?.machineCode ?? null,
+    machineName: first.session?.machine?.machineName ?? null,
+    machineLabel,
+  });
+}
+
+/**
+ * List operators currently active (leftAt null) — for Start/Join dropdown exclusion.
+ */
+async function listBusyOperatorsAcrossOpenSessions(db = prisma) {
+  const rows = await db.machineShiftSessionOperator.findMany({
+    where: { leftAt: null },
+    include: {
+      session: {
+        select: {
+          id: true,
+          shiftSessionNo: true,
+          status: true,
+          machineId: true,
+          machine: { select: { id: true, machineCode: true, machineName: true } },
+        },
+      },
+      operator: { select: { id: true, operatorCode: true, operatorName: true } },
+    },
+    orderBy: [{ operatorId: "asc" }, { id: "asc" }],
+  });
+  return rows.map((r) => ({
+    operatorId: r.operatorId,
+    operatorCode: r.operator?.operatorCode ?? null,
+    operatorName: r.operator?.operatorName ?? null,
+    sessionId: r.sessionId,
+    shiftSessionNo: r.session?.shiftSessionNo ?? null,
+    sessionStatus: r.session?.status ?? null,
+    machineId: r.session?.machineId ?? r.session?.machine?.id ?? null,
+    machineCode: r.session?.machine?.machineCode ?? null,
+    machineName: r.session?.machine?.machineName ?? null,
+    machineLabel: formatBusyMachineLabel(r),
+  }));
+}
+
+/**
+ * Close all active participations on a session (Shift Over). History preserved.
+ */
+async function closeActiveParticipationsForShiftOver(tx, sessionId, { actorUserId, at } = {}) {
+  const now = at instanceof Date ? at : new Date();
+  const actives = await listActiveParticipations(tx, sessionId);
+  const closedIds = [];
+  for (const row of actives) {
+    await tx.machineShiftSessionOperator.update({
+      where: { id: row.id },
+      data: {
+        leftAt: now,
+        joinedLeaveReason: SYSTEM_LEAVE_REASON.SHIFT_OVER,
+        changedByUserId: actorUserId ?? null,
+        changedAt: now,
+      },
+    });
+    closedIds.push(row.id);
+  }
+  return closedIds;
+}
+
+/**
+ * After controlled reopen: append-only re-seed active rows for operators closed by SHIFT_OVER.
+ */
+async function restoreParticipationsAfterReopen(tx, session, { actorUserId, at } = {}) {
+  const now = at instanceof Date ? at : new Date();
+  const sessionId = session.id;
+  const closed = await tx.machineShiftSessionOperator.findMany({
+    where: {
+      sessionId,
+      leftAt: { not: null },
+      joinedLeaveReason: SYSTEM_LEAVE_REASON.SHIFT_OVER,
+    },
+    orderBy: [{ id: "desc" }],
+  });
+
+  /** @type {Map<number, { operatorId: number, isPrimarySnapshot: boolean }>} */
+  const byOp = new Map();
+  for (const row of closed) {
+    if (!byOp.has(row.operatorId)) {
+      byOp.set(row.operatorId, {
+        operatorId: row.operatorId,
+        isPrimarySnapshot: Boolean(row.isPrimarySnapshot) || row.operatorId === session.primaryOperatorId,
+      });
+    }
+  }
+
+  if (session.primaryOperatorId && byOp.has(session.primaryOperatorId)) {
+    byOp.get(session.primaryOperatorId).isPrimarySnapshot = true;
+  } else if (session.primaryOperatorId && !byOp.has(session.primaryOperatorId)) {
+    byOp.set(session.primaryOperatorId, {
+      operatorId: session.primaryOperatorId,
+      isPrimarySnapshot: true,
+    });
+  }
+
+  const alreadyActive = await listActiveParticipations(tx, sessionId);
+  const alreadyIds = new Set(alreadyActive.map((r) => r.operatorId));
+  const toRestore = [...byOp.values()].filter((o) => !alreadyIds.has(o.operatorId));
+  if (!toRestore.length) return { restored: [], skipped: alreadyActive.length };
+
+  await assertOperatorsAvailableAcrossMachines(
+    tx,
+    toRestore.map((o) => o.operatorId),
+    { excludeSessionId: sessionId },
+  );
+
+  let primaryAssigned = alreadyActive.some((r) => r.isPrimarySnapshot);
+  const created = [];
+  for (const o of toRestore) {
+    let asPrimary = Boolean(o.isPrimarySnapshot) && !primaryAssigned;
+    if (asPrimary) primaryAssigned = true;
+    if (!asPrimary && o.operatorId === session.primaryOperatorId && !primaryAssigned) {
+      asPrimary = true;
+      primaryAssigned = true;
+    }
+    const row = await tx.machineShiftSessionOperator.create({
+      data: {
+        sessionId,
+        operatorId: o.operatorId,
+        isPrimarySnapshot: asPrimary,
+        joinedAt: now,
+        leftAt: null,
+        joinedLeaveReason: "REOPEN_RESTORE",
+        changedByUserId: actorUserId ?? null,
+        changedAt: now,
+      },
+    });
+    created.push(row);
+  }
+
+  const after = await listActiveParticipations(tx, sessionId);
+  if (!after.some((r) => r.isPrimarySnapshot) && session.primaryOperatorId) {
+    const target = after.find((r) => r.operatorId === session.primaryOperatorId);
+    if (target) {
+      await tx.machineShiftSessionOperator.update({
+        where: { id: target.id },
+        data: { isPrimarySnapshot: true, changedAt: now, changedByUserId: actorUserId ?? null },
+      });
+    }
+  }
+
+  return { restored: created, skipped: alreadyActive.length };
 }
 
 function activePrimaryFromRows(rows, sessionPrimaryOperatorId) {
@@ -71,6 +286,8 @@ async function joinSessionOperator(input, db = prisma) {
       if (existing) {
         return { participation: existing, created: false, session };
       }
+
+      await assertOperatorsAvailableAcrossMachines(tx, [operatorId], { excludeSessionId: sessionId });
 
       const now = new Date();
       const participation = await tx.machineShiftSessionOperator.create({
@@ -153,15 +370,6 @@ async function leaveSessionOperator(input, db = prisma) {
 
 /**
  * Change primary operator safely (append-only participation rows; updates session.primaryOperatorId).
- * Never allows more than one active primary; never leaves session without a primary.
- *
- * @param {{
- *   sessionId: number,
- *   newPrimaryOperatorId: number,
- *   changeReason: string,
- *   actorUserId?: number|null,
- *   keepPreviousPrimary?: boolean,
- * }} input
  */
 async function changePrimaryOperator(input, db = prisma) {
   const sessionId = normalizePositiveInt(input?.sessionId, "SESSION_ID_INVALID", "Shift session is required.");
@@ -203,10 +411,16 @@ async function changePrimaryOperator(input, db = prisma) {
         );
       }
 
+      const alreadyOnSession = actives.some((r) => r.operatorId === newPrimaryOperatorId);
+      if (!alreadyOnSession) {
+        await assertOperatorsAvailableAcrossMachines(tx, [newPrimaryOperatorId], {
+          excludeSessionId: sessionId,
+        });
+      }
+
       const now = new Date();
       const created = [];
 
-      // Close current primary participation (history preserved).
       await tx.machineShiftSessionOperator.update({
         where: { id: currentPrimary.id },
         data: {
@@ -298,8 +512,14 @@ async function changePrimaryOperator(input, db = prisma) {
 }
 
 module.exports = {
+  SYSTEM_LEAVE_REASON,
   listActiveParticipations,
   findActiveParticipation,
+  findActiveParticipationsForOperators,
+  assertOperatorsAvailableAcrossMachines,
+  listBusyOperatorsAcrossOpenSessions,
+  closeActiveParticipationsForShiftOver,
+  restoreParticipationsAfterReopen,
   activePrimaryFromRows,
   joinSessionOperator,
   leaveSessionOperator,

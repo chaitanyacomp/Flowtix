@@ -3835,6 +3835,10 @@ model MachineShiftSession {
 }
 
 /// Operator join/leave history for a shift session.
+/// Database-only MySQL generated column + unique index (not modeled in Prisma):
+/// `activeOpId` INTEGER GENERATED ALWAYS AS (IF(`leftAt` IS NULL, `operatorId`, NULL)) VIRTUAL
+/// UNIQUE INDEX `uq_mssop_active_op` (`activeOpId`) — one active participation per operator globally.
+/// Requires Shift Over / leave to stamp `leftAt` so the operator can join another OPEN session.
 model MachineShiftSessionOperator {
   id Int @id @default(autoincrement())
 

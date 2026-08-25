@@ -23,6 +23,10 @@ const {
   findActiveRunSegmentForMachine,
 } = require("./machineShiftSessionRunSegmentService");
 const {
+  closeActiveParticipationsForShiftOver,
+  restoreParticipationsAfterReopen,
+} = require("./machineShiftSessionOperatorService");
+const {
   REPORT_VERSION_STATUS,
   ensureShiftProductionReport,
   findLatestVersion,
@@ -93,6 +97,7 @@ async function completeShiftOver(input, db = prisma) {
           alreadyShiftOver: true,
           closedRunSegmentIds: [],
           closedDowntimeSegmentIds: [],
+          closedOperatorParticipationIds: [],
         };
       }
 
@@ -137,6 +142,11 @@ async function completeShiftOver(input, db = prisma) {
         closedDowntimeSegmentIds.push(seg.id);
       }
 
+      const closedOperatorParticipationIds = await closeActiveParticipationsForShiftOver(tx, sessionId, {
+        actorUserId,
+        at: now,
+      });
+
       const updated = await tx.machineShiftSession.update({
         where: { id: sessionId },
         data: {
@@ -154,6 +164,7 @@ async function completeShiftOver(input, db = prisma) {
         alreadyShiftOver: false,
         closedRunSegmentIds,
         closedDowntimeSegmentIds,
+        closedOperatorParticipationIds,
         reportVersionId: latest.id,
       };
     });
@@ -383,6 +394,11 @@ async function approveShiftSessionReopen(input, db = prisma) {
 
       const draftVersion = await createDraftVersionFrom(tx, report, latest);
 
+      const operatorRestore = await restoreParticipationsAfterReopen(tx, restored, {
+        actorUserId: decidedByUserId,
+        at: now,
+      });
+
       const updatedRequest = await tx.shiftSessionReopenRequest.update({
         where: { id: requestId },
         data: {
@@ -400,6 +416,7 @@ async function approveShiftSessionReopen(input, db = prisma) {
         session: restored,
         draftVersion,
         verifiedVersionId: latest.id,
+        restoredOperatorParticipations: operatorRestore.restored,
       };
     });
   } catch (e) {

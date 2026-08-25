@@ -248,6 +248,23 @@ export function fetchShiftCapabilities(): Promise<ShiftCapabilities> {
   return apiFetch<ShiftCapabilities>("/api/machine-shift-sessions/capabilities");
 }
 
+export type BusyShiftOperator = {
+  operatorId: number;
+  operatorCode?: string | null;
+  operatorName?: string | null;
+  sessionId: number;
+  shiftSessionNo?: string | null;
+  sessionStatus?: string | null;
+  machineId?: number | null;
+  machineCode?: string | null;
+  machineName?: string | null;
+  machineLabel?: string | null;
+};
+
+export function fetchBusyShiftOperators(): Promise<{ operators: BusyShiftOperator[] }> {
+  return apiFetch("/api/machine-shift-sessions/busy-operators");
+}
+
 export function fetchOpenShiftSession(machineId: number): Promise<{ session: ShiftSessionDetail | null }> {
   return apiFetch(`/api/machine-shift-sessions/open?machineId=${encodeURIComponent(String(machineId))}`);
 }

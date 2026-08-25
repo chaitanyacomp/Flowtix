@@ -14,6 +14,7 @@ import {
   DOWNTIME_REASON_OPTIONS,
   fetchEligibleRuns,
   fetchOpenDowntime,
+  fetchBusyShiftOperators,
   fetchShiftCapabilities,
   fetchShiftSession,
   joinShiftOperator,
@@ -21,12 +22,14 @@ import {
   pauseShiftDowntime,
   resumeShiftDowntime,
   startShiftRunSegment,
+  type BusyShiftOperator,
   type EligibleRunOption,
   type OpenDowntimeIncident,
   type ShiftCapabilities,
   type ShiftSessionDetail,
 } from "../lib/machineShiftSessionApi";
 import {
+  busyOperatorIdSet,
   canShowManagerControls,
   deriveMachineShiftUiStatus,
   deriveShiftLifecycleStage,
@@ -76,6 +79,7 @@ export function ShiftSessionWorkspacePage() {
   const [session, setSession] = React.useState<ShiftSessionDetail | null>(null);
   const [caps, setCaps] = React.useState<ShiftCapabilities | null>(null);
   const [operators, setOperators] = React.useState<OperatorRow[]>([]);
+  const [busyOperators, setBusyOperators] = React.useState<BusyShiftOperator[]>([]);
   const [eligibleRuns, setEligibleRuns] = React.useState<EligibleRunOption[]>([]);
   const [openDowntime, setOpenDowntime] = React.useState<OpenDowntimeIncident | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -111,14 +115,16 @@ export function ShiftSessionWorkspacePage() {
     setLoading(true);
     setNotice(null);
     try {
-      const [sessRes, capRes, ops] = await Promise.all([
+      const [sessRes, capRes, ops, busyRes] = await Promise.all([
         fetchShiftSession(sessionId),
         fetchShiftCapabilities(),
         fetchOperators(false),
+        fetchBusyShiftOperators().catch(() => ({ operators: [] as BusyShiftOperator[] })),
       ]);
       setSession(sessRes.session);
       setCaps(capRes);
       setOperators(ops.filter((o) => o.isActive));
+      setBusyOperators(busyRes.operators || []);
 
       const machineId = sessRes.session.machine?.id;
       if (machineId) {
@@ -188,13 +194,15 @@ export function ShiftSessionWorkspacePage() {
 
   const joinCandidates = React.useMemo(() => {
     const activeIds = new Set(activeOps.map((o) => o.operator?.id).filter(Boolean));
+    const busyElsewhere = busyOperatorIdSet(busyOperators, session?.id ?? sessionId);
     const q = joinQuery.trim().toLowerCase();
     return operators.filter((o) => {
       if (activeIds.has(o.id)) return false;
+      if (busyElsewhere.has(o.id)) return false;
       if (!q) return true;
       return o.operatorName.toLowerCase().includes(q) || o.operatorCode.toLowerCase().includes(q);
     });
-  }, [operators, activeOps, joinQuery]);
+  }, [operators, activeOps, joinQuery, busyOperators, session?.id, sessionId]);
 
   if (loading && !session) {
     return (

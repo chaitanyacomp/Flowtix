@@ -146,6 +146,20 @@ machineShiftSessionsRouter.get(
 );
 
 machineShiftSessionsRouter.get(
+  "/busy-operators",
+  requireAuth,
+  requireShiftAction(SHIFT_ACTION.VIEW),
+  async (req, res, next) => {
+    try {
+      const operators = await ops.listBusyOperatorsAcrossOpenSessions();
+      return res.json({ operators });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+machineShiftSessionsRouter.get(
   "/eligible-runs",
   requireAuth,
   requireShiftAction(SHIFT_ACTION.VIEW),

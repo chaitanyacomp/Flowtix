@@ -223,6 +223,12 @@ async function startShiftSession(input, db = prisma) {
         operators.map((o) => o.operatorId),
       );
 
+      const { assertOperatorsAvailableAcrossMachines } = require("./machineShiftSessionOperatorService");
+      await assertOperatorsAvailableAcrossMachines(
+        tx,
+        operators.map((o) => o.operatorId),
+      );
+
       const existingOpen = await findOpenSessionForMachine(tx, machineId);
       if (existingOpen) {
         throw domainError(
@@ -277,6 +283,9 @@ async function startShiftSession(input, db = prisma) {
               Array.isArray(e.meta?.target) ? e.meta.target.join(",") : e.meta?.target || "",
             );
             if (/openMachId|uq_mss_open/i.test(target)) {
+              throw mapShiftSessionPersistenceError(e, { action: "startSession" });
+            }
+            if (/activeOpId|uq_mssop_active_op/i.test(target)) {
               throw mapShiftSessionPersistenceError(e, { action: "startSession" });
             }
             if (/shiftSessionNo/i.test(target) && attempt < MAX_ALLOCATE_ATTEMPTS - 1) {

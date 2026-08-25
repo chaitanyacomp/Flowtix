@@ -17,6 +17,8 @@ const ERROR_MESSAGES: Record<string, string> = {
   SHIFT_SESSION_NOT_OPEN: "This shift is no longer open.",
   MACHINE_NOT_FOUND: "Machine was not found.",
   OPERATOR_NOT_FOUND: "Operator was not found.",
+  OPERATOR_ACTIVE_ON_ANOTHER_MACHINE:
+    "This operator is already active on another machine. They must leave that shift before joining here.",
   SHIFT_NOT_FOUND: "Shift template was not found.",
   WORK_ORDER_NOT_USABLE: "That work order cannot be started on this shift.",
   RUN_ALLOCATION_MACHINE_MISMATCH: "That planned run belongs to a different machine.",
@@ -192,11 +194,25 @@ export function machineShiftStatusTone(status: MachineShiftUiStatus): "neutral" 
 
 export function mapShiftApiError(err: unknown, fallback = "Something went wrong. Please try again."): string {
   if (err instanceof ApiRequestError) {
+    if (err.code === "OPERATOR_ACTIVE_ON_ANOTHER_MACHINE" && err.message) return err.message;
     if (err.code && ERROR_MESSAGES[err.code]) return ERROR_MESSAGES[err.code];
     if (err.message) return err.message;
   }
   if (err instanceof Error && err.message) return err.message;
   return fallback;
+}
+
+/** Operator ids that are active on another open session (exclude current session when joining). */
+export function busyOperatorIdSet(
+  busy: { operatorId: number; sessionId?: number | null }[] | null | undefined,
+  excludeSessionId?: number | null,
+): Set<number> {
+  const out = new Set<number>();
+  for (const row of busy || []) {
+    if (excludeSessionId != null && row.sessionId === excludeSessionId) continue;
+    if (Number.isFinite(row.operatorId) && row.operatorId > 0) out.add(row.operatorId);
+  }
+  return out;
 }
 
 /** Validate start-shift operator selection: ≥1 operator, exactly one primary. */

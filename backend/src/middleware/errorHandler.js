@@ -227,6 +227,7 @@ function errorHandler(err, req, res, next) {
   if (err.itAssistedRequired) errorPayload.itAssistedRequired = true;
   if (err.emergency) errorPayload.emergency = true;
   if (err.rolledBack) errorPayload.rolledBack = true;
+  if (err.expose && err.details !== undefined) errorPayload.details = err.details;
 
   const body = { error: errorPayload };
   if (err.restoreStatus) body.restoreStatus = err.restoreStatus;

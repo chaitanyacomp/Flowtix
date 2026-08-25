@@ -272,7 +272,7 @@ export function MachinesPage() {
     <MasterListPageShell>
       <MasterListHeader
         title="Machines"
-        description="Production machine register. Soft-deactivate only — machines are not assigned to production yet."
+        description="Production machine register. Used for machine planning and Shift Production. Soft-deactivate only."
         actions={
           <Button type="button" size="sm" variant="outline" onClick={onNewMachine} data-testid="machine-new-btn">
             New

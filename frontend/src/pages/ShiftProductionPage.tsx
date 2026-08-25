@@ -8,12 +8,15 @@ import { fetchMachines, type MachineRow } from "../lib/machineApi";
 import { fetchOperators, type OperatorRow } from "../lib/operatorApi";
 import { fetchShifts, type ShiftRow } from "../lib/shiftApi";
 import {
+  fetchBusyShiftOperators,
   fetchOpenShiftSession,
   fetchShiftCapabilities,
+  type BusyShiftOperator,
   type ShiftCapabilities,
   type ShiftSessionDetail,
 } from "../lib/machineShiftSessionApi";
 import {
+  busyOperatorIdSet,
   canShowManagerControls,
   deriveMachineShiftUiStatus,
   findActiveRun,
@@ -47,6 +50,7 @@ export function ShiftProductionPage() {
   const [caps, setCaps] = React.useState<ShiftCapabilities | null>(null);
   const [machines, setMachines] = React.useState<MachineRow[]>([]);
   const [operators, setOperators] = React.useState<OperatorRow[]>([]);
+  const [busyOperators, setBusyOperators] = React.useState<BusyShiftOperator[]>([]);
   const [shifts, setShifts] = React.useState<ShiftRow[]>([]);
   const [cards, setCards] = React.useState<MachineCardState[]>([]);
   const [pageError, setPageError] = React.useState<string | null>(null);
@@ -54,22 +58,25 @@ export function ShiftProductionPage() {
   const [startMachine, setStartMachine] = React.useState<MachineRow | null>(null);
 
   const showManager = canShowManagerControls(caps);
+  const busyIds = React.useMemo(() => busyOperatorIdSet(busyOperators), [busyOperators]);
 
   const load = React.useCallback(async () => {
     setLoading(true);
     setPageError(null);
     try {
-      const [capRes, machRows, opRows, shiftRows] = await Promise.all([
+      const [capRes, machRows, opRows, shiftRows, busyRes] = await Promise.all([
         fetchShiftCapabilities(),
         fetchMachines(false),
         fetchOperators(false),
         fetchShifts(false),
+        fetchBusyShiftOperators().catch(() => ({ operators: [] as BusyShiftOperator[] })),
       ]);
       setCaps(capRes);
       const activeMachines = machRows.filter((m) => m.isActive);
       setMachines(activeMachines);
       setOperators(opRows);
       setShifts(shiftRows);
+      setBusyOperators(busyRes.operators || []);
       setCards(activeMachines.map((m) => ({ machine: m, session: null, loading: true, error: null })));
 
       const settled = await Promise.all(
@@ -207,6 +214,7 @@ export function ShiftProductionPage() {
           machine={startMachine}
           shifts={shifts}
           operators={operators}
+          busyOperatorIds={busyIds}
           onClose={() => setStartMachine(null)}
           onStarted={(sessionId) => {
             setStartMachine(null);

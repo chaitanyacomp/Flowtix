@@ -21,14 +21,19 @@ type Props = {
   machine: MachineRow;
   shifts: ShiftRow[];
   operators: OperatorRow[];
+  /** Operator ids already active on another OPEN session (excluded from picker). */
+  busyOperatorIds?: Set<number>;
   onStarted: (sessionId: number) => void;
 };
 
 type DraftOp = { operatorId: number; isPrimary: boolean };
 
-export function StartShiftModal({ open, onClose, machine, shifts, operators, onStarted }: Props) {
+export function StartShiftModal({ open, onClose, machine, shifts, operators, busyOperatorIds, onStarted }: Props) {
   const activeShifts = React.useMemo(() => shifts.filter((s) => s.isActive), [shifts]);
-  const activeOperators = React.useMemo(() => operators.filter((o) => o.isActive), [operators]);
+  const activeOperators = React.useMemo(
+    () => operators.filter((o) => o.isActive && !(busyOperatorIds && busyOperatorIds.has(o.id))),
+    [operators, busyOperatorIds],
+  );
 
   const [shiftId, setShiftId] = React.useState<string>("");
   const [sessionDate, setSessionDate] = React.useState(indiaLocalDateYmd());

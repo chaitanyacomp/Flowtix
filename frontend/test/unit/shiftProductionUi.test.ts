@@ -14,8 +14,10 @@ import {
 } from "../../src/config/erpRoles";
 import {
   busyOperatorIdSet,
+  canCancelShiftSession,
   canShowManagerControls,
   deriveMachineShiftUiStatus,
+  deriveShiftLifecycleStage,
   indiaLocalDateYmd,
   mapShiftApiError,
   validateStartOperators,
@@ -181,6 +183,12 @@ describe("Shift Production UI helpers", () => {
         ),
       ),
     ).toMatch(/Press 1 \(M1\)/);
+    expect(mapShiftApiError(new ApiRequestError("x", 409, "SHIFT_SESSION_CANNOT_CANCEL"))).toMatch(
+      /cannot be cancelled/i,
+    );
+    expect(mapShiftApiError(new ApiRequestError("x", 409, "SHIFT_SESSION_ALREADY_CANCELLED"))).toMatch(
+      /cancelled/i,
+    );
   });
 
   it("excludes operators busy on another session from join candidates", () => {
@@ -197,6 +205,34 @@ describe("Shift Production UI helpers", () => {
       10,
     );
     expect([...joinFiltered]).toEqual([2]);
+  });
+
+  it("shows Cancel Shift only for eligible OPEN sessions with manager capability", () => {
+    expect(
+      canCancelShiftSession(
+        { id: 1, status: "OPEN", canCancel: true } as ShiftSessionDetail,
+        { canPerformManagerActions: true },
+      ),
+    ).toBe(true);
+    expect(
+      canCancelShiftSession(
+        { id: 1, status: "OPEN", canCancel: true } as ShiftSessionDetail,
+        { canPerformManagerActions: false },
+      ),
+    ).toBe(false);
+    expect(
+      canCancelShiftSession(
+        { id: 1, status: "OPEN", canCancel: false } as ShiftSessionDetail,
+        { canPerformManagerActions: true },
+      ),
+    ).toBe(false);
+    expect(
+      canCancelShiftSession(
+        { id: 1, status: "CANCELLED", canCancel: true } as ShiftSessionDetail,
+        { canPerformManagerActions: true },
+      ),
+    ).toBe(false);
+    expect(deriveShiftLifecycleStage({ id: 1, status: "CANCELLED" } as ShiftSessionDetail)).toBe("CANCELLED");
   });
 
   it("defaults session date to India local YYYY-MM-DD", () => {
@@ -223,6 +259,9 @@ describe("StartShiftModal / workspace double-submit protection (source)", () => 
     expect(src).toContain("await refresh()");
     expect(src).toContain("fetchBusyShiftOperators");
     expect(src).toContain("busyOperatorIdSet");
+    expect(src).toContain("Cancel Shift");
+    expect(src).toContain("CancelShiftModal");
+    expect(src).toContain("canCancelShiftSession");
     expect(src).toContain("Continue into this shift");
     expect(src).toContain("Downtime continued from previous shift");
     expect(src).toContain("Pause Production");

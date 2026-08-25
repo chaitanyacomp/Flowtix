@@ -14,6 +14,7 @@ const { allocateShiftSessionNo, MAX_ALLOCATE_ATTEMPTS } = require("./machineShif
 const SESSION_STATUS = Object.freeze({
   OPEN: "OPEN",
   SHIFT_OVER: "SHIFT_OVER",
+  CANCELLED: "CANCELLED",
 });
 
 /**
@@ -183,8 +184,15 @@ async function requireOpenSession(tx, sessionId) {
   if (!session) {
     throw domainError(404, "SHIFT_SESSION_NOT_FOUND", "Shift session was not found.");
   }
+  if (session.status === SESSION_STATUS.CANCELLED) {
+    throw domainError(
+      409,
+      "SHIFT_SESSION_ALREADY_CANCELLED",
+      "This shift session was cancelled. Open a new shift if work needs to continue.",
+    );
+  }
   if (session.status !== SESSION_STATUS.OPEN) {
-    throw domainError(409, "SHIFT_SESSION_NOT_OPEN", "This shift session is already closed (Shift Over).");
+    throw domainError(409, "SHIFT_SESSION_NOT_OPEN", "This shift session is not open.");
   }
   return session;
 }

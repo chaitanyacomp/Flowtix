@@ -3755,6 +3755,8 @@ enum MachineShiftSessionStatus {
   OPEN
   /// Session closed via Shift Over.
   SHIFT_OVER
+  /// Mistaken start cancelled before any production activity.
+  CANCELLED
 }
 
 enum ShiftProductionReportVersionStatus {
@@ -3779,8 +3781,8 @@ enum ShiftProductionReportAdjustmentStatus {
 
 /// One runtime shift session per machine.
 /// Database-only MySQL generated column + unique index (not modeled in Prisma):
-/// `openMachId` INTEGER GENERATED ALWAYS AS (IF(`status` <> 'SHIFT_OVER', `machineId`, NULL)) VIRTUAL
-/// UNIQUE INDEX `uq_mss_open` (`openMachId`) — one non-closed session per machine.
+/// `openMachId` INTEGER GENERATED ALWAYS AS (IF(`status` = 'OPEN', `machineId`, NULL)) VIRTUAL
+/// UNIQUE INDEX `uq_mss_open` (`openMachId`) — one OPEN session per machine.
 /// VIRTUAL (not STORED): InnoDB rejects STORED generated columns that reference a FK base column (`machineId`).
 model MachineShiftSession {
   id Int @id @default(autoincrement())
@@ -3799,6 +3801,8 @@ model MachineShiftSession {
   handoverState   MachineMaterialStateKind @default(UNKNOWN)
   /// Required when handoverState is UNKNOWN (Shift Over); optional otherwise.
   handoverRemarks String?                  @db.Text
+  /// Required when status is CANCELLED (mistaken start); preserved on idempotent retry.
+  cancellationReason String?               @db.Text
 
   /// One primary operator for the session.
   primaryOperatorId Int

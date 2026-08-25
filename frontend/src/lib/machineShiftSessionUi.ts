@@ -35,6 +35,9 @@ const ERROR_MESSAGES: Record<string, string> = {
   SHIFT_OVER_REQUIRES_VERIFIED_REPORT: "Complete and verify the Shift Report before Shift Over.",
   HANDOVER_REMARKS_REQUIRED: "Add a short note when machine status is Unknown.",
   REOPEN_BLOCKED_NEXT_SESSION: "This shift cannot be reopened because the next shift has already started.",
+  SHIFT_SESSION_CANNOT_CANCEL:
+    "This shift cannot be cancelled because production, downtime, or a Shift Report has already started.",
+  SHIFT_SESSION_ALREADY_CANCELLED: "This shift session was cancelled. Start a new shift if needed.",
   REPORT_AWAITING_MANAGER: "This Shift Report is submitted and waiting for manager review.",
   REPORT_ALREADY_VERIFIED: "This Shift Report is already verified.",
   REPORT_LINES_REQUIRED: "Add at least one Shift Report line before saving.",
@@ -240,11 +243,14 @@ export type ShiftLifecycleStage =
   | "SUBMITTED"
   | "RETURNED"
   | "VERIFIED"
-  | "SHIFT_OVER";
+  | "SHIFT_OVER"
+  | "CANCELLED";
 
 export function deriveShiftLifecycleStage(session: ShiftSessionDetail | null | undefined): ShiftLifecycleStage {
   if (!session) return "SHIFT_ACTIVE";
-  if (String(session.status).toUpperCase() === "SHIFT_OVER") return "SHIFT_OVER";
+  const sessionStatus = String(session.status).toUpperCase();
+  if (sessionStatus === "CANCELLED") return "CANCELLED";
+  if (sessionStatus === "SHIFT_OVER") return "SHIFT_OVER";
   const status = String(session.report?.latestVersion?.status ?? "").toUpperCase();
   if (status === "SUBMITTED") return "SUBMITTED";
   if (status === "RETURNED") return "RETURNED";
@@ -267,6 +273,8 @@ export function shiftLifecycleStageLabel(stage: ShiftLifecycleStage): string {
       return "Verified";
     case "SHIFT_OVER":
       return "Shift Over";
+    case "CANCELLED":
+      return "Cancelled";
     default:
       return "Shift Active";
   }
@@ -275,7 +283,7 @@ export function shiftLifecycleStageLabel(stage: ShiftLifecycleStage): string {
 export function shiftLifecycleNextAction(
   stage: ShiftLifecycleStage,
   opts?: { canManage?: boolean },
-): { label: string; action: "report" | "review" | "shift-over" | "summary" | "reopen" } {
+): { label: string; action: "report" | "review" | "shift-over" | "summary" | "reopen" | "none" } {
   switch (stage) {
     case "SHIFT_ACTIVE":
     case "REPORT_DRAFT":
@@ -295,9 +303,21 @@ export function shiftLifecycleNextAction(
         : { label: "View Shift Report", action: "report" };
     case "SHIFT_OVER":
       return { label: "View Summary / Request Reopen", action: "summary" };
+    case "CANCELLED":
+      return { label: "Session cancelled", action: "none" };
     default:
       return { label: "Prepare Shift Report", action: "report" };
   }
+}
+
+/** True when backend marks the OPEN session as eligible for mistaken-start cancel. */
+export function canCancelShiftSession(
+  session: ShiftSessionDetail | null | undefined,
+  caps: { canPerformManagerActions?: boolean } | null | undefined,
+): boolean {
+  if (!canShowManagerControls(caps)) return false;
+  if (!session || String(session.status).toUpperCase() !== "OPEN") return false;
+  return Boolean(session.canCancel);
 }
 
 export function reportVersionStatusLabel(status: string | null | undefined): string {

@@ -352,11 +352,13 @@ function mapSessionDetail(session, reportCtx = null) {
     primaryOperator: mapOperatorBrief(session.primaryOperator),
     handoverState: session.handoverState,
     handoverRemarks: session.handoverRemarks ?? null,
+    cancellationReason: session.cancellationReason ?? null,
     startedAt: session.startedAt,
     startedByUserId: session.startedByUserId,
     endedAt: session.endedAt,
     endedByUserId: session.endedByUserId,
     reopenCount: session.reopenCount,
+    canCancel: Boolean(reportCtx?.canCancel),
     operators: (session.sessionOperators || []).map(mapParticipation),
     runSegments: (session.runSegments || []).map(mapRunSegment),
     downtimeIncidents: (session.downtimeSegments || [])
@@ -447,10 +449,17 @@ async function getShiftSessionDetail(sessionId, db = prisma) {
     getShiftSessionProductionQtyLock,
   } = require("./machineShiftProductionQtyLockService");
   const qtyLock = await getShiftSessionProductionQtyLock(db, id);
+  let canCancel = false;
+  if (session.status === "OPEN") {
+    const { assessShiftSessionCancelEligibility } = require("./machineShiftSessionLifecycleService");
+    const eligibility = await assessShiftSessionCancelEligibility(db, id);
+    canCancel = eligibility.eligible;
+  }
   return mapSessionDetail(session, {
     aggregation,
     productionQtyLocked: qtyLock.productionQtyLocked,
     productionQtyLockReason: qtyLock.productionQtyLockReason,
+    canCancel,
   });
 }
 
@@ -470,10 +479,17 @@ async function getOpenShiftSessionForMachine(machineId, db = prisma) {
     getShiftSessionProductionQtyLock,
   } = require("./machineShiftProductionQtyLockService");
   const qtyLock = await getShiftSessionProductionQtyLock(db, session.id);
+  let canCancel = false;
+  if (session.status === "OPEN") {
+    const { assessShiftSessionCancelEligibility } = require("./machineShiftSessionLifecycleService");
+    const eligibility = await assessShiftSessionCancelEligibility(db, session.id);
+    canCancel = eligibility.eligible;
+  }
   return mapSessionDetail(session, {
     aggregation,
     productionQtyLocked: qtyLock.productionQtyLocked,
     productionQtyLockReason: qtyLock.productionQtyLockReason,
+    canCancel,
   });
 }
 

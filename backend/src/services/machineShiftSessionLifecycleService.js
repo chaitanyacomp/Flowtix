@@ -24,7 +24,9 @@ const {
 } = require("./machineShiftSessionRunSegmentService");
 const {
   closeActiveParticipationsForShiftOver,
+  closeActiveParticipationsForSession,
   restoreParticipationsAfterReopen,
+  SYSTEM_LEAVE_REASON,
 } = require("./machineShiftSessionOperatorService");
 const {
   REPORT_VERSION_STATUS,
@@ -71,6 +73,124 @@ function normalizeDecisionNote(value) {
 }
 
 /**
+ * Assess whether an OPEN session may be cancelled (mistaken start only).
+ * Operator history never blocks. Empty Shift Report header without versions is allowed.
+ */
+async function assessShiftSessionCancelEligibility(tx, sessionId) {
+  const [
+    runSegmentCount,
+    productionEntryCount,
+    downtimeSegmentCount,
+    downtimeIncidentCount,
+    reportVersionCount,
+  ] = await Promise.all([
+    tx.machineShiftSessionRunSegment.count({ where: { sessionId } }),
+    tx.productionEntry.count({ where: { shiftSessionId: sessionId } }),
+    tx.machineShiftDowntimeSegment.count({ where: { sessionId } }),
+    tx.machineShiftDowntimeIncident.count({ where: { runSegment: { sessionId } } }),
+    tx.shiftProductionReportVersion.count({ where: { report: { sessionId } } }),
+  ]);
+
+  const blockers = [];
+  if (runSegmentCount > 0) blockers.push("RUN_SEGMENTS");
+  if (productionEntryCount > 0) blockers.push("PRODUCTION_ENTRIES");
+  if (downtimeSegmentCount > 0 || downtimeIncidentCount > 0) blockers.push("DOWNTIME");
+  if (reportVersionCount > 0) blockers.push("SHIFT_REPORT_VERSIONS");
+
+  return {
+    eligible: blockers.length === 0,
+    blockers,
+    counts: {
+      runSegmentCount,
+      productionEntryCount,
+      downtimeSegmentCount,
+      downtimeIncidentCount,
+      reportVersionCount,
+    },
+  };
+}
+
+/**
+ * Cancel a mistakenly started OPEN session. Distinct from zero-production Shift Over.
+ * Idempotent when already CANCELLED — does not overwrite reason/actor/time.
+ */
+async function cancelShiftSession(input, db = prisma) {
+  const sessionId = normalizePositiveInt(input?.sessionId, "SESSION_ID_INVALID", "Shift session is required.");
+  const actorUserId = normalizeOptionalUserId(input?.endedByUserId ?? input?.actorUserId);
+  const cancellationReason = normalizeChangeReason(input?.reason ?? input?.cancellationReason, {
+    required: true,
+    message: "A cancellation reason is required.",
+  });
+
+  try {
+    return await withShiftSessionTx(db, async (tx) => {
+      const session = await tx.machineShiftSession.findUnique({ where: { id: sessionId } });
+      if (!session) {
+        throw domainError(404, "SHIFT_SESSION_NOT_FOUND", "Shift session was not found.");
+      }
+
+      if (session.status === SESSION_STATUS.CANCELLED) {
+        return {
+          session,
+          cancelled: false,
+          alreadyCancelled: true,
+          closedOperatorParticipationIds: [],
+        };
+      }
+
+      if (session.status !== SESSION_STATUS.OPEN) {
+        throw domainError(
+          409,
+          "SHIFT_SESSION_CANNOT_CANCEL",
+          "Only an open shift with no production activity can be cancelled. Use Shift Over for a completed shift.",
+          { status: session.status },
+        );
+      }
+
+      const eligibility = await assessShiftSessionCancelEligibility(tx, sessionId);
+      if (!eligibility.eligible) {
+        throw domainError(
+          409,
+          "SHIFT_SESSION_CANNOT_CANCEL",
+          "This shift cannot be cancelled because production, downtime, or a Shift Report has already started. Complete Shift Over instead if the shift had no output.",
+          {
+            blockers: eligibility.blockers,
+            counts: eligibility.counts,
+          },
+        );
+      }
+
+      const now = new Date();
+      const closedOperatorParticipationIds = await closeActiveParticipationsForSession(tx, sessionId, {
+        actorUserId,
+        at: now,
+        reason: SYSTEM_LEAVE_REASON.SESSION_CANCELLED,
+      });
+
+      const updated = await tx.machineShiftSession.update({
+        where: { id: sessionId },
+        data: {
+          status: SESSION_STATUS.CANCELLED,
+          cancellationReason,
+          endedAt: now,
+          endedByUserId: actorUserId ?? null,
+        },
+      });
+
+      return {
+        session: updated,
+        cancelled: true,
+        alreadyCancelled: false,
+        closedOperatorParticipationIds,
+      };
+    });
+  } catch (e) {
+    if (e && typeof e === "object" && e.expose) throw e;
+    throw mapShiftSessionPersistenceError(e, { action: "cancelSession" });
+  }
+}
+
+/**
  * Shift Over: requires latest report VERIFIED; closes active run + current downtime segment;
  * leaves parent downtime incident open for next-session continuation; sets session SHIFT_OVER.
  */
@@ -90,6 +210,14 @@ async function completeShiftOver(input, db = prisma) {
         throw domainError(404, "SHIFT_SESSION_NOT_FOUND", "Shift session was not found.");
       }
 
+      if (session.status === SESSION_STATUS.CANCELLED) {
+        throw domainError(
+          409,
+          "SHIFT_SESSION_ALREADY_CANCELLED",
+          "This shift session was cancelled. Open a new shift if work needs to continue.",
+        );
+      }
+
       if (session.status === SESSION_STATUS.SHIFT_OVER) {
         return {
           session,
@@ -99,6 +227,10 @@ async function completeShiftOver(input, db = prisma) {
           closedDowntimeSegmentIds: [],
           closedOperatorParticipationIds: [],
         };
+      }
+
+      if (session.status !== SESSION_STATUS.OPEN) {
+        throw domainError(409, "SHIFT_SESSION_NOT_OPEN", "This shift session is not open.");
       }
 
       const report = await ensureShiftProductionReport(tx, sessionId);
@@ -194,6 +326,13 @@ async function requestShiftSessionReopen(input, db = prisma) {
       const session = await tx.machineShiftSession.findUnique({ where: { id: sessionId } });
       if (!session) {
         throw domainError(404, "SHIFT_SESSION_NOT_FOUND", "Shift session was not found.");
+      }
+      if (session.status === SESSION_STATUS.CANCELLED) {
+        throw domainError(
+          409,
+          "SHIFT_SESSION_ALREADY_CANCELLED",
+          "A cancelled shift session cannot be reopened. Start a new shift instead.",
+        );
       }
       if (session.status !== SESSION_STATUS.SHIFT_OVER) {
         throw domainError(
@@ -427,6 +566,8 @@ async function approveShiftSessionReopen(input, db = prisma) {
 
 module.exports = {
   REOPEN_STATUS,
+  assessShiftSessionCancelEligibility,
+  cancelShiftSession,
   completeShiftOver,
   requestShiftSessionReopen,
   approveShiftSessionReopen,

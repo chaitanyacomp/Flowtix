@@ -16,9 +16,10 @@ const {
   normalizeChangeReason,
 } = require("./machineShiftSessionService");
 
-/** System leave reason stamped on Shift Over (preserved in history). */
+/** System leave reason stamped on Shift Over / cancel (preserved in history). */
 const SYSTEM_LEAVE_REASON = Object.freeze({
   SHIFT_OVER: "SHIFT_OVER",
+  SESSION_CANCELLED: "SESSION_CANCELLED",
 });
 
 async function listActiveParticipations(tx, sessionId) {
@@ -140,10 +141,11 @@ async function listBusyOperatorsAcrossOpenSessions(db = prisma) {
 }
 
 /**
- * Close all active participations on a session (Shift Over). History preserved.
+ * Close all active participations on a session (Shift Over or cancel). History preserved.
  */
-async function closeActiveParticipationsForShiftOver(tx, sessionId, { actorUserId, at } = {}) {
+async function closeActiveParticipationsForSession(tx, sessionId, { actorUserId, at, reason } = {}) {
   const now = at instanceof Date ? at : new Date();
+  const leaveReason = reason || SYSTEM_LEAVE_REASON.SHIFT_OVER;
   const actives = await listActiveParticipations(tx, sessionId);
   const closedIds = [];
   for (const row of actives) {
@@ -151,7 +153,7 @@ async function closeActiveParticipationsForShiftOver(tx, sessionId, { actorUserI
       where: { id: row.id },
       data: {
         leftAt: now,
-        joinedLeaveReason: SYSTEM_LEAVE_REASON.SHIFT_OVER,
+        joinedLeaveReason: leaveReason,
         changedByUserId: actorUserId ?? null,
         changedAt: now,
       },
@@ -159,6 +161,14 @@ async function closeActiveParticipationsForShiftOver(tx, sessionId, { actorUserI
     closedIds.push(row.id);
   }
   return closedIds;
+}
+
+/** @deprecated Prefer closeActiveParticipationsForSession — kept for call-site clarity. */
+async function closeActiveParticipationsForShiftOver(tx, sessionId, opts = {}) {
+  return closeActiveParticipationsForSession(tx, sessionId, {
+    ...opts,
+    reason: SYSTEM_LEAVE_REASON.SHIFT_OVER,
+  });
 }
 
 /**
@@ -519,6 +529,7 @@ module.exports = {
   assertOperatorsAvailableAcrossMachines,
   listBusyOperatorsAcrossOpenSessions,
   closeActiveParticipationsForShiftOver,
+  closeActiveParticipationsForSession,
   restoreParticipationsAfterReopen,
   activePrimaryFromRows,
   joinSessionOperator,

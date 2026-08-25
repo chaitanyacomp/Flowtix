@@ -72,6 +72,19 @@ describe("assertShiftActionAllowed", () => {
       () => assertShiftActionAllowed(db, { role: "PRODUCTION" }, SHIFT_ACTION.SHIFT_OVER),
       (e) => e.code === "PRODUCTION_MANAGER_ACTION_REQUIRED" && e.statusCode === 403,
     );
+    await assert.rejects(
+      () => assertShiftActionAllowed(db, { role: "PRODUCTION" }, SHIFT_ACTION.CANCEL_SESSION),
+      (e) => e.code === "PRODUCTION_MANAGER_ACTION_REQUIRED",
+    );
+  });
+
+  it("CANCEL_SESSION is manager-owned (ADMIN always; PRODUCTION fallback when no PM)", async () => {
+    const withPm = mockDb({ managerCount: 1 });
+    await assertShiftActionAllowed(withPm, { role: "ADMIN" }, SHIFT_ACTION.CANCEL_SESSION);
+    await assertShiftActionAllowed(withPm, { role: "PRODUCTION_MANAGER" }, SHIFT_ACTION.CANCEL_SESSION);
+    const noPm = mockDb({ managerCount: 0 });
+    const r = await assertShiftActionAllowed(noPm, { role: "PRODUCTION" }, SHIFT_ACTION.CANCEL_SESSION);
+    assert.equal(r.via, "PRODUCTION_FALLBACK");
   });
 
   it("STORE and QA never authorized for shift actions", async () => {

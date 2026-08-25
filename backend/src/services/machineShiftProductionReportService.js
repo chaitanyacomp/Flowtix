@@ -349,12 +349,22 @@ async function createDraftVersionFrom(tx, report, sourceVersion) {
  */
 async function ensureEditableDraftVersion(tx, sessionId) {
   const session = await loadSession(tx, sessionId);
+  if (session.status === SESSION_STATUS.CANCELLED) {
+    throw domainError(
+      409,
+      "SHIFT_SESSION_ALREADY_CANCELLED",
+      "This shift session was cancelled. Open a new shift if work needs to continue.",
+    );
+  }
   if (session.status === SESSION_STATUS.SHIFT_OVER) {
     throw domainError(
       409,
       "SHIFT_SESSION_NOT_OPEN",
       "This shift session is already closed (Shift Over). Request a controlled reopen to edit the report.",
     );
+  }
+  if (session.status !== SESSION_STATUS.OPEN) {
+    throw domainError(409, "SHIFT_SESSION_NOT_OPEN", "This shift session is not open.");
   }
   const report = await ensureShiftProductionReport(tx, sessionId);
   const latest = await findLatestVersion(tx, report);
@@ -513,6 +523,13 @@ async function submitShiftReport(input, db = prisma) {
   try {
     return await withShiftSessionTx(db, async (tx) => {
       const session = await loadSession(tx, sessionId);
+      if (session.status === SESSION_STATUS.CANCELLED) {
+        throw domainError(
+          409,
+          "SHIFT_SESSION_ALREADY_CANCELLED",
+          "This shift session was cancelled. Open a new shift if work needs to continue.",
+        );
+      }
       if (session.status !== SESSION_STATUS.OPEN) {
         throw domainError(409, "SHIFT_SESSION_NOT_OPEN", "Only an open shift session can submit a report.");
       }

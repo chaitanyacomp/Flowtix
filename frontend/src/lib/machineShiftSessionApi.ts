@@ -173,9 +173,11 @@ export type ShiftSessionDetail = {
   primaryOperator: OperatorBrief | null;
   handoverState?: string | null;
   handoverRemarks?: string | null;
+  cancellationReason?: string | null;
   startedAt: string | null;
   endedAt: string | null;
   reopenCount?: number;
+  canCancel?: boolean;
   operators: ShiftParticipation[];
   runSegments: ShiftRunSegment[];
   downtimeIncidents: ShiftDowntimeIncident[];
@@ -434,6 +436,16 @@ export function completeShiftOver(
   body: { handoverState: "RETAINED" | "CLEARED" | "UNKNOWN"; handoverRemarks?: string | null },
 ): Promise<{ session: ShiftSessionDetail; completed: boolean; alreadyShiftOver?: boolean }> {
   return apiFetch(`/api/machine-shift-sessions/${sessionId}/shift-over`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function cancelShiftSession(
+  sessionId: number,
+  body: { reason: string },
+): Promise<{ session: ShiftSessionDetail; cancelled: boolean; alreadyCancelled?: boolean }> {
+  return apiFetch(`/api/machine-shift-sessions/${sessionId}/cancel`, {
     method: "POST",
     body: JSON.stringify(body),
   });

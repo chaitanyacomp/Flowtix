@@ -13,6 +13,7 @@ const {
   returnShiftReport,
   verifyShiftReport,
   completeShiftOver,
+  cancelShiftSession,
   requestShiftSessionReopen,
   approveShiftSessionReopen,
   denyShiftSessionReopen,
@@ -304,6 +305,17 @@ function createMemoryDb() {
         return rows[0] || null;
       },
       findUnique: async ({ where }) => downtimeIncidents.find((r) => r.id === where.id) || null,
+      count: async ({ where } = {}) => {
+        let rows = downtimeIncidents.slice();
+        if (where?.runSegment?.sessionId != null) {
+          const sid = where.runSegment.sessionId;
+          rows = rows.filter((inc) => {
+            const seg = runSegments.find((r) => r.id === inc.runSegmentId);
+            return seg && seg.sessionId === sid;
+          });
+        }
+        return rows.length;
+      },
       create: async ({ data }) => {
         const row = { id: nextIncidentId(), ...data };
         downtimeIncidents.push(row);
@@ -341,6 +353,11 @@ function createMemoryDb() {
         if (where.sessionId?.not != null) rows = rows.filter((r) => r.sessionId !== where.sessionId.not);
         return rows;
       },
+      count: async ({ where } = {}) => {
+        let rows = downtimeSegments.slice();
+        if (where?.sessionId != null) rows = rows.filter((r) => r.sessionId === where.sessionId);
+        return rows.length;
+      },
       create: async ({ data }) => {
         const row = { id: nextDtSegId(), ...data };
         downtimeSegments.push(row);
@@ -376,6 +393,15 @@ function createMemoryDb() {
       },
     },
     shiftProductionReportVersion: {
+      count: async ({ where } = {}) => {
+        let rows = versions.slice();
+        if (where?.report?.sessionId != null) {
+          const sid = where.report.sessionId;
+          const reportIds = new Set(reports.filter((r) => r.sessionId === sid).map((r) => r.id));
+          rows = rows.filter((v) => reportIds.has(v.reportId));
+        }
+        return rows.length;
+      },
       findFirst: async ({ where, include } = {}) => {
         let rows = versions.filter((v) => v.reportId === where.reportId);
         if (where.versionNo != null) rows = rows.filter((v) => v.versionNo === where.versionNo);
@@ -470,6 +496,13 @@ function createMemoryDb() {
       },
     },
     productionEntry: {
+      count: async ({ where } = {}) => {
+        let rows = productionEntries.slice();
+        if (where?.shiftSessionId != null) {
+          rows = rows.filter((r) => r.shiftSessionId === where.shiftSessionId);
+        }
+        return rows.length;
+      },
       findMany: async ({ where, select } = {}) => {
         let rows = productionEntries.slice();
         if (where?.shiftSessionId != null) {
@@ -951,6 +984,129 @@ describe("Step 2B Shift Over + reopen", () => {
       db._state.sessionOperators.filter((r) => r.sessionId === session.id && r.leftAt == null && r.operatorId === 100)
         .length,
       1,
+    );
+  });
+});
+
+describe("Controlled shift session cancel", () => {
+  async function openBareSession(db) {
+    return startShiftSession(
+      {
+        machineId: 1,
+        shiftId: 10,
+        sessionDate: "2026-08-24",
+        startedByUserId: 7,
+        operators: [
+          { operatorId: 100, isPrimary: true },
+          { operatorId: 101, isPrimary: false },
+        ],
+      },
+      db,
+    );
+  }
+
+  it("cancels mistaken OPEN session, releases operators and machine, preserves reason on retry", async () => {
+    const db = createMemoryDb();
+    const session = await openBareSession(db);
+
+    const cancelled = await cancelShiftSession(
+      { sessionId: session.id, reason: "Started on wrong machine", actorUserId: 7 },
+      db,
+    );
+    assert.equal(cancelled.cancelled, true);
+    assert.equal(cancelled.session.status, "CANCELLED");
+    assert.equal(cancelled.session.cancellationReason, "Started on wrong machine");
+    assert.equal(cancelled.session.endedByUserId, 7);
+    assert.ok(cancelled.session.endedAt);
+    assert.ok(
+      db._state.sessionOperators
+        .filter((r) => r.sessionId === session.id)
+        .every((r) => r.leftAt != null && r.joinedLeaveReason === "SESSION_CANCELLED"),
+    );
+
+    const next = await startShiftSession(
+      {
+        machineId: 1,
+        sessionDate: "2026-08-24",
+        operators: [{ operatorId: 100, isPrimary: true }],
+        startedByUserId: 7,
+      },
+      db,
+    );
+    assert.equal(next.status, "OPEN");
+
+    const idem = await cancelShiftSession(
+      { sessionId: session.id, reason: "overwrite attempt", actorUserId: 99 },
+      db,
+    );
+    assert.equal(idem.alreadyCancelled, true);
+    assert.equal(idem.session.cancellationReason, "Started on wrong machine");
+    assert.equal(idem.session.endedByUserId, 7);
+  });
+
+  it("blocks cancel after a run segment exists", async () => {
+    const db = createMemoryDb();
+    const session = await openBareSession(db);
+    await startRunSegment({ sessionId: session.id, runAllocationId: 200, actorUserId: 7 }, db);
+    await assert.rejects(
+      () => cancelShiftSession({ sessionId: session.id, reason: "too late", actorUserId: 7 }, db),
+      (e) => e.code === "SHIFT_SESSION_CANNOT_CANCEL" && e.details?.blockers?.includes("RUN_SEGMENTS"),
+    );
+  });
+
+  it("blocks cancel when ProductionEntries are linked", async () => {
+    const db = createMemoryDb();
+    const session = await openBareSession(db);
+    await db.productionEntry.create({
+      data: { shiftSessionId: session.id, producedQty: 1, workflowStatus: "DRAFT" },
+    });
+    await assert.rejects(
+      () => cancelShiftSession({ sessionId: session.id, reason: "has pe", actorUserId: 7 }, db),
+      (e) => e.code === "SHIFT_SESSION_CANNOT_CANCEL" && e.details?.blockers?.includes("PRODUCTION_ENTRIES"),
+    );
+  });
+
+  it("operator join/leave history alone does not block cancel", async () => {
+    const db = createMemoryDb();
+    const session = await openBareSession(db);
+    const ops = require("../../src/services/machineShiftSessionOperations");
+    await ops.leaveSessionOperator(
+      { sessionId: session.id, operatorId: 101, changeReason: "brief leave", actorUserId: 7 },
+      db,
+    );
+    await ops.joinSessionOperator(
+      { sessionId: session.id, operatorId: 101, changeReason: "back", actorUserId: 7 },
+      db,
+    );
+    const ok = await cancelShiftSession(
+      { sessionId: session.id, reason: "Wrong shift template", actorUserId: 7 },
+      db,
+    );
+    assert.equal(ok.cancelled, true);
+  });
+
+  it("cancelled session cannot Shift Over or reopen", async () => {
+    const db = createMemoryDb();
+    const session = await openBareSession(db);
+    await cancelShiftSession({ sessionId: session.id, reason: "Mistake", actorUserId: 7 }, db);
+
+    await assert.rejects(
+      () =>
+        completeShiftOver({
+          sessionId: session.id,
+          handoverState: "CLEARED",
+          actorUserId: 7,
+        }, db),
+      (e) => e.code === "SHIFT_SESSION_ALREADY_CANCELLED",
+    );
+    await assert.rejects(
+      () =>
+        requestShiftSessionReopen({
+          sessionId: session.id,
+          reopenReason: "try reopen",
+          actorUserId: 7,
+        }, db),
+      (e) => e.code === "SHIFT_SESSION_ALREADY_CANCELLED",
     );
   });
 });

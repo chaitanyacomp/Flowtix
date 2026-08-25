@@ -273,6 +273,36 @@ machineShiftSessionsRouter.post(
   },
 );
 
+machineShiftSessionsRouter.post(
+  "/:sessionId/cancel",
+  requireAuth,
+  requireShiftAction(SHIFT_ACTION.CANCEL_SESSION),
+  async (req, res, next) => {
+    try {
+      const sessionId = parseId(req.params.sessionId, "sessionId");
+      const body = z
+        .object({
+          reason: z.string().min(1).max(2000),
+        })
+        .strict()
+        .parse(stripActorFields(req.body));
+      const result = await ops.cancelShiftSession({
+        sessionId,
+        reason: body.reason,
+        actorUserId: actorUserIdFromReq(req),
+      });
+      const detail = await getShiftSessionDetail(sessionId);
+      return res.json({
+        session: detail,
+        cancelled: result.cancelled,
+        alreadyCancelled: result.alreadyCancelled,
+      });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
 // ——— Operators ———
 
 machineShiftSessionsRouter.post(

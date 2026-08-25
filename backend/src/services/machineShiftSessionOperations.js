@@ -54,8 +54,10 @@ module.exports = {
   verifyShiftReport: report.verifyShiftReport,
   ensureEditableDraftVersion: report.ensureEditableDraftVersion,
 
-  // Shift Over + reopen (Step 2B)
+  // Shift Over + reopen + cancel (Step 2B)
   REOPEN_STATUS: lifecycle.REOPEN_STATUS,
+  assessShiftSessionCancelEligibility: lifecycle.assessShiftSessionCancelEligibility,
+  cancelShiftSession: lifecycle.cancelShiftSession,
   completeShiftOver: lifecycle.completeShiftOver,
   requestShiftSessionReopen: lifecycle.requestShiftSessionReopen,
   approveShiftSessionReopen: lifecycle.approveShiftSessionReopen,

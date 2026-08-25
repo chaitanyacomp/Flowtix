@@ -197,6 +197,28 @@ describe("MySQL Prisma migration SQL compatibility", () => {
     );
   });
 
+  it("shift session cancel migration recreates openMachId for OPEN only", () => {
+    const file = path.join(
+      MIGRATIONS_DIR,
+      "20260825190000_shift_session_cancelled",
+      "migration.sql",
+    );
+    assert.ok(fs.existsSync(file), "shift session cancelled migration.sql missing");
+    const sql = stripSqlComments(fs.readFileSync(file, "utf8"));
+    assert.match(sql, /DROP\s+INDEX\s+`uq_mss_open`/i);
+    assert.match(sql, /DROP\s+COLUMN\s+`openMachId`/i);
+    assert.match(sql, /ENUM\('OPEN',\s*'SHIFT_OVER',\s*'CANCELLED'\)/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`cancellationReason`\s+TEXT\s+NULL/i);
+    assert.match(
+      sql,
+      /`openMachId`\s+INTEGER\s+GENERATED\s+ALWAYS\s+AS\s*\(\s*IF\s*\(\s*`status`\s*=\s*'OPEN'/i,
+    );
+    assert.match(sql, /`openMachId`[\s\S]*?\bVIRTUAL\b/i);
+    assert.doesNotMatch(sql, /`openMachId`[\s\S]*?\bSTORED\b/i);
+    assert.match(sql, /CREATE\s+UNIQUE\s+INDEX\s+`uq_mss_open`\s+ON\s+`MachineShiftSession`\s*\(\s*`openMachId`\s*\)/i);
+    assert.doesNotMatch(sql, /status`\s*<>\s*'SHIFT_OVER'/i);
+  });
+
   it("production manager role migration extends UserRole enum additively", () => {
     const file = path.join(MIGRATIONS_DIR, "20260824130000_production_manager_role", "migration.sql");
     assert.ok(fs.existsSync(file), "production manager role migration.sql missing");

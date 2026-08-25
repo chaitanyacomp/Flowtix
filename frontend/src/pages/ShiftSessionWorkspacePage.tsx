@@ -30,6 +30,7 @@ import {
 } from "../lib/machineShiftSessionApi";
 import {
   busyOperatorIdSet,
+  canCancelShiftSession,
   canShowManagerControls,
   deriveMachineShiftUiStatus,
   deriveShiftLifecycleStage,
@@ -52,6 +53,7 @@ import {
 import { cn } from "../lib/utils";
 import { ShiftReportPanel } from "../components/erp/shiftProduction/ShiftReportPanel";
 import { ShiftOverModal } from "../components/erp/shiftProduction/ShiftOverModal";
+import { CancelShiftModal } from "../components/erp/shiftProduction/CancelShiftModal";
 import { ShiftReopenPanel } from "../components/erp/shiftProduction/ShiftReopenPanel";
 import { ShiftReportAdjustmentPanel } from "../components/erp/shiftProduction/ShiftReportAdjustmentPanel";
 
@@ -97,6 +99,7 @@ export function ShiftSessionWorkspacePage() {
   const [showRunHistory, setShowRunHistory] = React.useState(false);
   const [showDtHistory, setShowDtHistory] = React.useState(false);
   const [shiftOverOpen, setShiftOverOpen] = React.useState(false);
+  const [cancelOpen, setCancelOpen] = React.useState(false);
   const reportSectionRef = React.useRef<HTMLDivElement | null>(null);
 
   const showManager = canShowManagerControls(caps);
@@ -177,14 +180,19 @@ export function ShiftSessionWorkspacePage() {
   const historyOps = (session?.operators ?? []).filter((o) => o.leftAt);
   const closedRuns = (session?.runSegments ?? []).filter((r) => String(r.status).toUpperCase() !== "ACTIVE");
   const isShiftOver = String(session?.status ?? "").toUpperCase() === "SHIFT_OVER";
+  const isCancelled = String(session?.status ?? "").toUpperCase() === "CANCELLED";
+  const isOpenSession = String(session?.status ?? "").toUpperCase() === "OPEN";
+  const showLiveManager = showManager && isOpenSession;
+  const showCancel = canCancelShiftSession(session, caps);
   const canCompleteShiftOver =
-    lifecycleStage === "VERIFIED" && showManager && !isShiftOver;
+    lifecycleStage === "VERIFIED" && showManager && !isShiftOver && !isCancelled;
 
   function scrollToReport() {
     reportSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function onLifecycleAction() {
+    if (nextAction.action === "none") return;
     if (nextAction.action === "shift-over") {
       if (canCompleteShiftOver) setShiftOverOpen(true);
       return;
@@ -278,7 +286,11 @@ export function ShiftSessionWorkspacePage() {
                 type="button"
                 size="sm"
                 variant={nextAction.action === "shift-over" && !canCompleteShiftOver ? "outline" : "secondary"}
-                disabled={busy || (nextAction.action === "shift-over" && !canCompleteShiftOver)}
+                disabled={
+                  busy ||
+                  nextAction.action === "none" ||
+                  (nextAction.action === "shift-over" && !canCompleteShiftOver)
+                }
                 onClick={onLifecycleAction}
                 data-testid="shift-lifecycle-next-action"
               >
@@ -286,10 +298,38 @@ export function ShiftSessionWorkspacePage() {
               </Button>
             </div>
           </div>
-          <Button type="button" variant="outline" onClick={() => void refresh()} disabled={busy || loading}>
-            Refresh
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" onClick={() => void refresh()} disabled={busy || loading}>
+              Refresh
+            </Button>
+            {showCancel ? (
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={busy || loading}
+                onClick={() => setCancelOpen(true)}
+                data-testid="cancel-shift-button"
+              >
+                Cancel Shift
+              </Button>
+            ) : null}
+          </div>
         </div>
+        {isCancelled ? (
+          <div
+            className="mt-3 rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-800"
+            role="status"
+            data-testid="cancelled-shift-banner"
+          >
+            This shift was cancelled
+            {session.cancellationReason ? (
+              <>
+                : <span className="font-medium">{session.cancellationReason}</span>
+              </>
+            ) : null}
+            . It is kept for audit and is not an active shift.
+          </div>
+        ) : null}
       </header>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -297,7 +337,7 @@ export function ShiftSessionWorkspacePage() {
         <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm lg:col-span-1">
           <div className="mb-3 flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Operators</h2>
-            {showManager ? (
+            {showLiveManager ? (
               <Button type="button" size="sm" variant="secondary" disabled={busy} onClick={() => setModal({ kind: "join" })}>
                 Join
               </Button>
@@ -312,7 +352,7 @@ export function ShiftSessionWorkspacePage() {
                     {row.isPrimary ? <span className="text-xs font-semibold text-teal-700">Primary</span> : null}
                     <div className="text-xs text-slate-500">Joined {formatIndiaTime(row.joinedAt)}</div>
                   </div>
-                  {showManager ? (
+                  {showLiveManager ? (
                     <div className="flex flex-col gap-1">
                       {!row.isPrimary ? (
                         <button
@@ -401,7 +441,7 @@ export function ShiftSessionWorkspacePage() {
                       "Shift Report submitted — production quantities are locked pending manager review."}
                   </p>
                 ) : null}
-                {showManager && !openDt ? (
+                {showLiveManager && !openDt ? (
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Button type="button" variant="destructive" disabled={busy} onClick={() => setModal({ kind: "pause" })}>
                       Pause Production
@@ -425,7 +465,7 @@ export function ShiftSessionWorkspacePage() {
                       "Shift Report submitted — production quantities are locked pending manager review."}
                   </p>
                 ) : null}
-                {showManager && !openDt && !session?.productionQtyLocked ? (
+                {showLiveManager && !openDt && !session?.productionQtyLocked ? (
                   <div className="mt-3">
                     <Button type="button" disabled={busy} onClick={() => setModal({ kind: "start-run" })}>
                       Start Run
@@ -465,7 +505,7 @@ export function ShiftSessionWorkspacePage() {
             )}
           >
             <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Downtime</h2>
-            {continuedBanner && openDowntime?.canContinueIntoCurrentSession && showManager ? (
+            {continuedBanner && openDowntime?.canContinueIntoCurrentSession && showLiveManager ? (
               <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
                 <p className="font-medium">Downtime continued from previous shift</p>
                 <p className="mt-1 text-xs">
@@ -499,7 +539,7 @@ export function ShiftSessionWorkspacePage() {
                 <p className="mt-1 text-sm text-red-800">
                   Since {formatIndiaDateTime(openDt.startedAt)} · {formatElapsed(openDt.startedAt, nowMs)}
                 </p>
-                {showManager ? (
+                {showLiveManager ? (
                   <Button
                     type="button"
                     className="mt-3 bg-teal-700 hover:bg-teal-800"
@@ -544,16 +584,24 @@ export function ShiftSessionWorkspacePage() {
         </section>
       </div>
 
-      {isShiftOver ? (
+      {isShiftOver || isCancelled ? (
         <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm" data-testid="shift-summary">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Shift Summary</h2>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+            {isCancelled ? "Cancelled Shift" : "Shift Summary"}
+          </h2>
           <p className="mt-2 text-sm text-slate-800">
             {session.shiftSessionNo} · {machineDisplayName(session.machine)} · {shiftDisplayLabel(session.shift)}
           </p>
-          <p className="mt-1 text-sm text-slate-700">
-            Handover: <span className="font-medium">{handoverStateLabel(session.handoverState)}</span>
-            {session.handoverRemarks ? ` — ${session.handoverRemarks}` : ""}
-          </p>
+          {isCancelled ? (
+            <p className="mt-1 text-sm text-slate-700">
+              Reason: <span className="font-medium">{session.cancellationReason || "—"}</span>
+            </p>
+          ) : (
+            <p className="mt-1 text-sm text-slate-700">
+              Handover: <span className="font-medium">{handoverStateLabel(session.handoverState)}</span>
+              {session.handoverRemarks ? ` — ${session.handoverRemarks}` : ""}
+            </p>
+          )}
           <p className="mt-1 text-sm text-slate-600">
             Started {formatIndiaDateTime(session.startedAt)} · Ended {formatIndiaDateTime(session.endedAt)}
           </p>
@@ -565,6 +613,8 @@ export function ShiftSessionWorkspacePage() {
         </section>
       ) : null}
 
+      {!isCancelled ? (
+        <>
       <div className="mt-4" ref={reportSectionRef}>
         <ShiftReportPanel
           session={session}
@@ -609,6 +659,18 @@ export function ShiftSessionWorkspacePage() {
         onCompleted={() => {
           setNotice("Shift Over completed.");
           void refresh();
+        }}
+      />
+        </>
+      ) : null}
+
+      <CancelShiftModal
+        open={cancelOpen}
+        sessionId={session.id}
+        shiftSessionNo={session.shiftSessionNo}
+        onClose={() => setCancelOpen(false)}
+        onCancelled={() => {
+          navigate("/shift-production");
         }}
       />
 

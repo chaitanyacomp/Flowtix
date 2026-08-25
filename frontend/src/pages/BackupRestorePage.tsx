@@ -12,13 +12,18 @@ import { useIsAdmin } from "../hooks/useIsAdmin";
 import { cn } from "../lib/utils";
 import { ErpModal } from "../components/erp/ErpModal";
 
-type BackupType = "MANUAL" | "PRE_RESTORE_AUTO";
+type BackupType = "MANUAL" | "DEPLOYMENT" | "AUTOMATIC" | "PRE_RESTORE_AUTO";
 type BackupStatus = "CREATED" | "FAILED" | "RESTORED";
 
 type BackupRow = {
   id: number;
   fileName: string;
   fileSizeBytes: number | null;
+  checksumSha256: string | null;
+  userCount: number | null;
+  activeAdminCount: number | null;
+  validationWarnings: string[];
+  hasValidationWarning: boolean;
   backupType: BackupType;
   status: BackupStatus;
   createdAt: string;
@@ -36,11 +41,19 @@ function formatBytes(n: number | null): string {
 
 function typeLabel(t: BackupType): string {
   if (t === "MANUAL") return "Manual";
+  if (t === "DEPLOYMENT") return "Deployment";
+  if (t === "AUTOMATIC") return "Automatic";
   return "Pre-restore";
 }
 
 function statusLabel(s: BackupStatus): string {
   return s.replace(/_/g, " ");
+}
+
+function validationWarningLabel(code: string): string {
+  if (code === "ZERO_USERS") return "Zero users in database at backup time";
+  if (code === "ZERO_ACTIVE_ADMINS") return "Zero active Admin users at backup time";
+  return code;
 }
 
 /** User-facing copy when the server reports an in-memory backup slot conflict. */
@@ -278,7 +291,16 @@ export function BackupRestorePage() {
     setLoadError(null);
     try {
       const data = await apiFetch<{ backups: BackupRow[] }>("/api/admin/backups");
-      setRows(data.backups);
+      setRows(
+        (data.backups ?? []).map((b) => ({
+          ...b,
+          validationWarnings: Array.isArray(b.validationWarnings) ? b.validationWarnings : [],
+          hasValidationWarning: Boolean(b.hasValidationWarning),
+          checksumSha256: b.checksumSha256 ?? null,
+          userCount: b.userCount ?? null,
+          activeAdminCount: b.activeAdminCount ?? null,
+        })),
+      );
     } catch (e) {
       setLoadError(e instanceof ApiRequestError ? e.message : e instanceof Error ? e.message : "Failed to load backups.");
     } finally {
@@ -365,7 +387,11 @@ export function BackupRestorePage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 pt-3">
-          <p className="text-sm text-slate-600">Creates a full .sql dump (masters and transactions). Stored outside the application source tree.</p>
+          <p className="text-sm text-slate-600">
+            Creates a full .sql dump (masters and transactions). Stored in the same backup folder as CLI{" "}
+            <code className="rounded bg-white px-1 text-xs">backup-db</code> dumps. CLI backups appear here after
+            Refresh.
+          </p>
           <div className="flex max-w-xl flex-col gap-2 sm:flex-row sm:items-end">
             <div className="min-w-0 flex-1 space-y-1">
               <label className="text-xs font-medium text-slate-700" htmlFor="bk-remarks">
@@ -418,14 +444,14 @@ export function BackupRestorePage() {
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] table-fixed text-left text-sm">
+            <table className="w-full min-w-[960px] table-fixed text-left text-sm">
               <thead className="border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-600">
                 <tr>
                   <th className="w-[11.5rem] px-3 py-2">Date</th>
                   <th className="w-[5.5rem] px-3 py-2 text-right">Size</th>
-                  <th className="w-[6.5rem] px-3 py-2">Type</th>
+                  <th className="w-[7rem] px-3 py-2">Source</th>
                   <th className="w-[6.5rem] px-3 py-2">Status</th>
-                  <th className="px-3 py-2">Created by</th>
+                  <th className="px-3 py-2">Created by / validation</th>
                   <th className="w-[17.5rem] px-3 py-2 text-right">Actions</th>
                 </tr>
               </thead>
@@ -456,8 +482,31 @@ export function BackupRestorePage() {
                       </td>
                       <td className="px-3 py-2 align-middle text-slate-800">{typeLabel(r.backupType)}</td>
                       <td className="px-3 py-2 align-middle text-slate-800">{statusLabel(r.status)}</td>
-                      <td className="truncate px-3 py-2 align-middle text-slate-700" title={r.createdBy?.email ?? ""}>
-                        {r.createdBy?.name ?? "—"}
+                      <td className="px-3 py-2 align-middle text-slate-700">
+                        <div className="truncate" title={r.createdBy?.email ?? r.remarks ?? ""}>
+                          {r.createdBy?.name ??
+                            (r.backupType === "DEPLOYMENT" || r.backupType === "AUTOMATIC"
+                              ? "CLI / system"
+                              : "—")}
+                        </div>
+                        {r.hasValidationWarning ? (
+                          <div
+                            className="mt-1 rounded border border-amber-300/80 bg-amber-50 px-1.5 py-1 text-[11px] leading-snug text-amber-950"
+                            role="status"
+                          >
+                            <span className="font-semibold">Validation warning: </span>
+                            {(r.validationWarnings ?? []).map(validationWarningLabel).join("; ")}
+                            {r.userCount != null || r.activeAdminCount != null ? (
+                              <span className="block text-amber-900/80">
+                                Users: {r.userCount ?? "—"} · Active Admins: {r.activeAdminCount ?? "—"}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : r.userCount != null ? (
+                          <div className="mt-0.5 text-[11px] text-slate-500">
+                            Users: {r.userCount} · Active Admins: {r.activeAdminCount ?? "—"}
+                          </div>
+                        ) : null}
                       </td>
                       <td className="px-2 py-2 align-middle text-right">
                         <div className="flex flex-nowrap justify-end gap-1.5">

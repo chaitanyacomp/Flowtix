@@ -101,6 +101,12 @@ if errorlevel 1 (
 echo [create-release] Copying tools\ scripts ^(Batches 4–11 / Milestone 2^)...
 copy /Y "%DEPLOY%\backup-db.bat" "%RELEASE_DIR%\tools\backup-db.bat" >nul
 copy /Y "%DEPLOY%\backup-db.js" "%RELEASE_DIR%\tools\backup-db.js" >nul
+if not exist "%RELEASE_DIR%\tools\lib" mkdir "%RELEASE_DIR%\tools\lib" 2>nul
+copy /Y "%DEPLOY%\lib\backupStoragePaths.js" "%RELEASE_DIR%\tools\lib\backupStoragePaths.js" >nul
+copy /Y "%DEPLOY%\lib\backupValidation.js" "%RELEASE_DIR%\tools\lib\backupValidation.js" >nul
+copy /Y "%DEPLOY%\lib\backupCatalogRegister.js" "%RELEASE_DIR%\tools\lib\backupCatalogRegister.js" >nul
+copy /Y "%DEPLOY%\lib\backupCatalogReconcile.js" "%RELEASE_DIR%\tools\lib\backupCatalogReconcile.js" >nul
+copy /Y "%DEPLOY%\lib\resolveInstallHome.js" "%RELEASE_DIR%\tools\lib\resolveInstallHome.js" >nul
 copy /Y "%DEPLOY%\migrate-db.bat" "%RELEASE_DIR%\tools\migrate-db.bat" >nul
 copy /Y "%DEPLOY%\migrate-db.js" "%RELEASE_DIR%\tools\migrate-db.js" >nul
 copy /Y "%DEPLOY%\update-flowtix.bat" "%RELEASE_DIR%\tools\update-flowtix.bat" >nul
@@ -348,6 +354,27 @@ if not exist "%RELEASE_DIR%\tools\backup-db.js" (
   set "FAIL=1"
 ) else (
   echo   OK: tools\backup-db.js
+)
+
+if not exist "%RELEASE_DIR%\tools\lib\backupStoragePaths.js" (
+  echo   FAIL: tools\lib\backupStoragePaths.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\lib\backupStoragePaths.js
+)
+
+if not exist "%RELEASE_DIR%\tools\lib\backupCatalogRegister.js" (
+  echo   FAIL: tools\lib\backupCatalogRegister.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\lib\backupCatalogRegister.js
+)
+
+if not exist "%RELEASE_DIR%\tools\lib\backupCatalogReconcile.js" (
+  echo   FAIL: tools\lib\backupCatalogReconcile.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\lib\backupCatalogReconcile.js
 )
 
 if not exist "%RELEASE_DIR%\tools\migrate-db.bat" (

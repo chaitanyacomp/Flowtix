@@ -78,13 +78,18 @@ function resolveSharedDir(home) {
 }
 
 function resolveBackupDir(home) {
-  if (process.env.BACKUP_DIR && String(process.env.BACKUP_DIR).trim()) {
-    return path.resolve(String(process.env.BACKUP_DIR).trim());
+  try {
+    const { resolveBackupStorageRoot } = require("./lib/backupStoragePaths");
+    return resolveBackupStorageRoot(process.env, { homeDir: home });
+  } catch {
+    if (process.env.BACKUP_DIR && String(process.env.BACKUP_DIR).trim()) {
+      return path.resolve(String(process.env.BACKUP_DIR).trim());
+    }
+    if (process.env.BACKUP_STORAGE_DIR && String(process.env.BACKUP_STORAGE_DIR).trim()) {
+      return path.resolve(String(process.env.BACKUP_STORAGE_DIR).trim());
+    }
+    return path.join(home, "backups", "db");
   }
-  if (process.env.BACKUP_STORAGE_DIR && String(process.env.BACKUP_STORAGE_DIR).trim()) {
-    return path.resolve(String(process.env.BACKUP_STORAGE_DIR).trim());
-  }
-  return path.join(home, "backups", "db");
 }
 
 /**
@@ -647,6 +652,29 @@ async function main() {
     console.error("  Backup files were not deleted. Restore automation is deferred.");
     console.error("");
     process.exit(result.exitCode || 1);
+  }
+
+  // Phase 1: reconcile pre-migration CLI backup into DbBackup (non-fatal).
+  try {
+    const { reconcileManifestBackupToCatalog } = require("./lib/backupCatalogReconcile");
+    const rec = await reconcileManifestBackupToCatalog({
+      conn: db,
+      backupGate,
+      mysqlExe: process.env.MYSQL_PATH,
+    });
+    if (rec.status === "created" || rec.status === "exists") {
+      console.log(`[migrate-db] catalog reconcile OK: ${rec.message}`);
+    } else if (rec.status === "skipped") {
+      console.log(`[migrate-db] catalog reconcile skipped: ${rec.message}`);
+    } else {
+      console.warn(`[migrate-db] WARN: catalog reconcile failed (migration still OK): ${rec.message}`);
+    }
+  } catch (e) {
+    console.warn(
+      `[migrate-db] WARN: catalog reconcile failed (migration still OK): ${redactSecrets(
+        e instanceof Error ? e.message : String(e),
+      )}`,
+    );
   }
 
   console.log(`[migrate-db] OK durationMs=${durationMs}`);

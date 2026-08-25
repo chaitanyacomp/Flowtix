@@ -68,9 +68,11 @@ enum AuditEntityType {
   USER_SESSION
 }
 
-/// Local DB backup file metadata (Phase 1: disk + mysqldump only).
+/// Local DB backup file metadata (disk + mysqldump). Sources: UI manual, CLI deployment/automatic, pre-restore safety.
 enum DbBackupType {
   MANUAL
+  DEPLOYMENT
+  AUTOMATIC
   PRE_RESTORE_AUTO
 }
 
@@ -720,18 +722,24 @@ model User {
 
 /// Full-database SQL backup row (see admin backup routes). `filePath` is server-only; never return to clients.
 model DbBackup {
-  id              Int            @id @default(autoincrement())
-  fileName        String         @db.VarChar(255)
-  filePath        String         @db.VarChar(1024)
-  fileSizeBytes   BigInt?
-  backupType      DbBackupType
-  status          DbBackupStatus
-  createdByUserId Int
-  createdAt       DateTime       @default(now())
-  restoredAt      DateTime?
-  remarks         String?        @db.Text
+  id                 Int            @id @default(autoincrement())
+  fileName           String         @db.VarChar(255)
+  filePath           String         @db.VarChar(1024)
+  fileSizeBytes      BigInt?
+  checksumSha256     String?        @db.VarChar(64)
+  userCount          Int?
+  activeAdminCount   Int?
+  /// Comma-separated flags e.g. ZERO_USERS,ZERO_ACTIVE_ADMINS (never secrets/paths).
+  validationWarnings String?        @db.VarChar(512)
+  backupType         DbBackupType
+  status             DbBackupStatus
+  /// Null for CLI/system-created rows (DEPLOYMENT / AUTOMATIC) when no acting user.
+  createdByUserId    Int?
+  createdAt          DateTime       @default(now())
+  restoredAt         DateTime?
+  remarks            String?        @db.Text
 
-  createdBy User @relation("DbBackupCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  createdBy User? @relation("DbBackupCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
 
   @@index([createdAt])
   @@index([backupType, status])

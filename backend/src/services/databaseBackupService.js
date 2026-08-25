@@ -7,7 +7,13 @@ const { pipeline } = require("stream/promises");
 const { once } = require("events");
 const { prisma } = require("../utils/prisma");
 const { parseDatabaseUrl } = require("../utils/databaseUrl");
-const { getPackageRoot } = require("../runtime/paths");
+const { resolveBackupStorageRoot, assertBackupPathAllowed } = require("./backupStoragePaths");
+const {
+  hashBackupFileSha256,
+  buildValidationWarnings,
+  serializeValidationWarnings,
+  parseValidationWarnings,
+} = require("./backupValidation");
 
 /** Single-flight lock: one mysqldump or mysql restore at a time (per Node process). */
 let backupJobLocked = false;
@@ -90,23 +96,69 @@ async function withBackupJobLock(fn) {
 }
 
 /**
- * Default: `<repo>/ERP_DATA/backups` (sibling to `backend/`, outside backend source tree).
- * @returns {string}
- */
-function getDefaultBackupStorageRoot() {
-  const backendRoot = getPackageRoot();
-  return path.resolve(backendRoot, "..", "ERP_DATA", "backups");
-}
-
-/**
+ * Canonical storage root (shared resolver with deployment/backup-db.js).
  * @returns {string}
  */
 function getResolvedBackupStorageRoot() {
-  const raw = process.env.BACKUP_STORAGE_DIR;
-  if (raw && String(raw).trim()) {
-    return path.resolve(String(raw).trim());
-  }
-  return getDefaultBackupStorageRoot();
+  return resolveBackupStorageRoot(process.env);
+}
+
+/**
+ * Confinement against canonical + legacy ERP_DATA trusted roots.
+ * @param {string} filePath
+ */
+function assertBackupFilePathAllowed(filePath) {
+  return assertBackupPathAllowed(filePath, process.env);
+}
+
+/**
+ * Live user / active-admin counts for validation metadata.
+ * @returns {Promise<{ userCount: number; activeAdminCount: number }>}
+ */
+async function collectBackupUserCounts() {
+  const [userCount, activeAdminCount] = await Promise.all([
+    prisma.user.count(),
+    prisma.user.count({ where: { role: "ADMIN", isActive: true } }),
+  ]);
+  return { userCount, activeAdminCount };
+}
+
+/**
+ * Persist a catalog row after a successful dump (or FAILED when dump failed).
+ * @param {{
+ *   fileName: string;
+ *   filePath: string;
+ *   fileSizeBytes: number | null;
+ *   checksumSha256?: string | null;
+ *   userCount?: number | null;
+ *   activeAdminCount?: number | null;
+ *   validationWarnings?: string[] | null;
+ *   backupType: "MANUAL" | "DEPLOYMENT" | "AUTOMATIC" | "PRE_RESTORE_AUTO";
+ *   status: "CREATED" | "FAILED" | "RESTORED";
+ *   createdByUserId?: number | null;
+ *   remarks?: string | null;
+ * }} input
+ */
+async function createDbBackupCatalogRow(input) {
+  return prisma.dbBackup.create({
+    data: {
+      fileName: input.fileName,
+      filePath: input.filePath,
+      fileSizeBytes: input.fileSizeBytes == null ? null : BigInt(input.fileSizeBytes),
+      checksumSha256: input.checksumSha256 ?? null,
+      userCount: input.userCount ?? null,
+      activeAdminCount: input.activeAdminCount ?? null,
+      validationWarnings: serializeValidationWarnings(input.validationWarnings ?? null),
+      backupType: input.backupType,
+      status: input.status,
+      createdByUserId: input.createdByUserId ?? null,
+      remarks:
+        input.remarks && String(input.remarks).trim()
+          ? String(input.remarks).trim().slice(0, 4000)
+          : null,
+    },
+    include: { createdBy: { select: { id: true, name: true, email: true } } },
+  });
 }
 
 /**
@@ -128,19 +180,12 @@ function getMysqlExecutable() {
 }
 
 /**
+ * Strict path confinement: canonical write root + known legacy ERP_DATA roots.
  * @param {string} filePath
- * @param {string} rootResolved
+ * @param {string} [_rootResolved] unused; kept for call-site compatibility
  */
-function assertPathUnderRoot(filePath, rootResolved) {
-  const absFile = path.resolve(filePath);
-  const absRoot = path.resolve(rootResolved);
-  const rel = path.relative(absRoot, absFile);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
-    const err = new Error("Invalid backup file location.");
-    err.statusCode = 400;
-    err.code = "BACKUP_PATH_INVALID";
-    throw err;
-  }
+function assertPathUnderRoot(filePath, _rootResolved) {
+  assertBackupPathAllowed(filePath, process.env);
 }
 
 /**
@@ -256,10 +301,40 @@ async function createManualBackup(input) {
       dbUrl.database,
     ];
 
+    let userCounts = { userCount: null, activeAdminCount: null };
+    try {
+      userCounts = await collectBackupUserCounts();
+    } catch {
+      // Counts are best-effort; dump may still proceed.
+    }
+
     try {
       // eslint-disable-next-line no-console
       console.log("[backup] Starting mysqldump for manual backup:", fileName);
       await runMysqldumpToSqlFile(exe, dumpArgs, outAbs);
+    } catch (dumpErr) {
+      try {
+        await createDbBackupCatalogRow({
+          fileName,
+          filePath: outAbs,
+          fileSizeBytes: 0,
+          checksumSha256: null,
+          userCount: userCounts.userCount,
+          activeAdminCount: userCounts.activeAdminCount,
+          validationWarnings: buildValidationWarnings({
+            userCount: userCounts.userCount ?? 0,
+            activeAdminCount: userCounts.activeAdminCount ?? 0,
+          }),
+          backupType: "MANUAL",
+          status: "FAILED",
+          createdByUserId: input.userId,
+          remarks: input.remarks,
+        });
+      } catch (catalogErr) {
+        // eslint-disable-next-line no-console
+        console.warn("[backup] Could not record FAILED catalog row:", catalogErr?.message || catalogErr);
+      }
+      throw dumpErr;
     } finally {
       try {
         await fs.promises.unlink(cnf);
@@ -268,21 +343,52 @@ async function createManualBackup(input) {
       }
     }
 
-    const stat = await fs.promises.stat(outAbs);
-    const row = await prisma.dbBackup.create({
-      data: {
-        fileName,
-        filePath: outAbs,
-        fileSizeBytes: BigInt(stat.size),
-        backupType: "MANUAL",
-        status: "CREATED",
-        createdByUserId: input.userId,
-        remarks: input.remarks && String(input.remarks).trim() ? String(input.remarks).trim().slice(0, 4000) : null,
-      },
-      include: { createdBy: { select: { id: true, name: true, email: true } } },
+    let sizeBytes;
+    let checksumSha256;
+    try {
+      ({ sizeBytes, checksumSha256 } = await hashBackupFileSha256(outAbs));
+    } catch (hashErr) {
+      try {
+        await createDbBackupCatalogRow({
+          fileName,
+          filePath: outAbs,
+          fileSizeBytes: 0,
+          checksumSha256: null,
+          userCount: userCounts.userCount,
+          activeAdminCount: userCounts.activeAdminCount,
+          validationWarnings: buildValidationWarnings({
+            userCount: userCounts.userCount ?? 0,
+            activeAdminCount: userCounts.activeAdminCount ?? 0,
+          }),
+          backupType: "MANUAL",
+          status: "FAILED",
+          createdByUserId: input.userId,
+          remarks: input.remarks,
+        });
+      } catch {
+        // ignore
+      }
+      throw hashErr;
+    }
+    const warnings = buildValidationWarnings({
+      userCount: userCounts.userCount ?? 0,
+      activeAdminCount: userCounts.activeAdminCount ?? 0,
+    });
+    const row = await createDbBackupCatalogRow({
+      fileName,
+      filePath: outAbs,
+      fileSizeBytes: sizeBytes,
+      checksumSha256,
+      userCount: userCounts.userCount,
+      activeAdminCount: userCounts.activeAdminCount,
+      validationWarnings: warnings,
+      backupType: "MANUAL",
+      status: "CREATED",
+      createdByUserId: input.userId,
+      remarks: input.remarks,
     });
     // eslint-disable-next-line no-console
-    console.log("[backup] Manual backup created id=", row.id, "size=", stat.size);
+    console.log("[backup] Manual backup created id=", row.id, "size=", sizeBytes);
     return row;
   });
 }
@@ -318,10 +424,39 @@ async function createPreRestoreAutoBackup(input) {
     dbUrl.database,
   ];
 
+  let userCounts = { userCount: null, activeAdminCount: null };
+  try {
+    userCounts = await collectBackupUserCounts();
+  } catch {
+    // ignore
+  }
+
   try {
     // eslint-disable-next-line no-console
     console.log("[backup] Starting pre-restore auto mysqldump:", fileName);
     await runMysqldumpToSqlFile(exe, dumpArgs, outAbs);
+  } catch (dumpErr) {
+    try {
+      await createDbBackupCatalogRow({
+        fileName,
+        filePath: outAbs,
+        fileSizeBytes: 0,
+        checksumSha256: null,
+        userCount: userCounts.userCount,
+        activeAdminCount: userCounts.activeAdminCount,
+        validationWarnings: buildValidationWarnings({
+          userCount: userCounts.userCount ?? 0,
+          activeAdminCount: userCounts.activeAdminCount ?? 0,
+        }),
+        backupType: "PRE_RESTORE_AUTO",
+        status: "FAILED",
+        createdByUserId: input.userId,
+        remarks: `Automatic safety backup before restore of backup #${input.beforeBackupId} (FAILED)`,
+      });
+    } catch {
+      // ignore
+    }
+    throw dumpErr;
   } finally {
     try {
       await fs.promises.unlink(cnf);
@@ -330,19 +465,24 @@ async function createPreRestoreAutoBackup(input) {
     }
   }
 
-  const stat = await fs.promises.stat(outAbs);
+  const { sizeBytes, checksumSha256 } = await hashBackupFileSha256(outAbs);
   const remarks = `Automatic safety backup before restore of backup #${input.beforeBackupId}`;
-  const row = await prisma.dbBackup.create({
-    data: {
-      fileName,
-      filePath: outAbs,
-      fileSizeBytes: BigInt(stat.size),
-      backupType: "PRE_RESTORE_AUTO",
-      status: "CREATED",
-      createdByUserId: input.userId,
-      remarks,
-    },
-    include: { createdBy: { select: { id: true, name: true, email: true } } },
+  const warnings = buildValidationWarnings({
+    userCount: userCounts.userCount ?? 0,
+    activeAdminCount: userCounts.activeAdminCount ?? 0,
+  });
+  const row = await createDbBackupCatalogRow({
+    fileName,
+    filePath: outAbs,
+    fileSizeBytes: sizeBytes,
+    checksumSha256,
+    userCount: userCounts.userCount,
+    activeAdminCount: userCounts.activeAdminCount,
+    validationWarnings: warnings,
+    backupType: "PRE_RESTORE_AUTO",
+    status: "CREATED",
+    createdByUserId: input.userId,
+    remarks,
   });
   // eslint-disable-next-line no-console
   console.log("[backup] Pre-restore backup created id=", row.id);
@@ -353,10 +493,16 @@ async function createPreRestoreAutoBackup(input) {
  * @param {import("@prisma/client").DbBackup & { createdBy?: unknown }} row
  */
 function toPublicBackup(row) {
+  const warnings = parseValidationWarnings(row.validationWarnings);
   return {
     id: row.id,
     fileName: row.fileName,
     fileSizeBytes: row.fileSizeBytes == null ? null : Number(row.fileSizeBytes),
+    checksumSha256: row.checksumSha256 ?? null,
+    userCount: row.userCount ?? null,
+    activeAdminCount: row.activeAdminCount ?? null,
+    validationWarnings: warnings,
+    hasValidationWarning: warnings.length > 0,
     backupType: row.backupType,
     status: row.status,
     createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
@@ -386,8 +532,7 @@ async function getBackupForAdminOrThrow(id) {
     err.code = "NOT_FOUND";
     throw err;
   }
-  const root = getResolvedBackupStorageRoot();
-  assertPathUnderRoot(row.filePath, root);
+  assertBackupPathAllowed(row.filePath, process.env);
   return row;
 }
 
@@ -416,11 +561,15 @@ module.exports = {
   getMysqldumpExecutable,
   getMysqlExecutable,
   assertPathUnderRoot,
+  assertBackupPathAllowed: (filePath) => assertBackupPathAllowed(filePath, process.env),
   createManualBackup,
   createPreRestoreAutoBackup,
+  createDbBackupCatalogRow,
+  collectBackupUserCounts,
   toPublicBackup,
   getBackupForAdminOrThrow,
   deleteBackupById,
   writeMysqlClientCnf,
   parseDatabaseUrl,
+  resolveBackupStorageRoot,
 };

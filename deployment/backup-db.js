@@ -11,7 +11,8 @@
  *   node tools/backup-db.js          (from release package)
  *
  * Env overrides:
- *   FT_ERP_HOME, SHARED_DIR, BACKUP_DIR, MYSQLDUMP_PATH, PRODUCT_VERSION
+ *   FT_ERP_HOME, SHARED_DIR, BACKUP_DIR, BACKUP_STORAGE_DIR, MYSQLDUMP_PATH, MYSQL_PATH,
+ *   PRODUCT_VERSION, BACKUP_SOURCE=DEPLOYMENT|AUTOMATIC
  */
 const fs = require("fs");
 const path = require("path");
@@ -87,13 +88,30 @@ function resolveSharedDir(home) {
 }
 
 function resolveBackupDir(home) {
-  if (process.env.BACKUP_DIR && String(process.env.BACKUP_DIR).trim()) {
-    return path.resolve(String(process.env.BACKUP_DIR).trim());
+  try {
+    const { resolveBackupStorageRoot } = require("./lib/backupStoragePaths");
+    return resolveBackupStorageRoot(process.env, { homeDir: home });
+  } catch {
+    // Packaged tools without lib/ — same priority as backupStoragePaths.js
+    if (process.env.BACKUP_STORAGE_DIR && String(process.env.BACKUP_STORAGE_DIR).trim()) {
+      return path.resolve(String(process.env.BACKUP_STORAGE_DIR).trim());
+    }
+    if (process.env.BACKUP_DIR && String(process.env.BACKUP_DIR).trim()) {
+      return path.resolve(String(process.env.BACKUP_DIR).trim());
+    }
+    return path.join(home, "backups", "db");
   }
-  if (process.env.BACKUP_STORAGE_DIR && String(process.env.BACKUP_STORAGE_DIR).trim()) {
-    return path.resolve(String(process.env.BACKUP_STORAGE_DIR).trim());
-  }
-  return path.join(home, "backups", "db");
+}
+
+/**
+ * CLI catalog source: DEPLOYMENT (default) or AUTOMATIC (scheduler / BACKUP_SOURCE).
+ * @returns {"DEPLOYMENT"|"AUTOMATIC"}
+ */
+function resolveCliBackupType() {
+  const raw = String(process.env.BACKUP_SOURCE || "").trim().toUpperCase();
+  if (raw === "AUTOMATIC") return "AUTOMATIC";
+  if (process.argv.includes("--automatic")) return "AUTOMATIC";
+  return "DEPLOYMENT";
 }
 
 /**
@@ -449,8 +467,31 @@ async function main() {
   const stamp = stampLocal();
   const fileName = `flowtix-db-backup-v${version}-${stamp}.sql`;
   const outAbs = path.join(backupDir, fileName);
+  const backupType = resolveCliBackupType();
 
   fs.mkdirSync(backupDir, { recursive: true });
+
+  let catalogHelpers = null;
+  try {
+    catalogHelpers = require("./lib/backupCatalogRegister");
+  } catch {
+    catalogHelpers = null;
+  }
+  let validationHelpers = null;
+  try {
+    validationHelpers = require("./lib/backupValidation");
+  } catch {
+    validationHelpers = null;
+  }
+
+  let userCounts = { userCount: null, activeAdminCount: null };
+  if (catalogHelpers) {
+    try {
+      userCounts = await catalogHelpers.queryUserCounts(db, process.env.MYSQL_PATH);
+    } catch {
+      userCounts = { userCount: null, activeAdminCount: null };
+    }
+  }
 
   const cnf = await writeMysqlClientCnf(db);
   const dumpArgs = [
@@ -467,25 +508,40 @@ async function main() {
   const startedAt = new Date().toISOString();
   let status = "failed";
   let fileSize = 0;
+  let checksumSha256 = null;
   let errorMessage = null;
+  let validationWarnings = [];
 
   try {
-    console.log(`[backup-db] writing ${fileName} ...`);
+    console.log(`[backup-db] writing ${fileName} (source=${backupType}) ...`);
     await runMysqldump(exe, dumpArgs, outAbs);
-    const st = fs.statSync(outAbs);
-    fileSize = st.size;
-    if (!fileSize || fileSize <= 0) {
-      try {
-        fs.unlinkSync(outAbs);
-      } catch {
-        // ignore
-      }
-      throw Object.assign(new Error("Backup file is empty (0 bytes). Dump rejected."), {
-        code: "EMPTY",
+    if (validationHelpers) {
+      const hashed = await validationHelpers.hashBackupFileSha256(outAbs);
+      fileSize = hashed.sizeBytes;
+      checksumSha256 = hashed.checksumSha256;
+      validationWarnings = validationHelpers.buildValidationWarnings({
+        userCount: userCounts.userCount ?? 0,
+        activeAdminCount: userCounts.activeAdminCount ?? 0,
       });
+    } else {
+      const st = fs.statSync(outAbs);
+      fileSize = st.size;
+      if (!fileSize || fileSize <= 0) {
+        try {
+          fs.unlinkSync(outAbs);
+        } catch {
+          // ignore
+        }
+        throw Object.assign(new Error("Backup file is empty (0 bytes). Dump rejected."), {
+          code: "EMPTY",
+        });
+      }
     }
     status = "success";
-    console.log(`[backup-db] OK size=${fileSize} bytes`);
+    console.log(`[backup-db] OK size=${fileSize} bytes sha256=${checksumSha256 ? checksumSha256.slice(0, 12) + "…" : "n/a"}`);
+    if (validationWarnings.length) {
+      console.log(`[backup-db] WARN validation: ${validationWarnings.join(", ")}`);
+    }
     console.log(`[backup-db] file=${outAbs}`);
   } catch (e) {
     status = "failed";
@@ -502,6 +558,45 @@ async function main() {
     }
   }
 
+  if (catalogHelpers) {
+    try {
+      const cat = await catalogHelpers.registerDbBackupCatalog({
+        conn: db,
+        fileName,
+        filePath: outAbs,
+        fileSizeBytes: status === "success" ? fileSize : 0,
+        checksumSha256: status === "success" ? checksumSha256 : null,
+        userCount: userCounts.userCount,
+        activeAdminCount: userCounts.activeAdminCount,
+        validationWarnings:
+          status === "success"
+            ? validationWarnings
+            : validationHelpers
+              ? validationHelpers.buildValidationWarnings({
+                  userCount: userCounts.userCount ?? 0,
+                  activeAdminCount: userCounts.activeAdminCount ?? 0,
+                })
+              : [],
+        backupType,
+        status: status === "success" ? "CREATED" : "FAILED",
+        remarks:
+          status === "success"
+            ? `CLI ${backupType} backup (manifest)`
+            : `CLI ${backupType} backup FAILED: ${errorMessage || "unknown"}`.slice(0, 4000),
+        mysqlExe: process.env.MYSQL_PATH,
+      });
+      if (cat.ok) {
+        console.log(`[backup-db] catalog DbBackup id=${cat.id ?? "?"} (${backupType}/${status === "success" ? "CREATED" : "FAILED"})`);
+      } else if (cat.skipped) {
+        console.log(`[backup-db] catalog skipped: ${cat.reason || "unavailable"}`);
+      }
+    } catch (e) {
+      console.log(
+        `[backup-db] catalog register failed (non-fatal): ${redactSecrets(e instanceof Error ? e.message : String(e))}`,
+      );
+    }
+  }
+
   const entry = {
     filename: fileName,
     path: outAbs,
@@ -511,6 +606,11 @@ async function main() {
     databaseName: db.database,
     host: db.host,
     fileSizeBytes: fileSize,
+    checksumSha256: checksumSha256,
+    backupSource: backupType,
+    userCount: userCounts.userCount,
+    activeAdminCount: userCounts.activeAdminCount,
+    validationWarnings: validationWarnings,
     status,
     ...(errorMessage ? { error: errorMessage } : {}),
   };

@@ -25,9 +25,11 @@ Partner → customer operational handover (FT-PD-091 hypercare transition / OPS-
 ## Training / ops
 
 - [ ] Start/stop (service or `node app\server.js`) demonstrated
-- [ ] Backup command demonstrated once
+- [ ] Backup demonstrated (Admin catalog and/or `backup-db.bat`); schedule verify shown
+- [ ] Daily/weekly backup verification checklist handed over
+- [ ] Restore awareness: full restore replaces users/passwords; cleanup preserves users; maintenance / rollback / emergency IT
 - [ ] Update path (Batch 6) explained
-- [ ] Rollback Mode A vs Mode B explained
+- [ ] Rollback Mode A (app/web) vs Mode B / Admin safe restore explained
 - [ ] Support escalation path agreed
 
 ## Hypercare

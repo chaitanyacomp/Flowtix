@@ -3,7 +3,8 @@
 | Area | Limitation |
 |------|------------|
 | MySQL | Not bundled; operator-provided MySQL 8+ |
-| DB restore | Manual SQL restore only (no automated restore CLI) |
+| DB restore | Admin **safe restore** (maintenance mode, safety backup, verify, auto-rollback) for eligible MANUAL/AUTOMATIC/DEPLOYMENT backups; **no** standalone automated CLI restore. Legacy/unverified backups and emergency rollback failure require IT-assisted SQL restore. Full restore replaces users/passwords with the snapshot; cleanup/demo reset does **not**. |
+| Backup schedule | Daily task defaults to **02:00** local (`Flowtix-ERP-Daily-Backup`); AUTOMATIC retention 14/8/12. Development homes skip schedule install unless forced. |
 | Cloud | LAN / local-server model only |
 | Roles | Product roles: ADMIN, STORE, PURCHASE, PRODUCTION, QA (demo personas map onto these) |
 | Forced password change | Admin → Settings → Users can reset passwords; first-login forced-change flag remains out of scope for v1.0.0 |

@@ -11,7 +11,7 @@ This guide points administrators to the authoritative day-2 runbook.
 | Start / stop | `tools\service-*.bat` or `node app\server.js` |
 | Health | `GET /health`, `tools\verify-install.bat` |
 | Firewall | `tools\firewall-flowtix.bat` |
-| Backup | `tools\backup-db.bat` — see Backup Guide |
+| Backup / restore | `tools\backup-db.bat`, `tools\schedule-backup.bat`, Admin **Backup & Restore** — see Backup Guide |
 | Update | `tools\update-flowtix.bat` — see Upgrade Guide |
 | Rollback (app/web) | `tools\rollback-flowtix.bat` |
 | Diagnostics | `tools\collect-diagnostics.bat` |
@@ -41,9 +41,9 @@ This guide points administrators to the authoritative day-2 runbook.
 ## Recovery
 
 Install-file recovery: `tools\install-recovery.bat` (does **not** roll back MySQL).  
-Database restore remains a manual SQL restore from `backups\db\` (Mode B).
+Database: prefer Admin **safe restore** for eligible catalog backups (see Backup Guide). Legacy/unverified or emergency cases use IT-assisted SQL restore (Mode B). Full restore replaces users/data and reverts passwords to the backup date; cleanup preserves users.
 
-Full procedures: FT-DEP-012 §§2–7.
+Full procedures: FT-DEP-012 §§2–7 · [05_Backup_and_Restore_Guide.md](./05_Backup_and_Restore_Guide.md).
 # Multi-WO diagnostics
 
 Investigate carried-forward status without a final report/shortfall decision, terminal projections with active quantity, and labels that show internal numeric ids. Repair only records with no final report, no carry-forward decision, and no terminal closure event.

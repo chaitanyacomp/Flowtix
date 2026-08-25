@@ -6,9 +6,9 @@
 | **Volume** | 9 — Deployment & Operations Architecture |
 | **Chapter** | 4 — Backup, Recovery, Business Continuity & Disaster Recovery Architecture |
 | **Title** | Backup, Recovery, Business Continuity & Disaster Recovery Architecture |
-| **Version** | 1.0.0 |
+| **Version** | 1.1.0 |
 | **Status** | Draft — Architecture Review |
-| **Effective date** | 2026-05-29 |
+| **Effective date** | 2026-08-25 |
 | **Author** | FT ERP Product Team |
 | **Owner** | FT ERP Product Architecture |
 | **Audience** | Operations managers, DR leads, compliance officers, administrators, implementation partners |
@@ -29,6 +29,7 @@
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Backup, Recovery, Business Continuity & Disaster Recovery Architecture |
+| 1.1.0 | 2026-08-25 | FT ERP Product Team | Product backup/restore profile: unified catalog, automatic schedule/retention, safe restore governance |
 
 **Supersedes:** None.
 
@@ -146,6 +147,25 @@ Logical backup governance by information category — **no tool prescription**:
 
 **Governance:** Backup frequency, retention, and verification are **customer operational policies** within architecture minimums — verification evidence required ([RES-06](#11-business-rules)).
 
+### 6.1 Product-delivered backup & restore profile (LAN client-server)
+
+The Flowtix LAN deployment model ships a **unified** Admin UI + CLI backup catalog and storage root (see customer [Backup & Restore Guide](../06_Deployment/customer/05_Backup_and_Restore_Guide.md)). Architecture minimums for that profile:
+
+| Capability | Governance minimum |
+|------------|-------------------|
+| **Unified catalog** | Admin and CLI register the same dumps; types distinguish MANUAL, AUTOMATIC, DEPLOYMENT, PRE_RESTORE_AUTO |
+| **Automatic schedule** | Daily recovery point (default local **02:00**) on production Windows installs; install/verify/remove are operator-owned controls |
+| **Retention** | AUTOMATIC points retain at least **14** daily, **8** weekly, **12** monthly recovery points; MANUAL / DEPLOYMENT / PRE_RESTORE_AUTO and the latest successful dump are protected from automatic purge |
+| **Validation** | Size, checksum, and user/active-Admin counts inform eligibility; zero-user / zero-Admin warnings are operator-visible |
+| **Cleanup vs restore** | Transaction cleanup / demo reset **preserves** user accounts; **full restore replaces** users and business data with the snapshot (passwords revert to backup-date credentials) |
+| **Safe restore** | Self-service only for eligible verified MANUAL/AUTOMATIC/DEPLOYMENT dumps: precheck → safety backup → import → verify → complete; maintenance mode during job; forced session invalidation after success |
+| **Rollback** | Failed target restore after validated safety backup **must** attempt automatic rollback; successful rollback recovers prior data and must not be reported as a successful target restore |
+| **Emergency** | If rollback also fails, maintenance remains active and IT escalation is mandatory |
+| **Legacy / unverified** | Missing checksum or user/Admin metadata → **IT-assisted** restore only (not self-service) |
+| **Verification** | Customer daily/weekly checklist + disposable-database restore drills ([RES-06](#11-business-rules), [RES-10](#11-business-rules)) |
+
+Operational commands, folder names, and checklists live in the customer Backup & Restore Guide — this chapter does not prescribe vendor tooling beyond the product profile above.
+
 ---
 
 ## 7. Recovery Architecture
@@ -223,13 +243,16 @@ Review cadence in §12E — typically annual DR exercise minimum for production.
 | **RES-03** | **Certified releases remain identifiable after recovery** — build identity recorded ([DEP-02](./Chapter_01_Deployment_and_Release_Architecture.md)). |
 | **RES-04** | **Validation evidence is never discarded** — EVD retention in backup scope ([EVD-02](../08_Product_Testing_and_Validation/Chapter_05_Validation_Evidence_Audit_Trails_and_Continuous_Compliance.md)). |
 | **RES-05** | **Recovery requires post-recovery validation** — smoke + PBL spot minimum. |
-| **RES-06** | **Backup verification is mandatory** — periodic restore test evidence. |
+| **RES-06** | **Backup verification is mandatory** — periodic restore test evidence (disposable database preferred for drills). |
 | **RES-07** | **Disaster procedures remain fully auditable** — declaration, actions, sign-off. |
 | **RES-08** | **Legal hold scope included in backup** when active ([GOV-03](../07_Security_and_Governance_Architecture/Chapter_03_Audit_Compliance_and_Data_Retention_Governance.md)). |
 | **RES-09** | **Recovery to uncertified build is prohibited** in production path. |
-| **RES-10** | **DR exercises do not use production data in unsecured environments** without anonymization policy. |
+| **RES-10** | **DR exercises do not use production data in unsecured environments** without anonymization policy; restore drills use **disposable** databases — never the live customer database. |
 | **RES-11** | **Rollback and DR are distinct** — rollback is scoped revert; DR is major event governance. |
 | **RES-12** | **Integration revalidation required** after recovery when integrations enabled ([INT-01](../07_Security_and_Governance_Architecture/Chapter_05_Platform_Integration_and_External_Trust_Boundaries.md)). |
+| **RES-13** | **Full database restore replaces identity state** — users and passwords match the backup snapshot; transaction cleanup must not be treated as restore. |
+| **RES-14** | **Failed restore with failed automatic rollback is an emergency** — maintenance remains active until IT remediation. |
+| **RES-15** | **Unverified / legacy backups are not self-service restore targets** — IT-assisted path only. |
 
 ---
 
@@ -431,15 +454,16 @@ flowchart LR
 
 ## 14. Review Checklist
 
-- [ ] Backup governance — §6, §12A all categories
+- [ ] Backup governance — §6, §6.1, §12A all categories
+- [ ] Safe restore / rollback / emergency — §6.1, RES-13–RES-15
 - [ ] Recovery governance — §7, §12B, RES-05
 - [ ] Business continuity — §8, §12C
 - [ ] Disaster recovery — §9, §12D, RES-07
 - [ ] Risk coverage — §10, §12E
-- [ ] Recovery readiness — §12F
+- [ ] Recovery readiness — §12F (disposable restore drills)
 - [ ] Validation alignment — Vol. 8 PBL, certified build RES-03
 - [ ] Six Mermaid diagrams
-- [ ] No backup software, storage tech, or scripts
+- [ ] Ops detail deferred to customer Backup & Restore Guide (no secret material)
 
 ---
 
@@ -448,6 +472,7 @@ flowchart LR
 | Version | Date | Author | Summary |
 |---------|------|--------|---------|
 | 1.0.0 | 2026-05-29 | FT ERP Product Team | Initial Backup, Recovery, Business Continuity & Disaster Recovery Architecture |
+| 1.1.0 | 2026-08-25 | FT ERP Product Team | §6.1 product backup/restore profile; RES-13–RES-15 |
 
 ---
 
@@ -465,11 +490,11 @@ flowchart LR
 
 ## Writing Requirements
 
-Remain **technology-neutral**.
+Remain **governance-first**. Product LAN profile capabilities are summarized in §6.1; **do not** embed credentials, connection strings, or secret material.
 
-**Do not include:** Backup software, storage technologies, cloud vendor implementations, replication technologies, database commands, scripts, source code.
+**Operational how-to** (commands, folder paths, checklists) belongs in the customer [Backup & Restore Guide](../06_Deployment/customer/05_Backup_and_Restore_Guide.md) and handover checklists — not duplicated as a second guide here.
 
-**Describe governance architecture only.**
+**Do not prescribe** third-party backup appliances, cloud vendors, or replication products beyond customer policy.
 
 ---
 

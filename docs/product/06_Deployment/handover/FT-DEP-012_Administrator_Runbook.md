@@ -65,13 +65,18 @@ tools\firewall-flowtix.bat remove
 
 Idempotent rule name: `Flowtix ERP Backend`. Requires Administrator for add/remove. Manual fallback is printed by the helper.
 
-## 4. Backup
+## 4. Backup & restore
 
 ```bat
 tools\backup-db.bat
+tools\schedule-backup.bat verify --home C:\FT-ERP
 ```
 
-Confirm file size > 0 and `BACKUP_MANIFEST.json` success. Retain per site policy.
+- Unified Admin UI + CLI catalog under `backups\db\` (see customer Backup & Restore Guide).
+- Daily task **Flowtix-ERP-Daily-Backup** at **02:00**; AUTOMATIC retention **14** daily / **8** weekly / **12** monthly.
+- Confirm dump size &gt; 0, catalog/`BACKUP_MANIFEST.json` success, no password fields.
+- Admin **safe restore** for eligible backups (maintenance mode, safety backup, verify, auto-rollback). Success forces re-login (session epoch) and API restart. Legacy/unverified → IT-assisted. Emergency if rollback fails → leave maintenance on, call IT.
+- Cleanup/demo reset **preserves users**; full restore **replaces** users/passwords with the snapshot.
 
 ## 5. Update (Batch 6)
 
@@ -87,7 +92,7 @@ Confirm file size > 0 and `BACKUP_MANIFEST.json` success. Retain per site policy
 tools\rollback-flowtix.bat --home C:\FT-ERP
 ```
 
-Restores prior `app\`/`web\` from `*-pre-update-*`. **Does not** restore MySQL automatically. If schema mismatch, restore SQL dump manually (Mode B).
+Restores prior `app\`/`web\` from `*-pre-update-*`. **Does not** restore MySQL by itself. If schema/data must be reverted, use Admin safe restore of the pre-update dump when eligible, otherwise IT-assisted SQL restore (Mode B).
 
 ## 7. First-time setup (reference)
 

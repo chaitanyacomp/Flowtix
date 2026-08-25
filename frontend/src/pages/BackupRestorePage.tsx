@@ -1,6 +1,6 @@
 import * as React from "react";
 import { AlertTriangle, Archive, Database, Download, HardDrive, RefreshCw, Trash2, X } from "lucide-react";
-import { Navigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -10,6 +10,7 @@ import { apiDownloadAuthorized } from "../services/apiDownload";
 import { useToast } from "../contexts/ToastContext";
 import { useIsAdmin } from "../hooks/useIsAdmin";
 import { cn } from "../lib/utils";
+import { forceUnauthenticatedState } from "../lib/authSession";
 import { ErpModal } from "../components/erp/ErpModal";
 
 type BackupType = "MANUAL" | "DEPLOYMENT" | "AUTOMATIC" | "PRE_RESTORE_AUTO";
@@ -29,6 +30,9 @@ type BackupRow = {
   createdAt: string;
   restoredAt: string | null;
   remarks: string | null;
+  restoreEligible?: boolean;
+  restoreBlockedReason?: string | null;
+  itAssistedRestoreRequired?: boolean;
   createdBy: { id: number; name: string; email: string } | null;
 };
 
@@ -104,11 +108,14 @@ function RestoreModal({
   onDone: () => void;
 }) {
   const toast = useToast();
+  const navigate = useNavigate();
   const [adminPassword, setAdminPassword] = React.useState("");
   const [confirmPhrase, setConfirmPhrase] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
+  const [progressPhase, setProgressPhase] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const phraseRef = React.useRef<HTMLInputElement>(null);
+  const submitGuard = React.useRef(false);
 
   React.useEffect(() => {
     if (!open) return;
@@ -116,6 +123,8 @@ function RestoreModal({
     setConfirmPhrase("");
     setError(null);
     setSubmitting(false);
+    setProgressPhase(null);
+    submitGuard.current = false;
     const focusT = window.setTimeout(() => phraseRef.current?.focus(), 320);
     return () => window.clearTimeout(focusT);
   }, [open, backup?.id]);
@@ -143,14 +152,18 @@ function RestoreModal({
   const canSubmit = phraseOk && adminPassword.trim().length > 0 && !submitting;
 
   async function submit() {
-    if (!canSubmit) return;
+    if (!canSubmit || submitGuard.current) return;
+    submitGuard.current = true;
     setSubmitting(true);
     setError(null);
+    setProgressPhase("PRECHECK");
     try {
       const res = await apiFetch<{
         ok: boolean;
         message?: string;
         restartRequired?: boolean;
+        forceLogout?: boolean;
+        phase?: string;
         backupHistoryUpdated?: boolean;
       }>(`/api/admin/backups/${backupId}/restore`, {
         method: "POST",
@@ -159,29 +172,48 @@ function RestoreModal({
           confirmPhrase: confirmPhrase,
         }),
       });
+      setProgressPhase(res.phase ?? "COMPLETED");
       toast.showSuccess(res.message ?? "Restore completed.");
       onDone();
       onClose();
+      if (res.forceLogout || res.restartRequired) {
+        try {
+          sessionStorage.setItem(
+            "auth:sessionExpiredMessage",
+            "Database restore completed. Sign in again after the API server has been restarted.",
+          );
+        } catch {
+          /* ignore */
+        }
+        forceUnauthenticatedState({ dispatchEvent: true, clearCache: true });
+        navigate("/login", { replace: true });
+      }
     } catch (e) {
+      const body = e instanceof ApiRequestError ? e.body : null;
+      const rs =
+        body && typeof body === "object"
+          ? (body as { restoreStatus?: { phase?: string } }).restoreStatus
+          : null;
+      if (rs?.phase) setProgressPhase(rs.phase);
       setError(formatBackupAdminError(e));
     } finally {
       setSubmitting(false);
+      submitGuard.current = false;
     }
   }
 
   return (
-    <ErpModal open={open} onClose={onClose} closeOnBackdropClick aria-labelledby="restore-modal-title">
+    <ErpModal open={open} onClose={submitting ? () => undefined : onClose} closeOnBackdropClick={!submitting} aria-labelledby="restore-modal-title">
       <Card className="erp-modal-shell max-w-lg border-red-200">
         <CardHeader className="flex flex-row items-center justify-between space-y-0 border-b border-red-100 bg-red-50/80 pb-3">
           <CardTitle id="restore-modal-title" className="text-lg font-semibold tracking-tight text-red-950">
             Restore database
           </CardTitle>
-          <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label="Close" onClick={onClose}>
+          <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label="Close" onClick={onClose} disabled={submitting}>
             <X className="h-4 w-4" />
           </Button>
         </CardHeader>
         <CardContent className="space-y-4 pt-4">
-          {/* Section 1 — Warning */}
           <section className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950" aria-labelledby="restore-warn-title">
             <div className="flex items-start gap-2">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden />
@@ -190,21 +222,50 @@ function RestoreModal({
                   This replaces the live database.
                 </div>
                 <ul className="list-disc space-y-0.5 pl-4 text-amber-950/90">
-                  <li>The system creates an automatic safety backup first.</li>
-                  <li>All users should stop using the ERP during restore.</li>
-                  <li>Restart the API server after restore, then sign in again.</li>
+                  <li>Users and passwords revert to the backup date.</li>
+                  <li>An automatic safety backup is created and validated first.</li>
+                  <li>ERP enters maintenance mode; other users cannot change data.</li>
+                  <li>Restart the API server after success, then sign in again.</li>
                 </ul>
               </div>
             </div>
           </section>
 
-          {/* Section 2 — Selected file */}
-          <section className="rounded-md border border-slate-200 bg-slate-50 p-3" aria-labelledby="restore-file-title">
+          <section className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm" aria-labelledby="restore-file-title">
             <div id="restore-file-title" className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-              Selected backup file
+              Selected backup
             </div>
             <div className="mt-1.5 break-all font-mono text-[13px] text-slate-900">{backup.fileName}</div>
+            <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-700">
+              <div>
+                <dt className="text-slate-500">Date</dt>
+                <dd>
+                  {new Date(backup.createdAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-slate-500">Type</dt>
+                <dd>{typeLabel(backup.backupType)}</dd>
+              </div>
+              <div>
+                <dt className="text-slate-500">Size</dt>
+                <dd>{formatBytes(backup.fileSizeBytes)}</dd>
+              </div>
+              <div>
+                <dt className="text-slate-500">Users / Admins</dt>
+                <dd>
+                  {backup.userCount ?? "—"} / {backup.activeAdminCount ?? "—"}
+                </dd>
+              </div>
+            </dl>
           </section>
+
+          {progressPhase ? (
+            <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800" data-testid="restore-progress" role="status">
+              Restore progress: <span className="font-semibold">{progressPhase}</span>
+              {submitting ? " — please wait; do not close this window." : null}
+            </div>
+          ) : null}
 
           <form
             className="relative space-y-4"
@@ -648,12 +709,14 @@ export function BackupRestorePage() {
                               "h-8 shrink-0 gap-1 border-amber-500/90 bg-amber-50 px-2 text-xs font-semibold text-amber-950 hover:bg-amber-100 hover:text-amber-950",
                               "disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400 disabled:opacity-60 disabled:hover:bg-slate-50 disabled:hover:text-slate-400",
                             )}
-                            disabled={r.backupType !== "MANUAL" || r.status !== "CREATED"}
+                            disabled={r.restoreEligible !== true}
                             onClick={() => setRestoreTarget(r)}
                             title={
-                              r.backupType !== "MANUAL" || r.status !== "CREATED"
-                                ? "Only manual backups in Created status can be restored"
-                                : "Restore this backup"
+                              r.restoreEligible
+                                ? "Restore this backup"
+                                : r.itAssistedRestoreRequired
+                                  ? r.restoreBlockedReason || "IT-assisted restore required"
+                                  : r.restoreBlockedReason || "This backup cannot be restored from Admin self-service"
                             }
                           >
                             <Database className="h-3.5 w-3.5 shrink-0" aria-hidden />

@@ -7,6 +7,9 @@ const { assertAdminPassword } = require("../services/adminPasswordAuth");
 const { createManualBackup, toPublicBackup, getBackupForAdminOrThrow, deleteBackupById } = require("../services/databaseBackupService");
 const { restoreFromBackup } = require("../services/databaseRestoreService");
 const { getAutomaticBackupScheduleStatus } = require("../services/backupScheduleStatus");
+const { readRestoreStatus, toPublicRestoreStatus } = require("../services/restoreJobStatus");
+const { isMaintenanceActive, readMaintenanceState } = require("../services/maintenanceMode");
+const { evaluateRestoreEligibility } = require("../services/restoreEligibility");
 
 const adminBackupsRouter = express.Router();
 
@@ -49,6 +52,47 @@ adminBackupsRouter.get(
     try {
       const schedule = await getAutomaticBackupScheduleStatus(prisma);
       return res.json({ schedule });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+adminBackupsRouter.get(
+  "/backups/restore-status",
+  requireAuth,
+  requireRole(["ADMIN"], "Only Admin can view restore status."),
+  async (req, res) => {
+    const restoreStatus = toPublicRestoreStatus(readRestoreStatus());
+    const maintenance = readMaintenanceState();
+    return res.json({
+      restoreStatus,
+      maintenance: {
+        active: Boolean(maintenance.active) || isMaintenanceActive(),
+        reason: maintenance.reason || null,
+        startedAt: maintenance.startedAt || null,
+      },
+    });
+  },
+);
+
+adminBackupsRouter.get(
+  "/backups/:id/restore-preflight",
+  requireAuth,
+  requireRole(["ADMIN"], "Only Admin can preflight restore."),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id) || id <= 0) {
+        return res.status(400).json({ error: { message: "Invalid backup id.", code: "INVALID_ID" } });
+      }
+      const row = await getBackupForAdminOrThrow(id);
+      const eligibility = evaluateRestoreEligibility(row);
+      return res.json({
+        eligibility,
+        warning:
+          "Restoring replaces the live database. Users and passwords revert to the backup date. An automatic safety backup is created first. API restart and fresh login are required after success.",
+      });
     } catch (e) {
       return next(e);
     }
@@ -147,6 +191,9 @@ adminBackupsRouter.post(
       const result = await restoreFromBackup({ backupId: id, actingUserId: req.user.userId });
       return res.json(result);
     } catch (e) {
+      if (e && (e.restoreStatus || e.emergency || e.rolledBack)) {
+        e.expose = true;
+      }
       return next(e);
     }
   },

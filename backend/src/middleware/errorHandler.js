@@ -204,7 +204,7 @@ function errorHandler(err, req, res, next) {
     });
   }
 
-  if (status >= 500 && isProd && err.expose !== true) {
+  if (status >= 500 && isProd && err.expose !== true && !err.restoreStatus && !err.emergency) {
     return res.status(500).json({
       error: {
         message: "Something went wrong. Please try again later.",
@@ -224,7 +224,13 @@ function errorHandler(err, req, res, next) {
   if (err.field) errorPayload.field = err.field;
   if (err.ledgerName) errorPayload.ledgerName = err.ledgerName;
   if (err.reason) errorPayload.reason = err.reason;
-  return res.status(status).json({ error: errorPayload });
+  if (err.itAssistedRequired) errorPayload.itAssistedRequired = true;
+  if (err.emergency) errorPayload.emergency = true;
+  if (err.rolledBack) errorPayload.rolledBack = true;
+
+  const body = { error: errorPayload };
+  if (err.restoreStatus) body.restoreStatus = err.restoreStatus;
+  return res.status(status).json(body);
 }
 
 module.exports = { errorHandler, mapPrismaKnownRequest, mapPrismaClientError };

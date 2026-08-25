@@ -194,9 +194,11 @@ async function runMysqldumpToSqlFile(exe, args, outFileAbs) {
         e.code = "MYSQLDUMP_FAILED";
         reject(e);
       });
+      // Attach close listener before draining stdout so a fast dump cannot miss 'close'.
+      const closed = once(child, "close").then(([c]) => (typeof c === "number" ? c : 1));
       pipeline(child.stdout, ws)
-        .then(() => once(child, "close"))
-        .then(([c]) => resolve(typeof c === "number" ? c : 1))
+        .then(() => closed)
+        .then(resolve)
         .catch(reject);
     });
   } catch (e) {
@@ -457,6 +459,8 @@ async function createPreRestoreAutoBackup(input) {
  */
 function toPublicBackup(row) {
   const warnings = parseValidationWarnings(row.validationWarnings);
+  const { evaluateRestoreEligibility } = require("./restoreEligibility");
+  const eligibility = evaluateRestoreEligibility(row);
   return {
     id: row.id,
     fileName: row.fileName,
@@ -471,6 +475,9 @@ function toPublicBackup(row) {
     createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
     restoredAt: row.restoredAt instanceof Date ? row.restoredAt.toISOString() : row.restoredAt,
     remarks: row.remarks,
+    restoreEligible: Boolean(eligibility.eligible),
+    restoreBlockedReason: eligibility.eligible ? null : eligibility.reason,
+    itAssistedRestoreRequired: Boolean(eligibility.itAssistedRequired),
     createdBy: row.createdBy
       ? {
           id: row.createdBy.id,

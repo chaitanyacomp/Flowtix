@@ -19,12 +19,26 @@ describe("BackupRestorePage Phase 1 catalog UI", () => {
     expect(pageSource).toContain("ZERO_ACTIVE_ADMINS");
     expect(pageSource).toContain("Validation warning");
     expect(pageSource).not.toMatch(/filePath/);
-    expect(pageSource).toContain("Only manual backups in Created status can be restored");
   });
 
   it("documents CLI backups appear after Refresh", () => {
     expect(pageSource).toContain("CLI backups appear here after");
     expect(pageSource).toContain("Refresh");
+  });
+});
+
+describe("BackupRestorePage Phase 3 safe restore UI", () => {
+  it("shows backup date/type/size/users and password revert warning", () => {
+    expect(pageSource).toContain("Users and passwords revert to the backup date");
+    expect(pageSource).toContain("Users / Admins");
+    expect(pageSource).toContain("restore-progress");
+    expect(pageSource).toContain("forceUnauthenticatedState");
+  });
+
+  it("enables restore from eligibility flag and shows IT-assisted message", () => {
+    expect(pageSource).toContain("restoreEligible");
+    expect(pageSource).toContain("IT-assisted restore required");
+    expect(pageSource).not.toContain("Only manual backups in Created status can be restored");
   });
 });
 

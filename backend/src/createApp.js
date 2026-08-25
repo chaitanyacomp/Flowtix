@@ -103,6 +103,7 @@ function createApp(options = {}) {
     return express.json({ limit: "100kb" })(req, res, next);
   });
   app.use(performanceLoggingMiddleware);
+  app.use(require("./middleware/auth").maintenanceModeMiddleware);
 
   // Dev / API-only: JSON root. Production with packaged web/: SPA owns "/".
   if (!staticOpts.enabled) {

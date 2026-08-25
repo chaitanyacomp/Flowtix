@@ -96,5 +96,6 @@ describe("toPublicBackup catalog DTO", () => {
     assert.equal(pub.backupType, "MANUAL");
     assert.equal(pub.status, "CREATED");
     assert.equal(pub.hasValidationWarning, false);
+    assert.equal(pub.restoreEligible, true);
   });
 });

@@ -3,6 +3,6 @@
   "private": true,
   "description": "Deployment tooling tests (backup Phase 2 schedule/lock/retention helpers)",
   "scripts": {
-    "test": "node --test \"./test/**/*.test.js\" \"../backend/test/unit/backupJobLockPhase2.test.js\" \"../backend/test/unit/backupRetentionPhase2.test.js\" \"../backend/test/unit/backupSchedulePhase2.test.js\" \"../backend/test/unit/backupScheduleStatusPhase2.test.js\" \"../backend/test/unit/backupStoragePaths.test.js\""
+    "test": "node --test \"./test/**/*.test.js\" \"../backend/test/unit/backupJobLockPhase2.test.js\" \"../backend/test/unit/backupRetentionPhase2.test.js\" \"../backend/test/unit/backupSchedulePhase2.test.js\" \"../backend/test/unit/backupScheduleStatusPhase2.test.js\" \"../backend/test/unit/backupStoragePaths.test.js\" \"../backend/test/unit/backupRestorePhase3.test.js\""
   }
 }

@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const { getAuthSessionEpoch } = require("../services/authSessionEpoch");
 
 function requireJwtSecret() {
   const secret = process.env.JWT_SECRET;
@@ -13,13 +14,22 @@ function requireJwtSecret() {
 
 function signAccessToken(payload) {
   const secret = requireJwtSecret();
-  return jwt.sign(payload, secret, { expiresIn: "8h" });
+  const sessionEpoch = getAuthSessionEpoch();
+  return jwt.sign({ ...payload, sessionEpoch }, secret, { expiresIn: "8h" });
 }
 
 function verifyAccessToken(token) {
   const secret = requireJwtSecret();
-  return jwt.verify(token, secret);
+  const decoded = jwt.verify(token, secret);
+  const current = getAuthSessionEpoch();
+  const tokenEpoch = Number(decoded && decoded.sessionEpoch);
+  const normalized = Number.isFinite(tokenEpoch) ? tokenEpoch : 0;
+  if (normalized !== current) {
+    const err = new Error("Session invalidated. Please sign in again.");
+    err.name = "SessionEpochError";
+    throw err;
+  }
+  return decoded;
 }
 
-module.exports = { signAccessToken, verifyAccessToken };
-
+module.exports = { signAccessToken, verifyAccessToken, getAuthSessionEpoch };

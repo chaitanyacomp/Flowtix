@@ -14,31 +14,11 @@ const {
   serializeValidationWarnings,
   parseValidationWarnings,
 } = require("./backupValidation");
+const { withBackupJobLock: withCrossProcessBackupJobLock } = require("./backupJobLock");
 
-/** Single-flight lock: one mysqldump or mysql restore at a time (per Node process). */
+/** In-process flag (complements cross-process file lock for concurrent handlers in one process). */
 let backupJobLocked = false;
-/** `Date.now()` when lock taken; 0 when free. Used for stale lock recovery if a job crashes without releasing. */
-let backupJobLockSince = 0;
 
-/**
- * Default max age (ms) before treating the in-memory lock as stale and allowing a new job.
- * Set `BACKUP_JOB_LOCK_STALE_MS=0` to disable stale recovery (not recommended).
- * Increase if legitimate dumps/restores can exceed this window on your hardware.
- * @returns {number}
- */
-function getBackupJobLockStaleMs() {
-  const raw = process.env.BACKUP_JOB_LOCK_STALE_MS;
-  if (raw == null || String(raw).trim() === "") return 30 * 60 * 1000;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return 30 * 60 * 1000;
-  if (n === 0) return Number.POSITIVE_INFINITY;
-  return n;
-}
-
-/**
- * Call once at HTTP server process start so a fresh PID never inherits a stuck flag
- * (normally already false; useful after hot reload / odd embed scenarios).
- */
 function resetBackupJobLockOnProcessStart() {
   if (backupJobLocked) {
     // eslint-disable-next-line no-console
@@ -47,52 +27,35 @@ function resetBackupJobLockOnProcessStart() {
     );
   }
   backupJobLocked = false;
-  backupJobLockSince = 0;
 }
 
 /**
+ * Cross-process + in-process single-flight lock for backup/restore.
+ * File lock covers dump → validation → catalog → (CLI) retention; no fixed-age steal.
  * @template T
  * @param {() => Promise<T>} fn
  * @returns {Promise<T>}
  */
 async function withBackupJobLock(fn) {
-  const staleMs = getBackupJobLockStaleMs();
-  if (backupJobLocked && backupJobLockSince > 0) {
-    const age = Date.now() - backupJobLockSince;
-    if (age > staleMs) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "[backup] Releasing stale backup job lock (held ~%ss, stale threshold ~%ss). A previous backup or restore may not have finished correctly; wait before retrying if mysqldump/mysql might still be running.",
-        Math.round(age / 1000),
-        Math.round(staleMs / 1000),
-      );
-      backupJobLocked = false;
-      backupJobLockSince = 0;
-    }
-  }
-  if (backupJobLocked) {
-    const err = new Error(
-      "Another backup or restore is already running on this server. If nothing is running, a previous job may have stopped unexpectedly: wait for automatic lock release, restart the API process, or try again after a few minutes.",
-    );
-    err.statusCode = 409;
-    err.code = "BACKUP_BUSY";
-    throw err;
-  }
-  backupJobLocked = true;
-  backupJobLockSince = Date.now();
-  try {
-    return await fn();
-  } finally {
-    try {
-      backupJobLocked = false;
-      backupJobLockSince = 0;
-    } catch (clearErr) {
-      // eslint-disable-next-line no-console
-      console.error("[backup] Failed while clearing backup job lock (forcing unlock):", clearErr);
-      backupJobLocked = false;
-      backupJobLockSince = 0;
-    }
-  }
+  return withCrossProcessBackupJobLock(
+    async () => {
+      if (backupJobLocked) {
+        const err = new Error(
+          "Another backup or restore is already running on this server. If nothing is running, a previous job may have stopped unexpectedly: wait for automatic lock release, restart the API process, or try again after a few minutes.",
+        );
+        err.statusCode = 409;
+        err.code = "BACKUP_BUSY";
+        throw err;
+      }
+      backupJobLocked = true;
+      try {
+        return await fn();
+      } finally {
+        backupJobLocked = false;
+      }
+    },
+    { owner: "admin-api" },
+  );
 }
 
 /**

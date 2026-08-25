@@ -32,6 +32,34 @@ type BackupRow = {
   createdBy: { id: number; name: string; email: string } | null;
 };
 
+type ScheduleStatus = {
+  automaticBackupEnabled: boolean;
+  scheduledTimeLocal: string;
+  nextRun: string | null;
+  lastRun: string | null;
+  taskPresent: boolean;
+  taskName: string;
+  developmentHome: boolean;
+  retention: {
+    automaticOnly: boolean;
+    dailyRecoveryPoints: number;
+    weeklyRecoveryPoints: number;
+    monthlyRecoveryPoints: number;
+    protectedTypes: string[];
+    neverDeleteLatestSuccessful: boolean;
+    neverDeleteFailedRows: boolean;
+  };
+  lastAutomaticSuccess: { id: number; createdAt: string; fileName: string; status: string } | null;
+  lastAutomaticFailure: {
+    id: number;
+    createdAt: string;
+    fileName: string;
+    status: string;
+    remarks: string | null;
+  } | null;
+  warning: { level: "error" | "warning" | null; code: string | null; message: string | null };
+};
+
 function formatBytes(n: number | null): string {
   if (n == null || !Number.isFinite(n)) return "—";
   if (n < 1024) return `${n} B`;
@@ -278,6 +306,7 @@ export function BackupRestorePage() {
   const toast = useToast();
   const isAdmin = useIsAdmin();
   const [rows, setRows] = React.useState<BackupRow[]>([]);
+  const [schedule, setSchedule] = React.useState<ScheduleStatus | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [creating, setCreating] = React.useState(false);
@@ -290,7 +319,10 @@ export function BackupRestorePage() {
   async function loadList() {
     setLoadError(null);
     try {
-      const data = await apiFetch<{ backups: BackupRow[] }>("/api/admin/backups");
+      const [data, scheduleRes] = await Promise.all([
+        apiFetch<{ backups: BackupRow[] }>("/api/admin/backups"),
+        apiFetch<{ schedule: ScheduleStatus }>("/api/admin/backups/schedule").catch(() => null),
+      ]);
       setRows(
         (data.backups ?? []).map((b) => ({
           ...b,
@@ -301,6 +333,7 @@ export function BackupRestorePage() {
           activeAdminCount: b.activeAdminCount ?? null,
         })),
       );
+      setSchedule(scheduleRes?.schedule ?? null);
     } catch (e) {
       setLoadError(e instanceof ApiRequestError ? e.message : e instanceof Error ? e.message : "Failed to load backups.");
     } finally {
@@ -378,6 +411,91 @@ export function BackupRestorePage() {
       {loadError ? (
         <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{loadError}</div>
       ) : null}
+
+      {schedule?.warning?.message ? (
+        <div
+          className={cn(
+            "rounded-md border px-3 py-2 text-sm",
+            schedule.warning.level === "error"
+              ? "border-red-300 bg-red-50 text-red-950"
+              : "border-amber-300 bg-amber-50 text-amber-950",
+          )}
+          role="alert"
+          data-testid="backup-schedule-warning"
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+            <div>
+              <div className="font-semibold">Scheduled backup attention required</div>
+              <p className="mt-0.5">{schedule.warning.message}</p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <Card className="border-slate-200 shadow-sm" data-testid="backup-schedule-status">
+        <CardHeader className="border-b border-slate-100 py-3">
+          <CardTitle className="text-base font-semibold text-slate-900">Automatic daily backup</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 pt-3 text-sm text-slate-700">
+          {schedule ? (
+            <>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div>
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status</span>
+                  <div className="mt-0.5 font-medium text-slate-900">
+                    {schedule.automaticBackupEnabled ? "Enabled" : "Disabled"}
+                    {schedule.developmentHome ? " (development — not auto-scheduled)" : null}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Scheduled time</span>
+                  <div className="mt-0.5 font-medium text-slate-900">{schedule.scheduledTimeLocal} local</div>
+                </div>
+                <div>
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Last automatic success</span>
+                  <div className="mt-0.5 text-slate-900">
+                    {schedule.lastAutomaticSuccess
+                      ? new Date(schedule.lastAutomaticSuccess.createdAt).toLocaleString(undefined, {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        })
+                      : "—"}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Last automatic failure</span>
+                  <div className="mt-0.5 text-slate-900">
+                    {schedule.lastAutomaticFailure
+                      ? new Date(schedule.lastAutomaticFailure.createdAt).toLocaleString(undefined, {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        })
+                      : "—"}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next run</span>
+                  <div className="mt-0.5 text-slate-900">{schedule.nextRun ?? "—"}</div>
+                </div>
+                <div>
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Retention (automatic only)</span>
+                  <div className="mt-0.5 text-slate-900">
+                    {schedule.retention.dailyRecoveryPoints} daily · {schedule.retention.weeklyRecoveryPoints} weekly ·{" "}
+                    {schedule.retention.monthlyRecoveryPoints} monthly
+                  </div>
+                </div>
+              </div>
+              <p className="text-xs text-slate-500">
+                Manual, deployment, and pre-restore backups are never removed by retention. Failed automatic rows stay visible in
+                history.
+              </p>
+            </>
+          ) : (
+            <p className="text-slate-500">{loading ? "Loading schedule…" : "Schedule status unavailable."}</p>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className="border-slate-200 shadow-sm">
         <CardHeader className="border-b border-slate-100 py-3">

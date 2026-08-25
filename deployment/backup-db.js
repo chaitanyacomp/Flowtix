@@ -3,11 +3,12 @@
  *
  * - Reads DATABASE_URL from shared/.env (then .env fallback)
  * - Never prints passwords
- * - Never deletes old backups
  * - Never restores / migrates / modifies data
+ * - AUTOMATIC runs may apply retention (AUTOMATIC only); never deletes MANUAL/DEPLOYMENT/PRE_RESTORE_AUTO
  *
  * Usage:
  *   node deployment/backup-db.js
+ *   node deployment/backup-db.js --automatic
  *   node tools/backup-db.js          (from release package)
  *
  * Env overrides:
@@ -380,6 +381,15 @@ function exitWith(code) {
   process.exit(code);
 }
 
+/**
+ * Prefer returning a code so callers can release the shared lock before process.exit.
+ * @param {number} code
+ * @returns {number}
+ */
+function backupExitCode(code) {
+  return typeof code === "number" ? code : 1;
+}
+
 function loadManifest(manifestPath) {
   if (!fs.existsSync(manifestPath)) {
     return { version: 1, updatedAt: null, backups: [] };
@@ -405,10 +415,101 @@ async function main() {
   const sharedDir = resolveSharedDir(home);
   const backupDir = resolveBackupDir(home);
   const manifestPath = path.join(backupDir, "BACKUP_MANIFEST.json");
+  const backupType = resolveCliBackupType();
+  const logsDir =
+    process.env.LOG_DIR && String(process.env.LOG_DIR).trim()
+      ? path.resolve(String(process.env.LOG_DIR).trim())
+      : path.join(home, "logs");
 
+  function appendSchedulerLog(line) {
+    try {
+      fs.mkdirSync(logsDir, { recursive: true });
+      const stamp = new Date().toISOString();
+      fs.appendFileSync(path.join(logsDir, "backup-scheduler.log"), `${stamp} ${line}\n`, "utf8");
+    } catch {
+      /* ignore */
+    }
+  }
+
+  let jobLock = null;
+  let lockOwnerToken = null;
+  let stopLockHeartbeat = null;
+  try {
+    jobLock = require("./lib/backupJobLock");
+  } catch {
+    jobLock = null;
+  }
+
+  if (jobLock) {
+    const acquired = jobLock.tryAcquireBackupJobLock(process.env, {
+      homeDir: home,
+      owner: `backup-db:${backupType}`,
+    });
+    if (!acquired.ok) {
+      console.error("");
+      console.error("[backup-db] ERROR: BACKUP_BUSY");
+      console.error(`  ${acquired.message}`);
+      console.error("");
+      if (backupType === "AUTOMATIC") appendSchedulerLog(`FAIL BUSY ${acquired.message}`);
+      exitWith(409);
+      return;
+    }
+    lockOwnerToken = acquired.ownerToken;
+    stopLockHeartbeat =
+      typeof jobLock.startBackupJobLockHeartbeat === "function"
+        ? jobLock.startBackupJobLockHeartbeat(process.env, {
+            homeDir: home,
+            ownerToken: lockOwnerToken,
+          })
+        : null;
+  }
+
+  const releaseLock = () => {
+    if (typeof stopLockHeartbeat === "function") {
+      try {
+        stopLockHeartbeat();
+      } catch {
+        /* ignore */
+      }
+      stopLockHeartbeat = null;
+    }
+    if (jobLock && lockOwnerToken) {
+      try {
+        jobLock.releaseBackupJobLock(process.env, {
+          homeDir: home,
+          ownerToken: lockOwnerToken,
+        });
+      } catch {
+        /* ignore */
+      }
+      lockOwnerToken = null;
+    }
+  };
+
+  let code = 1;
+  try {
+    code = await runBackupBody({
+      home,
+      sharedDir,
+      backupDir,
+      manifestPath,
+      backupType,
+      logsDir,
+      appendSchedulerLog,
+    });
+  } finally {
+    releaseLock();
+  }
+  exitWith(backupExitCode(code));
+}
+
+async function runBackupBody({ home, sharedDir, backupDir, manifestPath, backupType, logsDir, appendSchedulerLog }) {
   console.log("[backup-db] FT-DEP-001 Batch 4 — database backup");
   console.log(`[backup-db] home=${home}`);
   console.log(`[backup-db] backupDir=${backupDir}`);
+  if (backupType === "AUTOMATIC") {
+    appendSchedulerLog(`START automatic backup home=${home}`);
+  }
 
   const envLoaded = [];
   if (loadEnvFile(path.join(sharedDir, ".env"))) envLoaded.push(path.join(sharedDir, ".env"));
@@ -437,7 +538,8 @@ async function main() {
     console.error(`  ${e.message}`);
     console.error("  Place DATABASE_URL in shared/.env (see deployment/production.env.example).");
     console.error("");
-    process.exit(2);
+    if (backupType === "AUTOMATIC") appendSchedulerLog(`FAIL CONFIG ${e.message}`);
+    return 2;
   }
 
   console.log(`[backup-db] database=${db.database} host=${db.host} port=${db.port} user=${db.user}`);
@@ -450,7 +552,8 @@ async function main() {
     console.error("[backup-db] ERROR: mysqldump not available");
     console.error(`  ${e instanceof Error ? e.message : String(e)}`);
     console.error("");
-    process.exit(3);
+    if (backupType === "AUTOMATIC") appendSchedulerLog("FAIL MYSQLDUMP missing");
+    return 3;
   }
   if (!exe) {
     console.error("");
@@ -458,7 +561,8 @@ async function main() {
     console.error("  Install MySQL client tools, or set MYSQLDUMP_PATH to the mysqldump executable.");
     console.error("  Example: MYSQLDUMP_PATH=C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysqldump.exe");
     console.error("");
-    process.exit(3);
+    if (backupType === "AUTOMATIC") appendSchedulerLog("FAIL MYSQLDUMP not found");
+    return 3;
   }
   console.log(`[backup-db] mysqldump=${exe}`);
 
@@ -467,7 +571,6 @@ async function main() {
   const stamp = stampLocal();
   const fileName = `flowtix-db-backup-v${version}-${stamp}.sql`;
   const outAbs = path.join(backupDir, fileName);
-  const backupType = resolveCliBackupType();
 
   fs.mkdirSync(backupDir, { recursive: true });
 
@@ -617,7 +720,7 @@ async function main() {
 
   try {
     const manifest = loadManifest(manifestPath);
-    // Append only — never delete prior entries or backup files (Batch 4 safety).
+    // Append only — never delete prior entries or backup files here (retention is separate).
     manifest.backups.push(entry);
     saveManifest(manifestPath, manifest);
     console.log(`[backup-db] manifest updated: ${manifestPath}`);
@@ -630,11 +733,34 @@ async function main() {
     errorMessage = errorMessage || "manifest write failed";
   }
 
-  if (status !== "success") {
-    exitWith(1);
-    return;
+  if (status === "success" && backupType === "AUTOMATIC") {
+    try {
+      const { applyAutomaticBackupRetention } = require("./lib/backupRetentionApply");
+      const ret = await applyAutomaticBackupRetention({
+        conn: db,
+        homeDir: home,
+        mysqlExe: process.env.MYSQL_PATH,
+      });
+      console.log(
+        `[backup-db] retention: deleted=${ret.deleted.length} keep=${ret.keepIds.length}${ret.errors?.length ? ` errors=${ret.errors.length}` : ""}`,
+      );
+      appendSchedulerLog(
+        `OK file=${fileName} size=${fileSize} retentionDeleted=${ret.deleted.length}`,
+      );
+    } catch (e) {
+      console.log(
+        `[backup-db] retention warn (non-fatal): ${redactSecrets(e instanceof Error ? e.message : String(e))}`,
+      );
+      appendSchedulerLog(`OK file=${fileName} size=${fileSize} retention=warn`);
+    }
+  } else if (backupType === "AUTOMATIC") {
+    appendSchedulerLog(`FAIL ${errorMessage || "backup failed"}`);
   }
-  exitWith(0);
+
+  if (status !== "success") {
+    return 1;
+  }
+  return 0;
 }
 
 main().catch((e) => {

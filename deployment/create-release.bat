@@ -106,7 +106,13 @@ copy /Y "%DEPLOY%\lib\backupStoragePaths.js" "%RELEASE_DIR%\tools\lib\backupStor
 copy /Y "%DEPLOY%\lib\backupValidation.js" "%RELEASE_DIR%\tools\lib\backupValidation.js" >nul
 copy /Y "%DEPLOY%\lib\backupCatalogRegister.js" "%RELEASE_DIR%\tools\lib\backupCatalogRegister.js" >nul
 copy /Y "%DEPLOY%\lib\backupCatalogReconcile.js" "%RELEASE_DIR%\tools\lib\backupCatalogReconcile.js" >nul
+copy /Y "%DEPLOY%\lib\backupJobLock.js" "%RELEASE_DIR%\tools\lib\backupJobLock.js" >nul
+copy /Y "%DEPLOY%\lib\backupRetention.js" "%RELEASE_DIR%\tools\lib\backupRetention.js" >nul
+copy /Y "%DEPLOY%\lib\backupRetentionApply.js" "%RELEASE_DIR%\tools\lib\backupRetentionApply.js" >nul
+copy /Y "%DEPLOY%\lib\backupSchedule.js" "%RELEASE_DIR%\tools\lib\backupSchedule.js" >nul
 copy /Y "%DEPLOY%\lib\resolveInstallHome.js" "%RELEASE_DIR%\tools\lib\resolveInstallHome.js" >nul
+copy /Y "%DEPLOY%\schedule-backup.bat" "%RELEASE_DIR%\tools\schedule-backup.bat" >nul
+copy /Y "%DEPLOY%\schedule-backup.js" "%RELEASE_DIR%\tools\schedule-backup.js" >nul
 copy /Y "%DEPLOY%\migrate-db.bat" "%RELEASE_DIR%\tools\migrate-db.bat" >nul
 copy /Y "%DEPLOY%\migrate-db.js" "%RELEASE_DIR%\tools\migrate-db.js" >nul
 copy /Y "%DEPLOY%\update-flowtix.bat" "%RELEASE_DIR%\tools\update-flowtix.bat" >nul
@@ -375,6 +381,34 @@ if not exist "%RELEASE_DIR%\tools\lib\backupCatalogReconcile.js" (
   set "FAIL=1"
 ) else (
   echo   OK: tools\lib\backupCatalogReconcile.js
+)
+
+if not exist "%RELEASE_DIR%\tools\lib\backupJobLock.js" (
+  echo   FAIL: tools\lib\backupJobLock.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\lib\backupJobLock.js
+)
+
+if not exist "%RELEASE_DIR%\tools\lib\backupRetention.js" (
+  echo   FAIL: tools\lib\backupRetention.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\lib\backupRetention.js
+)
+
+if not exist "%RELEASE_DIR%\tools\lib\backupSchedule.js" (
+  echo   FAIL: tools\lib\backupSchedule.js missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\lib\backupSchedule.js
+)
+
+if not exist "%RELEASE_DIR%\tools\schedule-backup.bat" (
+  echo   FAIL: tools\schedule-backup.bat missing
+  set "FAIL=1"
+) else (
+  echo   OK: tools\schedule-backup.bat
 )
 
 if not exist "%RELEASE_DIR%\tools\migrate-db.bat" (

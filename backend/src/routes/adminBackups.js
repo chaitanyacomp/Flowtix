@@ -6,6 +6,7 @@ const { prisma } = require("../utils/prisma");
 const { assertAdminPassword } = require("../services/adminPasswordAuth");
 const { createManualBackup, toPublicBackup, getBackupForAdminOrThrow, deleteBackupById } = require("../services/databaseBackupService");
 const { restoreFromBackup } = require("../services/databaseRestoreService");
+const { getAutomaticBackupScheduleStatus } = require("../services/backupScheduleStatus");
 
 const adminBackupsRouter = express.Router();
 
@@ -34,6 +35,20 @@ adminBackupsRouter.get(
         include: { createdBy: { select: { id: true, name: true, email: true } } },
       });
       return res.json({ backups: rows.map(toPublicBackup) });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+adminBackupsRouter.get(
+  "/backups/schedule",
+  requireAuth,
+  requireRole(["ADMIN"], "Only Admin can view backup schedule status."),
+  async (req, res, next) => {
+    try {
+      const schedule = await getAutomaticBackupScheduleStatus(prisma);
+      return res.json({ schedule });
     } catch (e) {
       return next(e);
     }

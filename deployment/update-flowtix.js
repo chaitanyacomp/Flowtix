@@ -12,10 +12,13 @@
  *
  * Usage:
  *   node deployment/update-flowtix.js [--yes] [--source <releaseDir>] [--home <FT_ERP_HOME>]
+ *        [--allow-schedule-failure]  (documented override: also FT_ALLOW_BACKUP_SCHEDULE_FAILURE=1)
  *   tools\update-flowtix.bat
  *
  * Env:
  *   FT_ERP_HOME, UPDATE_SOURCE, UPDATE_CONFIRM=1, HEALTH_URL, PORT
+ *   FT_ALLOW_BACKUP_SCHEDULE_FAILURE=1 — allow update to succeed when schedule is missing
+ *     only if no existing operational task remains (prefer fixing the task instead).
  */
 const fs = require("fs");
 const path = require("path");
@@ -46,12 +49,13 @@ function redactSecrets(text) {
 }
 
 function parseArgs(argv) {
-  const out = { yes: false, source: null, home: null };
+  const out = { yes: false, source: null, home: null, allowScheduleFailure: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--yes" || a === "-y") out.yes = true;
     else if (a === "--source" && argv[i + 1]) out.source = path.resolve(argv[++i]);
     else if (a === "--home" && argv[i + 1]) out.home = path.resolve(argv[++i]);
+    else if (a === "--allow-schedule-failure") out.allowScheduleFailure = true;
   }
   if (process.env.UPDATE_CONFIRM === "1" || /^y(es)?$/i.test(String(process.env.UPDATE_CONFIRM || ""))) {
     out.yes = true;
@@ -62,6 +66,7 @@ function parseArgs(argv) {
   if (process.env.FT_ERP_HOME && String(process.env.FT_ERP_HOME).trim() && !out.home) {
     out.home = path.resolve(String(process.env.FT_ERP_HOME).trim());
   }
+  if (process.env.FT_ALLOW_BACKUP_SCHEDULE_FAILURE === "1") out.allowScheduleFailure = true;
   return out;
 }
 
@@ -765,6 +770,68 @@ async function main() {
     process.exit(8);
   }
 
+  // --- 6c. Ensure daily automatic backup schedule (Phase 2) ---
+  // Updates warn-only when an existing operational task remains; otherwise fail
+  // unless FT_ALLOW_BACKUP_SCHEDULE_FAILURE=1 / --allow-schedule-failure.
+  push("STAGE=schedule-backup");
+  let scheduleDetail = "not-run";
+  try {
+    const {
+      isDevelopmentHome,
+      isAllowBackupScheduleFailure,
+      ensureAndVerifyDailyBackupSchedule,
+      evaluateUpdateScheduleGate,
+    } = require("./lib/backupSchedule");
+    const allowFailure =
+      Boolean(args.allowScheduleFailure) || isAllowBackupScheduleFailure(process.env);
+    const developmentSkip = isDevelopmentHome(home, process.env);
+    const { installResult, verifyResult } = ensureAndVerifyDailyBackupSchedule({
+      homeDir: home,
+    });
+    const gate = evaluateUpdateScheduleGate({
+      installResult,
+      verifyResult,
+      developmentSkip,
+      allowFailure,
+    });
+    scheduleDetail = gate.message;
+    push(`schedule-backup: ${scheduleDetail}`);
+    if (gate.warnOnly || gate.bypassed) {
+      console.error(`[update-flowtix] WARN: ${gate.message}`);
+    }
+    if (gate.failUpdate) {
+      console.error("");
+      console.error("[update-flowtix] ERROR: daily backup schedule not operational");
+      console.error(`  ${gate.message}`);
+      console.error("");
+      appendUpdateLog(updateLogPath, [
+        ...logLines,
+        "RESULT=failed",
+        "STAGE=schedule-backup",
+        `BACKUP=${backupFilename}`,
+        `MIGRATION=${migrationStatus}`,
+        `ERROR=${gate.message}`,
+      ]);
+      process.exit(10);
+    }
+  } catch (e) {
+    scheduleDetail = e instanceof Error ? e.message : String(e);
+    if (args.allowScheduleFailure || process.env.FT_ALLOW_BACKUP_SCHEDULE_FAILURE === "1") {
+      console.error(`[update-flowtix] WARN: schedule-backup bypassed after error: ${scheduleDetail}`);
+    } else {
+      console.error(`[update-flowtix] ERROR: schedule-backup: ${scheduleDetail}`);
+      appendUpdateLog(updateLogPath, [
+        ...logLines,
+        "RESULT=failed",
+        "STAGE=schedule-backup",
+        `BACKUP=${backupFilename}`,
+        `MIGRATION=${migrationStatus}`,
+        `ERROR=${scheduleDetail}`,
+      ]);
+      process.exit(10);
+    }
+  }
+
   // --- 7. Summary ---
   const elapsedMs = Date.now() - started;
   const elapsedSec = (elapsedMs / 1000).toFixed(1);
@@ -796,6 +863,7 @@ async function main() {
     `VERIFY_MODE=${health.mode}`,
     `SERVICE_PRESENT=${startSvc.present}`,
     `SERVICE_STATE=${startSvc.state}`,
+    `SCHEDULE_BACKUP=${scheduleDetail}`,
     `ELAPSED_MS=${elapsedMs}`,
   ]);
 

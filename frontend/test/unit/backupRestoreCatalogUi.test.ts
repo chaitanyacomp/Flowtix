@@ -27,3 +27,23 @@ describe("BackupRestorePage Phase 1 catalog UI", () => {
     expect(pageSource).toContain("Refresh");
   });
 });
+
+describe("BackupRestorePage Phase 2 schedule status UI", () => {
+  it("loads schedule status and shows enabled/time/last success-failure/next run/retention", () => {
+    expect(pageSource).toContain('/api/admin/backups/schedule');
+    expect(pageSource).toContain("Automatic daily backup");
+    expect(pageSource).toContain("automaticBackupEnabled");
+    expect(pageSource).toContain("scheduledTimeLocal");
+    expect(pageSource).toContain("Last automatic success");
+    expect(pageSource).toContain("Last automatic failure");
+    expect(pageSource).toContain("Next run");
+    expect(pageSource).toContain("Retention (automatic only)");
+    expect(pageSource).toContain("backup-schedule-status");
+  });
+
+  it("shows a clear Admin warning when latest scheduled backup failed or is overdue", () => {
+    expect(pageSource).toContain("backup-schedule-warning");
+    expect(pageSource).toContain("Scheduled backup attention required");
+    expect(pageSource).toContain("schedule?.warning?.message");
+  });
+});

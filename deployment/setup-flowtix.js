@@ -11,6 +11,10 @@
  * Usage:
  *   node deployment/setup-flowtix.js --home <FT_ERP_HOME> --source <releaseDir> [--yes]
  *        [--skip-migrate] [--install-service] [--skip-service]
+ *        [--allow-schedule-failure]  (documented override: also FT_ALLOW_BACKUP_SCHEDULE_FAILURE=1)
+ *
+ * Production readiness: daily Windows backup schedule install+verify must succeed unless
+ * development layout, or the explicit allow-schedule-failure override is set.
  */
 const fs = require("fs");
 const path = require("path");
@@ -55,6 +59,7 @@ function parseArgs(argv) {
     createDb: false,
     allowDevDb: false,
     collectDiagnostics: true,
+    allowScheduleFailure: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -71,6 +76,7 @@ function parseArgs(argv) {
     else if (a === "--create-db") out.createDb = true;
     else if (a === "--allow-dev-db") out.allowDevDb = true;
     else if (a === "--skip-diagnostics") out.collectDiagnostics = false;
+    else if (a === "--allow-schedule-failure") out.allowScheduleFailure = true;
   }
   if (process.env.SETUP_CONFIRM === "1" || process.env.UPDATE_CONFIRM === "1") out.yes = true;
   if (process.env.FT_ERP_HOME && !out.home) {
@@ -82,6 +88,7 @@ function parseArgs(argv) {
   if (process.env.SETUP_SKIP_MIGRATE === "1") out.skipMigrate = true;
   if (process.env.SETUP_CONFIGURE_FIREWALL === "1") out.configureFirewall = true;
   if (process.env.SETUP_CREATE_DB === "1") out.createDb = true;
+  if (process.env.FT_ALLOW_BACKUP_SCHEDULE_FAILURE === "1") out.allowScheduleFailure = true;
   return out;
 }
 
@@ -355,9 +362,20 @@ function copyToolsIntoHome(sourceRelease, home) {
     "firewall-flowtix.bat",
     "verify-install.js",
     "verify-install.bat",
+    "schedule-backup.js",
+    "schedule-backup.bat",
   ]) {
     const from = path.join(scriptDir(), name);
     if (fs.existsSync(from)) fs.copyFileSync(from, path.join(destTools, name));
+  }
+  const libSrc = path.join(scriptDir(), "lib");
+  if (fs.existsSync(libSrc)) {
+    const destLib = path.join(destTools, "lib");
+    ensureDir(destLib);
+    for (const name of fs.readdirSync(libSrc)) {
+      const from = path.join(libSrc, name);
+      if (fs.statSync(from).isFile()) fs.copyFileSync(from, path.join(destLib, name));
+    }
   }
   return { copied: true };
 }
@@ -890,6 +908,60 @@ async function main() {
     push("firewall skipped (optional; see tools\\firewall-flowtix.bat / Administrator Runbook)");
   }
 
+  // --- 7b. Daily automatic backup schedule (Phase 2; required for production readiness) ---
+  let scheduleResult = { attempted: false, ok: true, skipped: true, detail: "not-run" };
+  push("STAGE=schedule-backup");
+  try {
+    const {
+      isDevelopmentHome,
+      isAllowBackupScheduleFailure,
+      ensureAndVerifyDailyBackupSchedule,
+      evaluateSetupScheduleGate,
+    } = require("./lib/backupSchedule");
+    const allowFailure =
+      Boolean(args.allowScheduleFailure) || isAllowBackupScheduleFailure(process.env);
+    const developmentSkip = isDevelopmentHome(home, process.env);
+    const { installResult, verifyResult } = ensureAndVerifyDailyBackupSchedule({
+      homeDir: home,
+    });
+    const gate = evaluateSetupScheduleGate({
+      installResult,
+      verifyResult,
+      developmentSkip,
+      allowFailure,
+    });
+    scheduleResult = {
+      attempted: !gate.skipped,
+      ok: gate.ok,
+      skipped: Boolean(gate.skipped),
+      bypassed: Boolean(gate.bypassed),
+      detail: gate.message,
+      timeLocal: (installResult && installResult.timeLocal) || null,
+    };
+    push(`schedule-backup: ${scheduleResult.detail}`);
+    if (gate.failSetup) {
+      failSetup(10, "schedule-backup", gate.message);
+    }
+    if (gate.bypassed) {
+      console.error(`[setup-flowtix] WARN: ${gate.message}`);
+    }
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    scheduleResult = {
+      attempted: true,
+      ok: false,
+      skipped: false,
+      detail,
+    };
+    if (args.allowScheduleFailure || process.env.FT_ALLOW_BACKUP_SCHEDULE_FAILURE === "1") {
+      console.error(`[setup-flowtix] WARN: schedule-backup bypassed after error: ${detail}`);
+      scheduleResult.ok = true;
+      scheduleResult.bypassed = true;
+    } else {
+      failSetup(10, "schedule-backup", detail);
+    }
+  }
+
   // --- 8. Health ---
   push("STAGE=verify");
   const health = await verifyHealth(home);
@@ -914,6 +986,9 @@ async function main() {
     firewallAttempted: firewallResult.attempted,
     firewallOk: firewallResult.ok,
     firewallDetail: firewallResult.detail,
+    scheduleAttempted: scheduleResult.attempted,
+    scheduleOk: scheduleResult.ok,
+    scheduleDetail: scheduleResult.detail,
     verifyMode: health.mode,
     status,
     durationMs,
@@ -959,6 +1034,7 @@ async function main() {
     `BASELINE_BACKUP=${baselineBackup || ""}`,
     `SERVICE=${serviceResult.detail}`,
     `FIREWALL=${firewallResult.detail}`,
+    `SCHEDULE_BACKUP=${scheduleResult.detail}`,
     `VERIFY=${health.mode}`,
     `DIAGNOSTICS=${diagnosticsDir || ""}`,
     `ELAPSED_MS=${durationMs}`,
@@ -976,6 +1052,7 @@ async function main() {
   console.log(` Baseline backup  : ${baselineBackup || "(n/a)"}`);
   console.log(` Service          : ${serviceResult.detail}`);
   console.log(` Firewall         : ${firewallResult.detail}`);
+  console.log(` Schedule backup  : ${scheduleResult.detail}`);
   console.log(` Verify           : ${health.mode} (${health.ok ? "ok" : "check manually"})`);
   console.log(` Diagnostics      : ${diagnosticsDir || "(skipped)"}`);
   console.log(` Setup log        : ${setupLogPath}`);

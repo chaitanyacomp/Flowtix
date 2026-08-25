@@ -187,6 +187,104 @@ async function backfillLegacyItemUnitLinks() {
   }
 }
 
+const UNIT_EDIT_BLOCKED =
+  "This unit is in use by items or BOMs and cannot be renamed. Deactivate it instead if it should no longer appear in dropdowns.";
+const UNIT_DELETE_IN_USE =
+  "This unit is in use by items or BOMs and cannot be deleted. Deactivate it instead.";
+const UNIT_DELETE_TALLY_LINKED =
+  "This unit is linked to Tally and cannot be permanently deleted. Deactivate it instead.";
+
+/** True when any Tally identity field is present (import / mapping audit). */
+function isUnitTallyLinked(unit) {
+  if (!unit || typeof unit !== "object") return false;
+  if (unit.tallyImportedAt) return true;
+  const guid = typeof unit.tallyGuid === "string" ? unit.tallyGuid.trim() : "";
+  const name = typeof unit.tallyName === "string" ? unit.tallyName.trim() : "";
+  const symbol = typeof unit.tallyUnitSymbol === "string" ? unit.tallyUnitSymbol.trim() : "";
+  return Boolean(guid || name || symbol);
+}
+
+/**
+ * @param {import("@prisma/client").PrismaClient | object} db
+ * @param {number} unitId
+ */
+async function getUnitUsageCounts(db, unitId) {
+  const id = Number(unitId);
+  const [itemCount, bomCount] = await Promise.all([
+    db.item.count({ where: { unitId: id } }),
+    db.bom.count({ where: { fgWeightUnitId: id } }),
+  ]);
+  return {
+    itemCount,
+    bomCount,
+    inUse: itemCount > 0 || bomCount > 0,
+  };
+}
+
+/**
+ * Map of unitId → { itemCount, bomCount, inUse } for master list enrichment.
+ * @param {import("@prisma/client").PrismaClient | object} db
+ */
+async function getUnitUsageCountsById(db) {
+  const [itemGroups, bomGroups] = await Promise.all([
+    db.item.groupBy({
+      by: ["unitId"],
+      where: { unitId: { not: null } },
+      _count: { _all: true },
+    }),
+    db.bom.groupBy({
+      by: ["fgWeightUnitId"],
+      where: { fgWeightUnitId: { not: null } },
+      _count: { _all: true },
+    }),
+  ]);
+  /** @type {Map<number, { itemCount: number; bomCount: number; inUse: boolean }>} */
+  const map = new Map();
+  for (const g of itemGroups || []) {
+    const id = Number(g.unitId);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    const itemCount = Number(g._count?._all ?? 0) || 0;
+    map.set(id, { itemCount, bomCount: 0, inUse: itemCount > 0 });
+  }
+  for (const g of bomGroups || []) {
+    const id = Number(g.fgWeightUnitId);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    const bomCount = Number(g._count?._all ?? 0) || 0;
+    const prev = map.get(id) || { itemCount: 0, bomCount: 0, inUse: false };
+    const next = { itemCount: prev.itemCount, bomCount, inUse: prev.itemCount > 0 || bomCount > 0 };
+    map.set(id, next);
+  }
+  return map;
+}
+
+/**
+ * Case/space-insensitive name uniqueness (and optional code uniqueness).
+ * @param {Array<{ id: number; unitName: string; unitCode?: string | null }>} rows
+ * @param {{ unitName: string; unitCode?: string | null; exceptId?: number | null }} args
+ * @returns {string | null} error message or null if ok
+ */
+function findUnitDuplicateConflict(rows, args) {
+  const nameKey = normalizeUnitKey(args.unitName);
+  if (!nameKey) return "Unit name is required";
+  const exceptId = args.exceptId != null ? Number(args.exceptId) : null;
+  const nameTaken = (rows || []).some(
+    (u) => u.id !== exceptId && normalizeUnitKey(u.unitName) === nameKey,
+  );
+  if (nameTaken) return "Unit already exists";
+
+  const codeKey = normalizeUnitCode(args.unitCode);
+  if (codeKey) {
+    const codeTaken = (rows || []).some(
+      (u) =>
+        u.id !== exceptId &&
+        u.unitCode != null &&
+        normalizeUnitCode(u.unitCode) === codeKey,
+    );
+    if (codeTaken) return "Unit code already exists";
+  }
+  return null;
+}
+
 module.exports = {
   DEFAULT_UNITS,
   normalizeUnitKey,
@@ -194,4 +292,11 @@ module.exports = {
   normalizeUnitName,
   ensureDefaultUnitsSeeded,
   backfillLegacyItemUnitLinks,
+  isUnitTallyLinked,
+  getUnitUsageCounts,
+  getUnitUsageCountsById,
+  findUnitDuplicateConflict,
+  UNIT_EDIT_BLOCKED,
+  UNIT_DELETE_IN_USE,
+  UNIT_DELETE_TALLY_LINKED,
 };

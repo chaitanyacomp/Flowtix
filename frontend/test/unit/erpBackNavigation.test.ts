@@ -127,4 +127,12 @@ describe("resolveERPBackTarget", () => {
     );
     expect(target).toEqual({ to: "/work-orders", label: "Back to Work Order Workspace" });
   });
+
+  it("resolves shift-production token back to the machine list", () => {
+    const target = resolveERPBackTarget(
+      { pathname: "/shift-production/sessions/7", search: "?from=shift-production", state: null },
+      { defaultTo: "/dashboard", defaultLabel: "Back to Dashboard" },
+    );
+    expect(target).toEqual({ to: "/shift-production", label: "Back to Shift Production" });
+  });
 });

@@ -149,7 +149,7 @@ export function ProductionRunStartConfirmPanel({
     const pending = fgRuns.filter((r) => r.needsConfirmation);
     const target =
       preferred > 0
-        ? pending.find((r) => r.runAllocationId === preferred) ?? pending[0]
+        ? pending.find((r) => r.runAllocationId === preferred) ?? null
         : pending[0];
     if (target) setActiveRunId(target.runAllocationId);
   }, [autoOpenConfirm, canConfirm, data, preferredRunAllocationId, fgRuns, activeRunId]);

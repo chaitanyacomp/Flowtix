@@ -9,6 +9,10 @@ const {
   pendingDraftSummaryFromAggregate,
   roundQty,
 } = require("./machineShiftReportAggregationService");
+const { evaluateOpenShiftOverdue } = require("./shiftOverdueGuidance");
+const {
+  resolveActiveShiftRunPrimaryAction,
+} = require("./activeShiftRunGuidanceService");
 
 function qtyNum(v) {
   if (v == null) return 0;
@@ -47,6 +51,8 @@ function mapShiftBrief(s) {
     id: s.id,
     shiftCode: s.shiftCode,
     shiftName: s.shiftName,
+    startTime: s.startTime ?? null,
+    endTime: s.endTime ?? null,
   };
 }
 
@@ -105,13 +111,26 @@ function mapParticipation(row) {
 }
 
 function mapRunSegment(row) {
+  const runAllocationId = row.runAllocationId ?? row.runAllocation?.id ?? null;
+  const startConfirmationStatus = row.runAllocation?.startConfirmation?.status ?? null;
+  const requiresStartConfirmation = Number(runAllocationId) > 0;
   return {
     id: row.id,
     segmentNo: row.segmentNo,
     status: row.status,
-    workOrderId: row.workOrderId,
+    workOrderId: row.workOrderId ?? row.runAllocation?.workOrderId ?? null,
+    workOrderLineId: row.runAllocation?.workOrderLineId ?? null,
     workOrderDocNo: row.workOrder?.docNo ?? null,
-    runAllocationId: row.runAllocationId,
+    runAllocationId,
+    startConfirmationStatus: startConfirmationStatus ? String(startConfirmationStatus) : null,
+    confirmationPending:
+      requiresStartConfirmation &&
+      String(startConfirmationStatus ?? "").trim().toUpperCase() !== "CONFIRMED",
+    primaryActionLabel: resolveActiveShiftRunPrimaryAction({
+      startConfirmationStatus,
+      runAllocationId,
+      requiresStartConfirmation,
+    }),
     startedAt: row.segmentStartedAt,
     closedAt: row.closedAt,
     closeReason: row.closeReason ?? null,
@@ -318,7 +337,7 @@ const ADJUSTMENT_DETAIL_INCLUDE = Object.freeze({
   },
 });
 
-function mapSessionDetail(session, reportCtx = null) {
+function mapSessionDetail(session, reportCtx = null, now = new Date()) {
   const report = session.shiftReport;
   const versions = report?.versions || [];
   const latest = versions.length
@@ -343,14 +362,25 @@ function mapSessionDetail(session, reportCtx = null) {
     overlayLiveQty: true,
   };
   const qtyLines = mapAggregationQtyLines(reportCtx?.aggregation, segmentsById);
+  const sessionDate = dateOnly(session.sessionDate);
+  const shiftBrief = mapShiftBrief(session.shift);
+  const overdue = evaluateOpenShiftOverdue({
+    status: session.status,
+    sessionDate,
+    startTime: shiftBrief?.startTime,
+    endTime: shiftBrief?.endTime,
+  }, now);
 
   return {
     id: session.id,
     shiftSessionNo: session.shiftSessionNo,
     status: session.status,
-    sessionDate: dateOnly(session.sessionDate),
+    sessionDate,
+    shiftOverdue: overdue.overdue,
+    shiftOverdueMessage: overdue.message,
+    shiftExpectedEndAt: overdue.expectedEndAt,
     machine: mapMachineBrief(session.machine),
-    shift: mapShiftBrief(session.shift),
+    shift: shiftBrief,
     primaryOperator: mapOperatorBrief(session.primaryOperator),
     handoverState: session.handoverState,
     handoverRemarks: session.handoverRemarks ?? null,
@@ -400,7 +430,7 @@ function mapSessionDetail(session, reportCtx = null) {
 
 const SESSION_DETAIL_INCLUDE = Object.freeze({
   machine: { select: { id: true, machineCode: true, machineName: true } },
-  shift: { select: { id: true, shiftCode: true, shiftName: true } },
+  shift: { select: { id: true, shiftCode: true, shiftName: true, startTime: true, endTime: true } },
   primaryOperator: { select: { id: true, operatorCode: true, operatorName: true } },
   sessionOperators: {
     orderBy: { id: "asc" },
@@ -408,7 +438,17 @@ const SESSION_DETAIL_INCLUDE = Object.freeze({
   },
   runSegments: {
     orderBy: { id: "asc" },
-    include: { workOrder: { select: { id: true, docNo: true } } },
+    include: {
+      workOrder: { select: { id: true, docNo: true } },
+      runAllocation: {
+        select: {
+          id: true,
+          workOrderId: true,
+          workOrderLineId: true,
+          startConfirmation: { select: { id: true, status: true } },
+        },
+      },
+    },
   },
   downtimeSegments: {
     orderBy: { id: "asc" },

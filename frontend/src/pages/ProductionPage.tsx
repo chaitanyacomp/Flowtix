@@ -190,6 +190,11 @@ import {
 } from "../lib/regularSoOperationalGuidance";
 import { bumpErpRefresh } from "../lib/erpRefresh";
 import {
+  ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS,
+  resolveActiveShiftWorkspaceCueFromGate,
+} from "../lib/activeShiftRunGuidance";
+import { evaluateOpenShiftOverdue, SHIFT_OVERDUE_MESSAGE } from "../lib/shiftOverdueGuidance";
+import {
   PRODUCTION_REPORT_CONFIRM_REFRESH_SCOPES,
   buildProductionQueueLines,
   buildQcPendingByWorkOrderLineId,
@@ -626,6 +631,15 @@ export function ProductionPage() {
     activeShiftDeepLink &&
     woIdFromUrlValid &&
     (focusConfirmStartFromUrl || focusRecordProductionFromUrl);
+  const activeShiftWorkspaceCue = resolveActiveShiftWorkspaceCueFromGate({
+    loading: runStartEntryGate.loading,
+    entryBlocked: runStartEntryBlocked,
+    confirmedRunCount: runStartEntryGate.confirmedRunCount,
+    focusConfirmStart: focusConfirmStartFromUrl,
+    focusRecordProduction: focusRecordProductionFromUrl,
+  });
+  const autoOpenConfirmStart =
+    focusConfirmStartFromUrl && !runStartEntryGate.loading && runStartEntryBlocked;
 
   const [workOrders, setWorkOrders] = React.useState<WoRow[]>([]);
   const [entries, setEntries] = React.useState<ProdEntryRow[]>([]);
@@ -2155,7 +2169,6 @@ export function ProductionPage() {
       setWoId((prev) => (prev === l.workOrderId ? prev : l.workOrderId));
       setWolId((prev) => (prev === l.id ? prev : l.id));
       if (sameSelection) return;
-      const rem = lineRemaining(l);
       resetProducedQtyField();
       const woRow = workOrders.find((w) => w.id === l.workOrderId);
       const embeddedType = String(
@@ -2175,9 +2188,7 @@ export function ProductionPage() {
         else if (isGreenLevelWo) setUserLockedFlowMode("GREEN_LEVEL");
         else if (t) setUserLockedFlowMode("REGULAR");
         if (isCarryForwardLine(l, t) && !noQtyAllowShopFloorContinue) return;
-        if (rem > 1e-9 && !producedQtyUserTouchedRef.current && !isGreenLevelWo) {
-          setProducedQtyStr(formatProductionQtyForInput(rem, l.fgItem.unit));
-        }
+        // Produced Qty stays blank until the operator types or uses an explicit shortcut.
       })();
     },
     [
@@ -2187,7 +2198,6 @@ export function ProductionPage() {
       isCarryForwardLine,
       noQtyAllowShopFloorContinue,
       resetProducedQtyField,
-      setProducedQtyStr,
       resetScopedProductionWorkspaceState,
     ],
   );
@@ -2654,10 +2664,15 @@ export function ProductionPage() {
   const [shiftProductionQtyLockReason, setShiftProductionQtyLockReason] = React.useState<string | null>(
     null,
   );
+  const [linkedShiftOverdue, setLinkedShiftOverdue] = React.useState(false);
+  const [linkedShiftOverdueMessage, setLinkedShiftOverdueMessage] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     let cancelled = false;
     const sessionIdFromEntry =
+      (Number.isFinite(shiftSessionIdFromUrl) && shiftSessionIdFromUrl > 0
+        ? shiftSessionIdFromUrl
+        : null) ??
       latestDraftForSelectedWoLine?.latest?.shiftLink?.shiftSessionId ??
       (wolId > 0
         ? entries.find((e) => Number(e.workOrderLine?.id ?? 0) === wolId)?.shiftLink?.shiftSessionId
@@ -2666,6 +2681,31 @@ export function ProductionPage() {
       null;
     const machineId = runStartEntryGate.selectedMachineId ?? null;
 
+    function applySessionOverdue(session: {
+      status?: string | null;
+      sessionDate?: string | Date | null;
+      shift?: { startTime?: string | null; endTime?: string | null } | null;
+      shiftOverdue?: boolean;
+      shiftOverdueMessage?: string | null;
+    } | null) {
+      if (!session) {
+        setLinkedShiftOverdue(false);
+        setLinkedShiftOverdueMessage(null);
+        return;
+      }
+      const live = evaluateOpenShiftOverdue({
+        status: session.status,
+        sessionDate: session.sessionDate,
+        startTime: session.shift?.startTime,
+        endTime: session.shift?.endTime,
+      });
+      const overdue = Boolean(session.shiftOverdue) || live.overdue;
+      setLinkedShiftOverdue(overdue);
+      setLinkedShiftOverdueMessage(
+        overdue ? live.message || session.shiftOverdueMessage || SHIFT_OVERDUE_MESSAGE : null,
+      );
+    }
+
     async function loadLock() {
       try {
         if (sessionIdFromEntry != null && Number(sessionIdFromEntry) > 0) {
@@ -2673,6 +2713,7 @@ export function ProductionPage() {
           if (cancelled) return;
           setShiftProductionQtyLocked(Boolean(res.session?.productionQtyLocked));
           setShiftProductionQtyLockReason(res.session?.productionQtyLockReason ?? null);
+          applySessionOverdue(res.session);
           return;
         }
         if (machineId != null && machineId > 0) {
@@ -2681,16 +2722,19 @@ export function ProductionPage() {
           const sess = res.session;
           setShiftProductionQtyLocked(Boolean(sess?.productionQtyLocked));
           setShiftProductionQtyLockReason(sess?.productionQtyLockReason ?? null);
+          applySessionOverdue(sess);
           return;
         }
         if (!cancelled) {
           setShiftProductionQtyLocked(false);
           setShiftProductionQtyLockReason(null);
+          applySessionOverdue(null);
         }
       } catch {
         if (!cancelled) {
           setShiftProductionQtyLocked(false);
           setShiftProductionQtyLockReason(null);
+          applySessionOverdue(null);
         }
       }
     }
@@ -2705,6 +2749,7 @@ export function ProductionPage() {
     entries,
     lastCreatedShiftLink,
     runStartEntryGate.selectedMachineId,
+    shiftSessionIdFromUrl,
     liveTick,
   ]);
 
@@ -5675,12 +5720,21 @@ export function ProductionPage() {
           <span className="tabular-nums text-emerald-900/80">Machine #{machineIdFromUrl}</span>
         ) : null}
         <span className="font-medium text-emerald-900">
-          {focusConfirmStartFromUrl
+          {activeShiftWorkspaceCue === ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.CONFIRM_MACHINE_START
             ? "Next: Confirm Machine Start"
-            : focusRecordProductionFromUrl
+            : activeShiftWorkspaceCue === ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION
               ? "Next: Record Production"
               : "Continue this run — do not start another"}
         </span>
+        {linkedShiftOverdue ? (
+          <p
+            className="basis-full m-0 text-[12px] font-medium text-amber-900"
+            role="status"
+            data-testid="shift-overdue-banner"
+          >
+            {linkedShiftOverdueMessage || SHIFT_OVERDUE_MESSAGE}
+          </p>
+        ) : null}
       </div>
     ) : null;
 
@@ -7369,7 +7423,7 @@ export function ProductionPage() {
                             ? runAllocationIdFromUrl
                             : null
                         }
-                        autoOpenConfirm={focusConfirmStartFromUrl}
+                        autoOpenConfirm={autoOpenConfirmStart}
                       />
                     ) : null}
                     {showRegularRmReadiness && !draftApprovalPendingRegular ? (
@@ -8093,9 +8147,9 @@ export function ProductionPage() {
               ? runAllocationIdFromUrl
               : null
           }
-          autoOpenConfirm={focusConfirmStartFromUrl && !runStartEntryGate.loading}
+          autoOpenConfirm={autoOpenConfirmStart}
         />
-        {focusRecordProductionFromUrl && !focusConfirmStartFromUrl ? (
+        {activeShiftWorkspaceCue === ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION ? (
           <p className="text-[12px] text-slate-600" data-testid="active-shift-record-production-hint">
             After start confirmation, record production quantities here or use the full entry form once the work order
             line loads.
@@ -8748,7 +8802,7 @@ export function ProductionPage() {
                   ? runAllocationIdFromUrl
                   : null
               }
-              autoOpenConfirm={focusConfirmStartFromUrl}
+              autoOpenConfirm={autoOpenConfirmStart}
             />
             <ProductionExecutionPanel
               key={scopedProductionWorkspaceKey(effectiveScopedWoId, effectiveScopedWolId)}

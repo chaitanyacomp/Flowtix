@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PRODUCTION_SAVE_BUTTON_LABEL,
+  PRODUCTION_QTY_EMPTY_PLACEHOLDER,
   formatProductionOperatorMaxHelper,
   formatProductionOperatorQty,
   formatProductionOperatorShortUnit,
@@ -37,9 +38,11 @@ describe("productionOperatorUx", () => {
     expect(formatProductionOperatorUnitLabel("nos")).toBe("Nos");
   });
 
-  it("uses operator qty placeholder without embedding UOM", () => {
-    expect(productionOperatorQtyPlaceholder("Meter")).toBe("0.000");
-    expect(productionOperatorQtyPlaceholder("Nos")).toBe("0");
+  it("uses Enter quantity placeholder without filling the value", () => {
+    expect(PRODUCTION_QTY_EMPTY_PLACEHOLDER).toBe("Enter quantity");
+    expect(productionOperatorQtyPlaceholder("Meter")).toBe("Enter quantity");
+    expect(productionOperatorQtyPlaceholder("Nos")).toBe("Enter quantity");
+    expect(productionOperatorQtyPlaceholder()).toBe("Enter quantity");
   });
 
   it("uses Save Production label for operator save CTA", () => {

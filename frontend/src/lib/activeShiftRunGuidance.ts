@@ -37,6 +37,11 @@ export type ActiveShiftRunGuidance = {
   workspaceHref?: string;
   pendingActionsHref?: string;
   shiftSessionHref?: string;
+  sessionDate?: string | null;
+  shiftStartTime?: string | null;
+  shiftEndTime?: string | null;
+  shiftOverdue?: boolean;
+  shiftOverdueMessage?: string | null;
 };
 
 export function isActiveShiftRunPrimaryAction(label: unknown): boolean {
@@ -100,13 +105,49 @@ export function resolveActiveShiftRunPrimaryAction(input: {
   startConfirmationStatus?: string | null;
   runAllocationId?: number | null;
   requiresStartConfirmation?: boolean;
+  confirmationPending?: boolean | null;
+  entryBlocked?: boolean | null;
 }): string {
+  if (String(input.startConfirmationStatus ?? "").trim().toUpperCase() === "CONFIRMED") {
+    return ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION;
+  }
+  if (input.confirmationPending === false) {
+    return ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION;
+  }
+  if (input.entryBlocked === false) {
+    return ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION;
+  }
   const runAllocationId = Number(input.runAllocationId ?? 0);
   const requires =
     input.requiresStartConfirmation != null
       ? Boolean(input.requiresStartConfirmation)
       : runAllocationId > 0;
+  if (input.entryBlocked === true && requires) {
+    return ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.CONFIRM_MACHINE_START;
+  }
   if (requires && isStartConfirmationPending(input.startConfirmationStatus)) {
+    return ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.CONFIRM_MACHINE_START;
+  }
+  return ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION;
+}
+
+/**
+ * Production Workspace cue after a deep-link. Backend run-start gate wins over stale
+ * `focusConfirmStart=1` once the preferred run is confirmed.
+ */
+export function resolveActiveShiftWorkspaceCueFromGate(input: {
+  loading?: boolean | null;
+  entryBlocked?: boolean | null;
+  confirmedRunCount?: number | null;
+  focusConfirmStart?: boolean;
+  focusRecordProduction?: boolean;
+}): string {
+  if (input.loading) {
+    if (input.focusRecordProduction) return ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION;
+    if (input.focusConfirmStart) return ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.CONFIRM_MACHINE_START;
+    return ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION;
+  }
+  if (input.entryBlocked) {
     return ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.CONFIRM_MACHINE_START;
   }
   return ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION;
@@ -127,6 +168,7 @@ export function buildActiveShiftRunWorkspaceHref(
     orderType?: string | null;
     primaryActionLabel?: string | null;
     startConfirmationStatus?: string | null;
+    confirmationPending?: boolean | null;
     requiresStartConfirmation?: boolean;
   },
   from = "dashboard",
@@ -164,6 +206,7 @@ export function buildActiveShiftRunWorkspaceHref(
       startConfirmationStatus: input.startConfirmationStatus,
       runAllocationId,
       requiresStartConfirmation: input.requiresStartConfirmation,
+      confirmationPending: input.confirmationPending,
     });
   if (primary === ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.CONFIRM_MACHINE_START) {
     params.set("focusConfirmStart", "1");

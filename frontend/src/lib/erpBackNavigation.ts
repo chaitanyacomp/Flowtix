@@ -57,6 +57,7 @@ export const ERP_RETURN_TO_TOKEN_MAP: Record<string, ERPBackNavigationTarget> = 
   "material-requests": { to: "/production/material-requests", label: "Back to Material Requests" },
   "requirement-sheet": { to: "/sales-orders", label: "Back to Sales Orders" },
   "requirement-sheet-execution": { to: "/sales-orders", label: "Back to Sales Orders" },
+  "shift-production": { to: "/shift-production", label: "Back to Shift Production" },
 };
 
 export const ERP_COMMERCIAL_ORIGIN_SESSION_KEY = "erp:commercialOrigin";

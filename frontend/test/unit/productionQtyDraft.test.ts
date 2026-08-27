@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   parsePositiveQuantityDraft,
   sanitizeProductionQtyDraftInput,
@@ -57,8 +59,10 @@ describe("production qty draft", () => {
     expect(inputValue).toBe("1571");
     expect(suffix).toBe("Nos");
     expect(`${inputValue} ${suffix}`.match(/Nos/gi)?.length).toBe(1);
-    expect(productionOperatorQtyPlaceholder("Nos")).toBe("0");
-    expect(productionOperatorQtyPlaceholder("Meter")).toBe("0.000");
+    expect(productionOperatorQtyPlaceholder("Nos")).toBe("Enter quantity");
+    expect(productionOperatorQtyPlaceholder("Meter")).toBe("Enter quantity");
+    expect(parsePositiveQuantityDraft("")).toBeNull();
+    expect(parsePositiveQuantityDraft("Enter quantity")).toBeNull();
   });
 
   it("manual entry enables successful positive-qty submission parse", () => {
@@ -67,5 +71,38 @@ describe("production qty draft", () => {
     expect(parsed).toBe(1571);
     // Simulated API body uses the parsed number, not the display string
     expect(JSON.stringify({ producedQty: parsed })).toBe('{"producedQty":1571}');
+  });
+
+  it("blank and invalid produced qty stay invalid until the operator enters a positive value", () => {
+    expect(parsePositiveQuantityDraft("")).toBeNull();
+    expect(parsePositiveQuantityDraft("   ")).toBeNull();
+    expect(parsePositiveQuantityDraft("0")).toBeNull();
+    expect(parsePositiveQuantityDraft("-5")).toBeNull();
+    expect(parsePositiveQuantityDraft("15000")).toBe(15000);
+  });
+});
+
+describe("production quantity safety (workspace form)", () => {
+  it("does not auto-fill remaining/planned/RM max into Produced Qty", () => {
+    const src = readFileSync(resolve(__dirname, "../../src/pages/ProductionPage.tsx"), "utf8");
+    expect(src).toContain("resetProducedQtyField()");
+    expect(src).not.toMatch(
+      /if \(rem > 1e-9 && !producedQtyUserTouchedRef\.current && !isGreenLevelWo\)/,
+    );
+    expect(src).toContain("fillOperatorRemainingQty");
+    expect(src).toContain("fillOperatorRmSupportedMaxQty");
+    expect(src).toContain("producedQtyValid &&");
+    expect(src).toContain("autoOpenConfirmStart");
+    expect(src).toContain("resolveActiveShiftWorkspaceCueFromGate");
+  });
+
+  it("Save Production stays disabled until createFormCanSubmit (valid qty)", () => {
+    const src = readFileSync(
+      resolve(__dirname, "../../src/components/erp/production/ProductionOperatorEntryShell.tsx"),
+      "utf8",
+    );
+    expect(src).toContain("disabled={posting || !createFormCanSubmit || fieldsDisabled}");
+    expect(src).toContain("Use Remaining Qty");
+    expect(src).toContain("Use RM-Supported Max");
   });
 });

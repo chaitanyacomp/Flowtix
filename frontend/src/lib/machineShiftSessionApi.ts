@@ -23,6 +23,8 @@ export type ShiftBrief = {
   id: number;
   shiftCode?: string | null;
   shiftName?: string | null;
+  startTime?: string | null;
+  endTime?: string | null;
 };
 
 export type MachineBrief = {
@@ -51,8 +53,12 @@ export type ShiftRunSegment = {
   segmentNo: number;
   status: string;
   workOrderId: number | null;
+  workOrderLineId?: number | null;
   workOrderDocNo: string | null;
   runAllocationId: number | null;
+  startConfirmationStatus?: string | null;
+  confirmationPending?: boolean | null;
+  primaryActionLabel?: string | null;
   startedAt: string | null;
   closedAt: string | null;
   closeReason?: string | null;
@@ -172,6 +178,9 @@ export type ShiftSessionDetail = {
   shiftSessionNo: string;
   status: string;
   sessionDate: string | null;
+  shiftOverdue?: boolean;
+  shiftOverdueMessage?: string | null;
+  shiftExpectedEndAt?: string | null;
   machine: MachineBrief | null;
   shift: ShiftBrief | null;
   primaryOperator: OperatorBrief | null;

@@ -3,6 +3,7 @@
  */
 import { ApiRequestError } from "../services/api";
 import type { ShiftDowntimeIncident, ShiftRunSegment, ShiftSessionDetail } from "./machineShiftSessionApi";
+import { resolveListBackTarget, withListReturnContext } from "./listNavigationState";
 
 export type MachineShiftUiStatus = "NO_ACTIVE" | "SHIFT_ACTIVE" | "PRODUCTION_RUNNING" | "DOWNTIME";
 
@@ -129,7 +130,7 @@ export function machineDisplayName(m: { machineName?: string | null; machineCode
   return name || code || "—";
 }
 
-export function shiftDisplayLabel(s: { shiftName?: string | null; shiftCode?: string | null; startTime?: string; endTime?: string } | null | undefined): string {
+export function shiftDisplayLabel(s: { shiftName?: string | null; shiftCode?: string | null; startTime?: string | null; endTime?: string | null } | null | undefined): string {
   if (!s) return "—";
   const name = String(s.shiftName ?? s.shiftCode ?? "").trim() || "Shift";
   if (s.startTime && s.endTime) return `${name} (${s.startTime}–${s.endTime})`;
@@ -478,4 +479,33 @@ export function mergeShiftReportEditableLines(
     return { lines: latest.lines || [], source: "snapshot", editable: false };
   }
   return { lines: session?.qtyLines ?? [], source: "live", editable: true };
+}
+
+export const SHIFT_PRODUCTION_LIST_PATH = "/shift-production";
+export const SHIFT_SESSION_BACK_LABEL = "Back to Shift Production";
+
+/** True for the machine/session list (not a session workspace URL). */
+export function isShiftProductionListHref(href: string | null | undefined): boolean {
+  const raw = String(href ?? "").trim();
+  if (!raw.startsWith("/")) return false;
+  const path = raw.split("?")[0].split("#")[0];
+  return path === SHIFT_PRODUCTION_LIST_PATH;
+}
+
+/** Back from a session must land on the Shift Production list, preserving list query when safe. */
+export function resolveShiftProductionListBackTarget(
+  returnToQuery?: string | null,
+  fallback = SHIFT_PRODUCTION_LIST_PATH,
+): string {
+  const resolved = resolveListBackTarget(returnToQuery, fallback);
+  return isShiftProductionListHref(resolved) ? resolved : fallback;
+}
+
+export function shiftSessionWorkspaceHref(
+  sessionId: number,
+  listReturnTo: string | null | undefined = SHIFT_PRODUCTION_LIST_PATH,
+): string {
+  const id = Number(sessionId);
+  if (!Number.isInteger(id) || id <= 0) return SHIFT_PRODUCTION_LIST_PATH;
+  return withListReturnContext(`/shift-production/sessions/${id}`, listReturnTo);
 }

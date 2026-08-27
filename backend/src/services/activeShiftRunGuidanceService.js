@@ -4,6 +4,7 @@
  */
 
 const { prisma } = require("../utils/prisma");
+const { evaluateOpenShiftOverdue, SHIFT_OVERDUE_MESSAGE } = require("./shiftOverdueGuidance");
 
 const ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS = Object.freeze({
   CONFIRM_MACHINE_START: "Confirm Machine Start",
@@ -103,6 +104,15 @@ function buildActiveShiftRunWorkspaceHref(input = {}, from = "dashboard") {
   return `/production?${params.toString()}`;
 }
 
+function dateOnlyYmd(value) {
+  if (!value) return null;
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+  const s = String(value).trim();
+  return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : null;
+}
+
 function formatRunningDurationMs(ms) {
   const totalSec = Math.max(0, Math.floor(Number(ms) / 1000));
   const h = Math.floor(totalSec / 3600);
@@ -152,6 +162,16 @@ function mapActiveRunSegmentToGuidance(segment, now = new Date()) {
     String(segment.workOrder?.docNo ?? runAllocation?.workOrder?.docNo ?? "").trim() ||
     (workOrderId > 0 ? `WO-${workOrderId}` : null);
 
+  const overdue = evaluateOpenShiftOverdue(
+    {
+      status: session.status,
+      sessionDate: session.sessionDate,
+      startTime: shift?.startTime,
+      endTime: shift?.endTime,
+    },
+    now,
+  );
+
   const base = {
     shiftSessionId: n(segment.sessionId ?? session.id),
     shiftSessionNo: String(session.shiftSessionNo ?? "").trim() || null,
@@ -167,6 +187,9 @@ function mapActiveRunSegmentToGuidance(segment, now = new Date()) {
     workOrderNo,
     workOrderLineId: workOrderLineId > 0 ? workOrderLineId : null,
     runAllocationId: runAllocationId > 0 ? runAllocationId : null,
+    sessionDate: dateOnlyYmd(session.sessionDate),
+    shiftStartTime: shift?.startTime ?? null,
+    shiftEndTime: shift?.endTime ?? null,
     operatorId: n(session.primaryOperatorId ?? operator?.id) || null,
     operatorName: String(operator?.operatorName ?? "").trim() || null,
     operatorCode: String(operator?.operatorCode ?? "").trim() || null,
@@ -177,6 +200,8 @@ function mapActiveRunSegmentToGuidance(segment, now = new Date()) {
     confirmationPending: requiresStartConfirmation && isStartConfirmationPending(startConfirmationStatus),
     primaryActionLabel,
     secondaryActionLabel: OPEN_ACTIVE_SHIFT_LABEL,
+    shiftOverdue: overdue.overdue,
+    shiftOverdueMessage: overdue.message,
   };
 
   return {
@@ -202,7 +227,7 @@ async function listActiveShiftRunGuidance(db = prisma, now = new Date()) {
       session: {
         include: {
           machine: { select: { id: true, machineCode: true, machineName: true } },
-          shift: { select: { id: true, shiftCode: true, shiftName: true } },
+          shift: { select: { id: true, shiftCode: true, shiftName: true, startTime: true, endTime: true } },
           primaryOperator: { select: { id: true, operatorName: true, operatorCode: true } },
         },
       },
@@ -318,6 +343,7 @@ function applyActiveShiftRunGuidanceToPendingActions(actions, guidanceList) {
 }
 
 module.exports = {
+  SHIFT_OVERDUE_MESSAGE,
   ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS,
   OPEN_ACTIVE_SHIFT_LABEL,
   applyActiveShiftRunGuidanceToPendingActions,

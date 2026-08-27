@@ -21,6 +21,10 @@ import {
   indiaLocalDateYmd,
   mapShiftApiError,
   validateStartOperators,
+  resolveShiftProductionListBackTarget,
+  shiftSessionWorkspaceHref,
+  SHIFT_PRODUCTION_LIST_PATH,
+  SHIFT_SESSION_BACK_LABEL,
 } from "../../src/lib/machineShiftSessionUi";
 import { ApiRequestError } from "../../src/services/api";
 import type { ShiftSessionDetail } from "../../src/lib/machineShiftSessionApi";
@@ -238,6 +242,16 @@ describe("Shift Production UI helpers", () => {
   it("defaults session date to India local YYYY-MM-DD", () => {
     expect(indiaLocalDateYmd(new Date("2026-08-24T20:30:00+05:30"))).toBe("2026-08-24");
   });
+
+  it("session back target stays on the Shift Production list and preserves list query", () => {
+    expect(SHIFT_SESSION_BACK_LABEL).toBe("Back to Shift Production");
+    expect(resolveShiftProductionListBackTarget(null)).toBe(SHIFT_PRODUCTION_LIST_PATH);
+    expect(resolveShiftProductionListBackTarget("/shift-production?q=inj")).toBe("/shift-production?q=inj");
+    expect(resolveShiftProductionListBackTarget("/dashboard")).toBe(SHIFT_PRODUCTION_LIST_PATH);
+    expect(resolveShiftProductionListBackTarget("/shift-production/sessions/9")).toBe(SHIFT_PRODUCTION_LIST_PATH);
+    expect(shiftSessionWorkspaceHref(12, "/shift-production")).toContain("/shift-production/sessions/12");
+    expect(shiftSessionWorkspaceHref(12, "/shift-production")).toContain("returnTo=");
+  });
 });
 
 describe("StartShiftModal / workspace double-submit protection (source)", () => {
@@ -269,6 +283,10 @@ describe("StartShiftModal / workspace double-submit protection (source)", () => 
     expect(src).toContain("fetchShiftSession");
     expect(src).toContain("ShiftReportPanel");
     expect(src).toContain("Shift Over");
+    expect(src).toContain("Close Run");
+    expect(src).toContain("startConfirmationStatus");
+    expect(src).toContain("data-testid=\"active-run-primary-action\"");
+    expect(src).toContain("shift-overdue-banner");
   });
 
   it("landing shows fallback banner copy", () => {
@@ -278,5 +296,27 @@ describe("StartShiftModal / workspace double-submit protection (source)", () => 
     expect(src).toContain("fetchOpenShiftSession");
     expect(src).toContain("fetchBusyShiftOperators");
     expect(src).toContain("busyOperatorIds");
+  });
+
+  it("session workspace uses a single ERP back button to the Shift Production list", () => {
+    const src = readFileSync(resolve(__dirname, "../../src/pages/ShiftSessionWorkspacePage.tsx"), "utf8");
+    expect(src).toContain("ERPBackNavigation");
+    expect(src).toContain("SHIFT_SESSION_BACK_LABEL");
+    expect(src).toContain('data-testid="shift-session-back-nav"');
+    expect(src).toContain("StickyWorkspaceHead");
+    expect(src).toContain("resolveShiftProductionListBackTarget");
+    expect(src).not.toContain("← Shift Production");
+    expect((src.match(/ERPBackNavigation/g) ?? []).length).toBe(2);
+    expect((src.match(/data-testid="shift-session-back-nav"/g) ?? []).length).toBe(1);
+    expect((src.match(/<ShiftSessionListBackNav/g) ?? []).length).toBe(3);
+  });
+
+  it("list preserves returnTo when opening a session workspace", () => {
+    const src = readFileSync(resolve(__dirname, "../../src/pages/ShiftProductionPage.tsx"), "utf8");
+    expect(src).toContain("useListScrollRestoration");
+    expect(src).toContain("shiftSessionWorkspaceHref");
+    expect(src).toContain("buildListReturnTo");
+    expect(src).toContain("backTo: listReturnTo");
+    expect(src).not.toContain("navigate(`/shift-production/sessions/${card.session!.id}`)");
   });
 });

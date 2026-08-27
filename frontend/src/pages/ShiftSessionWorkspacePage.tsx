@@ -1,12 +1,14 @@
 import * as React from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import {
   ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS,
   buildActiveShiftRunWorkspaceHref,
+  isActiveShiftRunPrimaryAction,
   resolveActiveShiftRunPrimaryAction,
 } from "../lib/activeShiftRunGuidance";
-import { PageContainer } from "../components/PageHeader";
+import { evaluateOpenShiftOverdue, SHIFT_OVERDUE_MESSAGE } from "../lib/shiftOverdueGuidance";
+import { PageContainer, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
 import { Badge } from "../components/ui/badge";
 import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -57,6 +59,9 @@ import {
   shiftLifecycleNextAction,
   shiftLifecycleStageLabel,
   shiftProductionQtyLockDisplayMessage,
+  resolveShiftProductionListBackTarget,
+  SHIFT_PRODUCTION_LIST_PATH,
+  SHIFT_SESSION_BACK_LABEL,
 } from "../lib/machineShiftSessionUi";
 import { cn } from "../lib/utils";
 import { ShiftReportPanel } from "../components/erp/shiftProduction/ShiftReportPanel";
@@ -72,6 +77,24 @@ function toneToBadge(tone: ReturnType<typeof machineShiftStatusTone>) {
   return "default" as const;
 }
 
+function ShiftSessionListBackNav({ listHref }: { listHref: string }) {
+  return (
+    <StickyWorkspaceHead
+      className="mb-3"
+      lead={
+        <ERPBackNavigation
+          to={listHref}
+          label={SHIFT_SESSION_BACK_LABEL}
+          defaultTo={SHIFT_PRODUCTION_LIST_PATH}
+          defaultLabel={SHIFT_SESSION_BACK_LABEL}
+          className="max-w-full"
+          data-testid="shift-session-back-nav"
+        />
+      }
+    />
+  );
+}
+
 type ActionModal =
   | { kind: "join" }
   | { kind: "leave"; operatorId: number; name: string }
@@ -85,8 +108,16 @@ export function ShiftSessionWorkspacePage() {
   const { sessionId: sessionIdParam } = useParams();
   const sessionId = Number(sessionIdParam);
   const navigate = useNavigate();
+  const location = useLocation();
   const auth = useAuth();
   const userRole = String(auth.user?.role ?? "").trim().toUpperCase();
+
+  const listBackHref = React.useMemo(() => {
+    const sp = new URLSearchParams(location.search);
+    const state = (location.state ?? {}) as { backTo?: unknown };
+    const fromState = typeof state.backTo === "string" ? state.backTo : null;
+    return resolveShiftProductionListBackTarget(sp.get("returnTo") ?? fromState);
+  }, [location.search, location.state]);
 
   const [session, setSession] = React.useState<ShiftSessionDetail | null>(null);
   const [caps, setCaps] = React.useState<ShiftCapabilities | null>(null);
@@ -203,20 +234,39 @@ export function ShiftSessionWorkspacePage() {
   const canCloseRun =
     showLiveManager && !openDt && (userRole === "ADMIN" || userRole === "PRODUCTION_MANAGER");
 
+  const liveOverdue = evaluateOpenShiftOverdue(
+    {
+      status: session?.status,
+      sessionDate: session?.sessionDate,
+      startTime: session?.shift?.startTime,
+      endTime: session?.shift?.endTime,
+    },
+    nowMs,
+  );
+  const shiftOverdue = Boolean(session?.shiftOverdue) || liveOverdue.overdue;
+  const shiftOverdueMessage = liveOverdue.message || session?.shiftOverdueMessage || SHIFT_OVERDUE_MESSAGE;
+
   const activeRunPrimaryLabel = activeRun
-    ? resolveActiveShiftRunPrimaryAction({
-        runAllocationId: activeRun.runAllocationId,
-      })
+    ? isActiveShiftRunPrimaryAction(activeRun.primaryActionLabel)
+      ? String(activeRun.primaryActionLabel)
+      : resolveActiveShiftRunPrimaryAction({
+          runAllocationId: activeRun.runAllocationId,
+          startConfirmationStatus: activeRun.startConfirmationStatus,
+          confirmationPending: activeRun.confirmationPending,
+        })
     : null;
   const activeRunWorkspaceHref =
     activeRun && session
       ? buildActiveShiftRunWorkspaceHref(
           {
             workOrderId: activeRun.workOrderId,
+            workOrderLineId: activeRun.workOrderLineId,
             runAllocationId: activeRun.runAllocationId,
             shiftSessionId: session.id,
             runSegmentId: activeRun.id,
             machineId: session.machine?.id ?? null,
+            startConfirmationStatus: activeRun.startConfirmationStatus,
+            confirmationPending: activeRun.confirmationPending,
             primaryActionLabel: activeRunPrimaryLabel,
           },
           "shift-production",
@@ -251,6 +301,7 @@ export function ShiftSessionWorkspacePage() {
   if (loading && !session) {
     return (
       <PageContainer>
+        <ShiftSessionListBackNav listHref={listBackHref} />
         <p className="text-sm text-slate-500">Loading shift…</p>
       </PageContainer>
     );
@@ -259,10 +310,8 @@ export function ShiftSessionWorkspacePage() {
   if (!session) {
     return (
       <PageContainer>
+        <ShiftSessionListBackNav listHref={listBackHref} />
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">{notice || "Shift not found."}</div>
-        <Button type="button" className="mt-4" variant="outline" onClick={() => navigate("/shift-production")}>
-          Back to Shift Production
-        </Button>
       </PageContainer>
     );
   }
@@ -273,15 +322,21 @@ export function ShiftSessionWorkspacePage() {
 
   return (
     <PageContainer>
-      <div className="mb-3">
-        <Link to="/shift-production" className="text-sm text-teal-700 hover:underline">
-          ← Shift Production
-        </Link>
-      </div>
+      <ShiftSessionListBackNav listHref={listBackHref} />
 
       {caps?.isFallbackControl ? (
         <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-950" role="status">
           Production Manager is not assigned. You have temporary shift control.
+        </div>
+      ) : null}
+
+      {shiftOverdue && isOpenSession ? (
+        <div
+          className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-950"
+          role="status"
+          data-testid="shift-overdue-banner"
+        >
+          {shiftOverdueMessage}
         </div>
       ) : null}
 
@@ -654,11 +709,6 @@ export function ShiftSessionWorkspacePage() {
           <p className="mt-1 text-sm text-slate-600">
             Started {formatIndiaDateTime(session.startedAt)} · Ended {formatIndiaDateTime(session.endedAt)}
           </p>
-          <div className="mt-3">
-            <Link to="/shift-production" className="text-sm font-medium text-teal-800 underline">
-              Back to Shift Production
-            </Link>
-          </div>
         </section>
       ) : null}
 
@@ -721,7 +771,7 @@ export function ShiftSessionWorkspacePage() {
         shiftSessionNo={session.shiftSessionNo}
         onClose={() => setCancelOpen(false)}
         onCancelled={() => {
-          navigate("/shift-production");
+          navigate(listBackHref);
         }}
       />
 

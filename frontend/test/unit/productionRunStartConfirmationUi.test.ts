@@ -352,4 +352,9 @@ describe("production start confirmation — modal wiring & layout", () => {
     expect(panel).toContain("onEntryGateChange");
     expect(panel).toContain('data-testid="production-run-start-panel"');
   });
+
+  it("does not auto-open confirm for a different pending run when preferred is confirmed", () => {
+    expect(panel).toContain("pending.find((r) => r.runAllocationId === preferred)");
+    expect(panel).not.toContain("pending.find((r) => r.runAllocationId === preferred) ?? pending[0]");
+  });
 });

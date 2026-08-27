@@ -11,6 +11,7 @@ const {
   mapActiveRunSegmentToGuidance,
   resolveActiveShiftRunPrimaryAction,
   shouldOverrideProductionActionLabel,
+  SHIFT_OVERDUE_MESSAGE,
 } = require("../../src/services/activeShiftRunGuidanceService");
 const { PRODUCTION_EXECUTION_PENDING_LABELS } = require("../../src/services/productionExecutionService");
 
@@ -197,6 +198,53 @@ describe("activeShiftRunGuidanceService", () => {
       [],
     );
     assert.equal(actions[0].action, PRODUCTION_EXECUTION_PENDING_LABELS.NOT_STARTED);
+  });
+
+  it("confirmed active Morning A past end is Record Production with overdue flag", () => {
+    const guidance = mapActiveRunSegmentToGuidance(
+      {
+        id: 9,
+        status: "ACTIVE",
+        sessionId: 7,
+        machineId: 3,
+        runAllocationId: 55,
+        workOrderId: 1001,
+        segmentNo: 1,
+        segmentStartedAt: new Date("2026-08-26T06:10:00+05:30"),
+        session: {
+          id: 7,
+          status: "OPEN",
+          sessionDate: "2026-08-26",
+          shiftSessionNo: "SS-26-0004",
+          machineId: 3,
+          primaryOperatorId: 1,
+          machine: { id: 3, machineCode: "INJ-01", machineName: "Injection 01" },
+          shift: {
+            id: 1,
+            shiftCode: "A",
+            shiftName: "Morning A",
+            startTime: "06:00",
+            endTime: "14:00",
+          },
+          primaryOperator: { id: 1, operatorName: "Ramesh Kumar", operatorCode: "OP-01" },
+        },
+        workOrder: { id: 1001, docNo: "WO-R-26-0001" },
+        runAllocation: {
+          id: 55,
+          workOrderId: 1001,
+          workOrderLineId: 200,
+          startConfirmation: { id: 1, status: "CONFIRMED" },
+          workOrder: { id: 1001, docNo: "WO-R-26-0001" },
+        },
+      },
+      new Date("2026-08-27T07:00:00+05:30"),
+    );
+    assert.equal(guidance.primaryActionLabel, ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION);
+    assert.equal(guidance.confirmationPending, false);
+    assert.equal(guidance.shiftOverdue, true);
+    assert.equal(guidance.shiftOverdueMessage, SHIFT_OVERDUE_MESSAGE);
+    assert.match(guidance.workspaceHref, /focusRecordProduction=1/);
+    assert.doesNotMatch(guidance.workspaceHref, /focusConfirmStart=1/);
   });
 
   it("shouldOverrideProductionActionLabel covers Ready-to-Start synonyms", () => {

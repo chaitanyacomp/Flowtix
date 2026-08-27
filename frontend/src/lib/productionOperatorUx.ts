@@ -1,4 +1,4 @@
-import { formatFgQuantity, formatFgQuantityForInput, qtyDecimalPlacesFromUnit } from "./quantityDisplay";
+import { formatFgQuantity, formatFgQuantityForInput } from "./quantityDisplay";
 
 /** Effective max qty operator may enter on this save (WO remaining ∩ RM cap when present). */
 export function resolveProductionEntryMaxQty(
@@ -63,12 +63,11 @@ export function formatProductionOperatorMaxHelper(
   return u ? `${labelPrefix}: ${qty} ${u}` : `${labelPrefix}: ${qty}`;
 }
 
-/** Operator qty placeholder — number sample only; UOM is shown as a fixed suffix outside the input. */
-export function productionOperatorQtyPlaceholder(unit?: string | null): string {
-  const decimals = qtyDecimalPlacesFromUnit(unit);
-  if (decimals <= 0) return "0";
-  if (decimals === 3) return "0.000";
-  return "0.00";
+/** Operator qty placeholder — instructional only; the field value stays empty. */
+export const PRODUCTION_QTY_EMPTY_PLACEHOLDER = "Enter quantity";
+
+export function productionOperatorQtyPlaceholder(_unit?: string | null): string {
+  return PRODUCTION_QTY_EMPTY_PLACEHOLDER;
 }
 
 export const PRODUCTION_SAVE_BUTTON_LABEL = "Save Production";

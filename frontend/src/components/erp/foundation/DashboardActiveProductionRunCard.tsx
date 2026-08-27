@@ -7,6 +7,7 @@ import {
   type ActiveShiftRunGuidance,
   OPEN_ACTIVE_SHIFT_LABEL,
 } from "../../../lib/activeShiftRunGuidance";
+import { evaluateOpenShiftOverdue, SHIFT_OVERDUE_MESSAGE } from "../../../lib/shiftOverdueGuidance";
 
 export function DashboardActiveProductionRunCard({
   runs,
@@ -38,6 +39,16 @@ export function DashboardActiveProductionRunCard({
         const running =
           run.runningTimeLabel ||
           formatActiveShiftRunningTime(run.segmentStartedAt, nowMs);
+        const liveOverdue = evaluateOpenShiftOverdue(
+          {
+            status: "OPEN",
+            sessionDate: run.sessionDate,
+            startTime: run.shiftStartTime,
+            endTime: run.shiftEndTime,
+          },
+          nowMs,
+        );
+        const shiftOverdue = Boolean(run.shiftOverdue) || liveOverdue.overdue;
         return (
           <div
             key={`${run.shiftSessionId}-${run.runSegmentId}`}
@@ -81,6 +92,16 @@ export function DashboardActiveProductionRunCard({
                 <dd className="font-semibold tabular-nums text-slate-900">{running}</dd>
               </div>
             </dl>
+
+            {shiftOverdue ? (
+              <p
+                className="mt-2 text-[12px] font-medium text-amber-900"
+                role="status"
+                data-testid="active-run-overdue-banner"
+              >
+                {liveOverdue.message || run.shiftOverdueMessage || SHIFT_OVERDUE_MESSAGE}
+              </p>
+            ) : null}
 
             <div className="mt-2.5 flex flex-wrap items-center gap-2">
               <Link

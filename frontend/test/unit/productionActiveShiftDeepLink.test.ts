@@ -3,6 +3,7 @@ import {
   ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS,
   buildActiveShiftRunWorkspaceHref,
   resolveActiveShiftRunPrimaryAction,
+  resolveActiveShiftWorkspaceCueFromGate,
 } from "../../src/lib/activeShiftRunGuidance";
 import { shiftLifecycleNextAction } from "../../src/lib/machineShiftSessionUi";
 
@@ -44,6 +45,49 @@ describe("productionActiveShiftDeepLink", () => {
       startConfirmationStatus: "CONFIRMED",
     });
     expect(new URLSearchParams(href.split("?")[1]).get("focusRecordProduction")).toBe("1");
+  });
+
+  it("stale focusConfirmStart after confirmed gate shows Record Production", () => {
+    expect(
+      resolveActiveShiftWorkspaceCueFromGate({
+        loading: false,
+        entryBlocked: false,
+        confirmedRunCount: 1,
+        focusConfirmStart: true,
+        focusRecordProduction: false,
+      }),
+    ).toBe(ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION);
+
+    expect(
+      resolveActiveShiftWorkspaceCueFromGate({
+        loading: true,
+        entryBlocked: true,
+        focusConfirmStart: true,
+      }),
+    ).toBe(ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.CONFIRM_MACHINE_START);
+
+    expect(
+      resolveActiveShiftRunPrimaryAction({
+        runAllocationId: 55,
+        startConfirmationStatus: "CONFIRMED",
+      }),
+    ).toBe(ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION);
+  });
+
+  it("Shift Production CTA uses confirmation status, not missing-status pending default", () => {
+    expect(
+      resolveActiveShiftRunPrimaryAction({
+        runAllocationId: 55,
+      }),
+    ).toBe(ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.CONFIRM_MACHINE_START);
+
+    expect(
+      resolveActiveShiftRunPrimaryAction({
+        runAllocationId: 55,
+        startConfirmationStatus: "CONFIRMED",
+        confirmationPending: false,
+      }),
+    ).toBe(ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION);
   });
 
   it("blocks prepare shift report lifecycle action while run segment is active", () => {

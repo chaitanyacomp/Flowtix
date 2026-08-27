@@ -1,9 +1,10 @@
 import * as React from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { PageContainer } from "../components/PageHeader";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { useAuth } from "../hooks/useAuth";
+import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 import { fetchMachines, type MachineRow } from "../lib/machineApi";
 import { fetchOperators, type OperatorRow } from "../lib/operatorApi";
 import { fetchShifts, type ShiftRow } from "../lib/shiftApi";
@@ -26,7 +27,12 @@ import {
   mapShiftApiError,
   operatorDisplayName,
   shiftDisplayLabel,
+  SHIFT_PRODUCTION_LIST_PATH,
+  SHIFT_SESSION_BACK_LABEL,
+  shiftSessionWorkspaceHref,
 } from "../lib/machineShiftSessionUi";
+import { buildListReturnTo } from "../lib/listNavigationState";
+import { evaluateOpenShiftOverdue, SHIFT_OVERDUE_MESSAGE } from "../lib/shiftOverdueGuidance";
 import { StartShiftModal } from "../components/erp/shiftProduction/StartShiftModal";
 import { cn } from "../lib/utils";
 
@@ -47,6 +53,22 @@ function toneToBadge(tone: ReturnType<typeof machineShiftStatusTone>) {
 export function ShiftProductionPage() {
   const auth = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  useListScrollRestoration();
+
+  const openSessionWorkspace = React.useCallback(
+    (sessionId: number) => {
+      const listReturnTo = buildListReturnTo(SHIFT_PRODUCTION_LIST_PATH, location.search);
+      navigate(shiftSessionWorkspaceHref(sessionId, listReturnTo), {
+        state: {
+          from: SHIFT_PRODUCTION_LIST_PATH,
+          backTo: listReturnTo,
+          backLabel: SHIFT_SESSION_BACK_LABEL,
+        },
+      });
+    },
+    [location.search, navigate],
+  );
   const [caps, setCaps] = React.useState<ShiftCapabilities | null>(null);
   const [machines, setMachines] = React.useState<MachineRow[]>([]);
   const [operators, setOperators] = React.useState<OperatorRow[]>([]);
@@ -59,6 +81,11 @@ export function ShiftProductionPage() {
 
   const showManager = canShowManagerControls(caps);
   const busyIds = React.useMemo(() => busyOperatorIdSet(busyOperators), [busyOperators]);
+  const [nowMs, setNowMs] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -139,6 +166,12 @@ export function ShiftProductionPage() {
           const tone = machineShiftStatusTone(status);
           const activeRun = findActiveRun(card.session);
           const open = Boolean(card.session && String(card.session.status).toUpperCase() === "OPEN");
+          const overdue = evaluateOpenShiftOverdue({
+            status: card.session?.status,
+            sessionDate: card.session?.sessionDate,
+            startTime: card.session?.shift?.startTime,
+            endTime: card.session?.shift?.endTime,
+          }, nowMs).overdue || Boolean(card.session?.shiftOverdue);
 
           return (
             <article
@@ -182,12 +215,22 @@ export function ShiftProductionPage() {
 
               {card.error ? <p className="mt-2 text-xs text-red-700">{card.error}</p> : null}
 
+              {open && overdue ? (
+                <p
+                  className="mt-2 text-xs font-medium text-amber-900"
+                  role="status"
+                  data-testid="shift-overdue-banner"
+                >
+                  {card.session?.shiftOverdueMessage || SHIFT_OVERDUE_MESSAGE}
+                </p>
+              ) : null}
+
               <div className="mt-4 flex flex-1 items-end">
                 {open && card.session ? (
                   <Button
                     type="button"
                     className="w-full bg-teal-700 hover:bg-teal-800"
-                    onClick={() => navigate(`/shift-production/sessions/${card.session!.id}`)}
+                    onClick={() => openSessionWorkspace(card.session!.id)}
                   >
                     Open Active Shift
                   </Button>
@@ -226,7 +269,7 @@ export function ShiftProductionPage() {
           onClose={() => setStartMachine(null)}
           onStarted={(sessionId) => {
             setStartMachine(null);
-            navigate(`/shift-production/sessions/${sessionId}`);
+            openSessionWorkspace(sessionId);
           }}
         />
       ) : null}

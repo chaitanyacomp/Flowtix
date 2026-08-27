@@ -252,4 +252,118 @@ describe("MySQL Prisma migration SQL compatibility", () => {
     assert.doesNotMatch(sql, /packSize/i);
     assert.doesNotMatch(sql, /DROP\s+COLUMN/i);
   });
+
+  it("shift grace/handover/late-entry migration is MySQL-safe and does not stamp historical PE enteredAt", () => {
+    const file = path.join(
+      MIGRATIONS_DIR,
+      "20260827160000_shift_grace_handover_late_entry",
+      "migration.sql",
+    );
+    assert.ok(fs.existsSync(file), "shift grace handover late-entry migration.sql missing");
+    const raw = fs.readFileSync(file, "utf8");
+    const sql = stripSqlComments(raw);
+
+    assert.doesNotMatch(sql, /ALTER\s+TABLE\s+"/i);
+    assert.doesNotMatch(sql, /ADD\s+COLUMN\s+"/i);
+    assert.doesNotMatch(sql, /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS/i);
+    assert.doesNotMatch(sql, /CREATE\s+TABLE\s+"/i);
+
+    const identifiers = [...sql.matchAll(/`([A-Za-z0-9_]+)`/g)].map((m) => m[1]);
+    const tooLong = [...new Set(identifiers)].filter((name) => name.length > 64);
+    assert.deepEqual(
+      tooLong,
+      [],
+      `MySQL identifiers exceed 64 chars:\n${tooLong.map((n) => `${n.length} ${n}`).join("\n")}`,
+    );
+
+    assert.match(sql, /ALTER\s+TABLE\s+`AppSetting`/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`shiftGraceMinutes`\s+INTEGER\s+NOT\s+NULL\s+DEFAULT\s+15/i);
+    assert.match(sql, /UPDATE\s+`AppSetting`[\s\S]*`shiftGraceMinutes`\s*=\s*15/i);
+
+    const dropIdx = sql.search(/DROP\s+INDEX\s+`uq_mss_open`/i);
+    const dropCol = sql.search(/DROP\s+COLUMN\s+`openMachId`/i);
+    const enumIdx = sql.search(
+      /ENUM\('OPEN',\s*'SHIFT_OVER',\s*'CANCELLED',\s*'HANDOVER_PENDING'\)/i,
+    );
+    const addOpen = sql.search(/ADD\s+COLUMN\s+`openMachId`/i);
+    const createUq = sql.search(
+      /CREATE\s+UNIQUE\s+INDEX\s+`uq_mss_open`\s+ON\s+`MachineShiftSession`\s*\(\s*`openMachId`\s*\)/i,
+    );
+    assert.ok(dropIdx >= 0 && dropCol > dropIdx, "drop uq_mss_open before drop openMachId");
+    assert.ok(enumIdx > dropCol, "expand ENUM after dropping openMachId");
+    assert.ok(addOpen > enumIdx, "recreate openMachId after ENUM expand");
+    assert.ok(createUq > addOpen, "recreate uq_mss_open after openMachId");
+    assert.match(
+      sql,
+      /`openMachId`\s+INTEGER\s+GENERATED\s+ALWAYS\s+AS\s*\(\s*IF\s*\(\s*`status`\s*=\s*'OPEN'/i,
+    );
+    assert.match(sql, /`openMachId`[\s\S]*?\bVIRTUAL\b/i);
+    assert.doesNotMatch(sql, /`openMachId`[\s\S]*?\bSTORED\b/i);
+    assert.doesNotMatch(sql, /status`\s*<>\s*'SHIFT_OVER'/i);
+
+    assert.match(sql, /ADD\s+COLUMN\s+`scheduledStartAt`\s+DATETIME\(3\)\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`scheduledEndAt`\s+DATETIME\(3\)\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`graceMinutesSnapshot`\s+INTEGER\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`overtimeApprovedUntil`\s+DATETIME\(3\)\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`overtimeApprovedAt`\s+DATETIME\(3\)\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`overtimeApprovedByUserId`\s+INTEGER\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`overtimeReason`\s+TEXT\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`liveProductionStoppedAt`\s+DATETIME\(3\)\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`timeEndDetectedAt`\s+DATETIME\(3\)\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`actualOperationalEndAt`\s+DATETIME\(3\)\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`previousSessionId`\s+INTEGER\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`startedOutsideWindow`\s+BOOLEAN\s+NOT\s+NULL\s+DEFAULT\s+false/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`startedOutsideWindowReason`\s+VARCHAR\(40\)\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`startedOutsideWindowRemarks`\s+TEXT\s+NULL/i);
+    assert.match(sql, /CONSTRAINT\s+`mss_ot_by_user_fk`/i);
+    assert.match(sql, /CONSTRAINT\s+`mss_prev_sess_fk`/i);
+    assert.match(sql, /REFERENCES\s+`MachineShiftSession`\(`id`\)\s+ON\s+DELETE\s+SET\s+NULL/i);
+
+    assert.match(sql, /INNER\s+JOIN\s+`Shift`/i);
+    assert.match(sql, /DATE_FORMAT\s*\(\s*`s`\.`sessionDate`/i);
+    assert.match(sql, /INTERVAL\s+330\s+MINUTE/i);
+    assert.match(sql, /INTERVAL\s+1\s+DAY/i);
+    assert.match(
+      sql,
+      /TIME_TO_SEC\s*\(\s*STR_TO_DATE\s*\(\s*`sh`\.`endTime`[\s\S]*<\s*TIME_TO_SEC\s*\(\s*STR_TO_DATE\s*\(\s*`sh`\.`startTime`/i,
+    );
+    assert.match(sql, /`s`\.`graceMinutesSnapshot`\s*=\s*15/i);
+    assert.match(sql, /`s`\.`shiftId`\s+IS\s+NOT\s+NULL/i);
+    assert.doesNotMatch(sql, /UPDATE\s+`MachineShiftSession`[\s\S]*`liveProductionStoppedAt`\s*=/i);
+    assert.doesNotMatch(sql, /UPDATE\s+`MachineShiftSession`[\s\S]*`timeEndDetectedAt`\s*=/i);
+    assert.doesNotMatch(sql, /UPDATE\s+`MachineShiftSession`[\s\S]*`actualOperationalEndAt`\s*=/i);
+
+    const addEnteredAt = raw.match(/ADD\s+COLUMN\s+`enteredAt`[^;]*/i);
+    assert.ok(addEnteredAt, "expected ADD COLUMN `enteredAt`");
+    assert.match(addEnteredAt[0], /DATETIME\(3\)\s+NULL/i);
+    assert.doesNotMatch(addEnteredAt[0], /DEFAULT/i);
+    assert.doesNotMatch(addEnteredAt[0], /CURRENT_TIMESTAMP/i);
+
+    const modifyEnteredAt = sql.match(
+      /MODIFY\s+COLUMN\s+`enteredAt`\s+DATETIME\(3\)\s+NULL\s+DEFAULT\s+CURRENT_TIMESTAMP\(3\)/i,
+    );
+    assert.ok(modifyEnteredAt, "expected later MODIFY enteredAt DEFAULT CURRENT_TIMESTAMP(3)");
+    const addEnteredAtIdx = sql.search(/ADD\s+COLUMN\s+`enteredAt`/i);
+    const modifyEnteredAtIdx = sql.search(/MODIFY\s+COLUMN\s+`enteredAt`/i);
+    assert.ok(addEnteredAtIdx >= 0 && modifyEnteredAtIdx > addEnteredAtIdx, "ADD enteredAt before MODIFY");
+
+    assert.doesNotMatch(sql, /UPDATE\s+`ProductionEntry`/i);
+    assert.doesNotMatch(sql, /SET\s+[\s\S]*`enteredAt`\s*=/i);
+    assert.doesNotMatch(sql, /`actualProductionAt`\s*=/i);
+
+    assert.match(sql, /ADD\s+COLUMN\s+`actualProductionAt`\s+DATETIME\(3\)\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`createdByUserId`\s+INTEGER\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`enteredOnBehalfOfOperatorId`\s+INTEGER\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`operatorUnavailable`\s+BOOLEAN\s+NOT\s+NULL\s+DEFAULT\s+false/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`lateEntryReason`\s+VARCHAR\(40\)\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`lateEntryRemarks`\s+TEXT\s+NULL/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`isLateManagerEntry`\s+BOOLEAN\s+NOT\s+NULL\s+DEFAULT\s+false/i);
+    assert.match(
+      sql,
+      /INDEX\s+`Pe_shiftSess_lateMgr_idx`\s+ON\s+`ProductionEntry`\s*\(\s*`shiftSessionId`\s*,\s*`isLateManagerEntry`\s*\)/i,
+    );
+    assert.match(sql, /CONSTRAINT\s+`Pe_createdBy_fkey`/i);
+    assert.match(sql, /CONSTRAINT\s+`Pe_enteredOnBehalf_fkey`/i);
+    assert.match(sql, /REFERENCES\s+`Operator`\(`id`\)\s+ON\s+DELETE\s+SET\s+NULL/i);
+  });
 });

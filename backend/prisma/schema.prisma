@@ -704,6 +704,8 @@ model User {
   // Phase 1 Shift Production runtime lifecycle (database foundation only).
   shiftSessionsStartedByUser                MachineShiftSession[]                    @relation("ShiftSessStartedBy")
   shiftSessionsEndedByUser                  MachineShiftSession[]                    @relation("ShiftSessEndedBy")
+  shiftSessionsOvertimeApprovedByUser       MachineShiftSession[]                    @relation("ShiftSessOvertimeApprovedBy")
+  productionEntriesCreated                  ProductionEntry[]                        @relation("PeCreatedBy")
   machineShiftSessionOperatorsChangedByUser MachineShiftSessionOperator[]
   shiftRunSegmentsStartedByUser             MachineShiftSessionRunSegment[]          @relation("MSSSegStartedBy")
   shiftRunSegmentsClosedByUser              MachineShiftSessionRunSegment[]          @relation("MSSSegClosedBy")
@@ -1307,6 +1309,8 @@ model AppSetting {
   /// Exact Tally ledger name for seller-charged Sales Bill transportation / freight.
   /// When null/empty, export falls back to env TALLY_TRANSPORTATION_LEDGER.
   tallyTransportationLedger         String? @db.VarChar(160)
+  /// Minutes before and after both scheduled shift start and scheduled shift end (factory-wide).
+  shiftGraceMinutes                 Int     @default(15)
 
   /// ===== Company Profile (document branding only) =====
   /// All fields below are purely presentational — they drive Quotation /
@@ -3734,9 +3738,10 @@ model Operator {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  shiftSessionOperators       MachineShiftSessionOperator[]
-  primaryShiftSessions        MachineShiftSession[]
-  declaredShiftReportVersions ShiftProductionReportVersion[]
+  shiftSessionOperators              MachineShiftSessionOperator[]
+  primaryShiftSessions               MachineShiftSession[]
+  declaredShiftReportVersions        ShiftProductionReportVersion[]
+  productionEntriesEnteredOnBehalfOf ProductionEntry[] @relation("PeEnteredOnBehalfOf")
 
   @@index([isActive, operatorName])
 }
@@ -3772,6 +3777,8 @@ enum MachineShiftSessionStatus {
   SHIFT_OVER
   /// Mistaken start cancelled before any production activity.
   CANCELLED
+  /// Scheduled/live window ended; next shift starts only via handover accept.
+  HANDOVER_PENDING
 }
 
 enum ShiftProductionReportVersionStatus {
@@ -3837,6 +3844,30 @@ model MachineShiftSession {
   endedAt         DateTime?
   endedByUserId   Int?
 
+  /// Frozen Shift Master occurrence (overnight-aware) at Start Shift.
+  scheduledStartAt DateTime?
+  scheduledEndAt   DateTime?
+  /// Grace minutes used for this session (copied from AppSetting at start).
+  graceMinutesSnapshot Int?
+
+  overtimeApprovedUntil    DateTime?
+  overtimeApprovedAt       DateTime?
+  overtimeApprovedByUserId Int?
+  overtimeReason           String?   @db.Text
+
+  /// Effective authorized cutoff — last instant live PE was allowed.
+  liveProductionStoppedAt DateTime?
+  /// System first applied auto HANDOVER_PENDING (may be late after restart).
+  timeEndDetectedAt DateTime?
+  /// Manager-confirmed actual operational end; Shift Report variance uses this only.
+  actualOperationalEndAt DateTime?
+
+  previousSessionId Int?
+
+  startedOutsideWindow        Boolean @default(false)
+  startedOutsideWindowReason  String? @db.VarChar(40)
+  startedOutsideWindowRemarks String? @db.Text
+
   /// Reopen counters/history (Phase 2 will update).
   reopenCount Int @default(0)
 
@@ -3848,6 +3879,9 @@ model MachineShiftSession {
   primaryOperator Operator @relation(fields: [primaryOperatorId], references: [id], onDelete: Restrict)
   startedByUser   User?    @relation("ShiftSessStartedBy", fields: [startedByUserId], references: [id], onDelete: SetNull)
   endedByUser     User?    @relation("ShiftSessEndedBy", fields: [endedByUserId], references: [id], onDelete: SetNull)
+  overtimeApprovedByUser User? @relation("ShiftSessOvertimeApprovedBy", fields: [overtimeApprovedByUserId], references: [id], onDelete: SetNull, map: "mss_ot_by_user_fk")
+  previousSession    MachineShiftSession?  @relation("MssHandoverPrev", fields: [previousSessionId], references: [id], onDelete: SetNull, map: "mss_prev_sess_fk")
+  nextSessions       MachineShiftSession[] @relation("MssHandoverPrev")
 
   sessionOperators  MachineShiftSessionOperator[]
   runSegments       MachineShiftSessionRunSegment[]
@@ -3861,6 +3895,8 @@ model MachineShiftSession {
   @@unique([id, machineId], map: "uq_mss_id_mach")
   @@index([machineId, sessionDate], map: "idx_mss_mach_date")
   @@index([endedByUserId], map: "idx_mss_end_by")
+  @@index([overtimeApprovedByUserId], map: "idx_mss_ot_by")
+  @@index([previousSessionId], map: "idx_mss_prev_sess")
 }
 
 /// Operator join/leave history for a shift session.
@@ -4267,11 +4303,25 @@ model ProductionEntry {
   shiftSessionId    Int?
   shiftRunSegmentId Int?
 
+  /// When the row was saved in ERP (server/database clock). Null on historical rows.
+  /// Never copy to actualProductionAt.
+  enteredAt DateTime? @default(now())
+  /// When quantity was actually produced. Required for late manager entry.
+  actualProductionAt DateTime?
+  createdByUserId Int?
+  enteredOnBehalfOfOperatorId Int?
+  operatorUnavailable Boolean @default(false)
+  lateEntryReason  String? @db.VarChar(40)
+  lateEntryRemarks String? @db.Text
+  isLateManagerEntry Boolean @default(false)
+
   workOrderLine   WorkOrderLine                  @relation(fields: [workOrderLineId], references: [id], onDelete: Cascade)
   runAllocation   WorkOrderProductionRunAllocation? @relation(fields: [runAllocationId], references: [id], onDelete: Restrict, map: "Pe_runAlloc_fkey")
 
   shiftSession    MachineShiftSession?           @relation(fields: [shiftSessionId], references: [id], onDelete: SetNull)
   shiftRunSegment MachineShiftSessionRunSegment? @relation(fields: [shiftRunSegmentId], references: [id], onDelete: SetNull)
+  createdByUser User? @relation("PeCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull, map: "Pe_createdBy_fkey")
+  enteredOnBehalfOfOperator Operator? @relation("PeEnteredOnBehalfOf", fields: [enteredOnBehalfOfOperatorId], references: [id], onDelete: SetNull, map: "Pe_enteredOnBehalf_fkey")
 
   qcEntries       QcEntry[]
   rmConsumptions  ProductionEntryRmConsumption[]
@@ -4283,6 +4333,9 @@ model ProductionEntry {
   @@index([runAllocationId], map: "Pe_runAlloc_idx")
   @@index([shiftSessionId], map: "Pe_shiftSess_idx")
   @@index([shiftRunSegmentId], map: "Pe_shiftSeg_idx")
+  @@index([createdByUserId], map: "Pe_createdBy_idx")
+  @@index([enteredOnBehalfOfOperatorId], map: "Pe_enteredOnBehalf_idx")
+  @@index([shiftSessionId, isLateManagerEntry], map: "Pe_shiftSess_lateMgr_idx")
 }
 
 /// Immutable RM standard vs actual snapshot per approved production batch (REGULAR).

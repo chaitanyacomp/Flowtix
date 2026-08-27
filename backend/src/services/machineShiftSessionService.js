@@ -10,12 +10,17 @@ const {
   HANDOVER_STATES,
 } = require("./machineShiftSessionErrors");
 const { allocateShiftSessionNo, MAX_ALLOCATE_ATTEMPTS } = require("./machineShiftSessionNumbering");
-
-const SESSION_STATUS = Object.freeze({
-  OPEN: "OPEN",
-  SHIFT_OVER: "SHIFT_OVER",
-  CANCELLED: "CANCELLED",
-});
+const {
+  SESSION_STATUS,
+  START_OUTSIDE_WINDOW_REASON_SET,
+  GUIDANCE,
+  buildScheduledWindow,
+  evaluateStartWindow,
+  readShiftGraceMinutes,
+  findUnresolvedHandoverSession,
+  throwHandoverPending,
+  reconcileSessionExpiry,
+} = require("./shiftSessionTimeWindowService");
 
 /**
  * Run in a transaction when `db` is the root Prisma client; otherwise use `db` as tx.
@@ -137,7 +142,14 @@ async function assertShiftActive(tx, shiftId) {
   if (shiftId == null) return null;
   const shift = await tx.shift.findUnique({
     where: { id: shiftId },
-    select: { id: true, isActive: true, shiftCode: true, shiftName: true },
+    select: {
+      id: true,
+      isActive: true,
+      shiftCode: true,
+      shiftName: true,
+      startTime: true,
+      endTime: true,
+    },
   });
   if (!shift) {
     throw domainError(404, "SHIFT_NOT_FOUND", "Shift was not found.");
@@ -173,8 +185,8 @@ async function findOpenSessionForMachine(tx, machineId) {
   });
 }
 
-async function requireOpenSession(tx, sessionId) {
-  const session = await tx.machineShiftSession.findUnique({ where: { id: sessionId } });
+async function requireOpenSession(tx, sessionId, now = new Date()) {
+  let session = await tx.machineShiftSession.findUnique({ where: { id: sessionId } });
   if (!session) {
     throw domainError(404, "SHIFT_SESSION_NOT_FOUND", "Shift session was not found.");
   }
@@ -185,10 +197,24 @@ async function requireOpenSession(tx, sessionId) {
       "This shift session was cancelled. Open a new shift if work needs to continue.",
     );
   }
+  session = await reconcileSessionExpiry(tx, session, now);
   if (session.status !== SESSION_STATUS.OPEN) {
     throw domainError(409, "SHIFT_SESSION_NOT_OPEN", "This shift session is not open.");
   }
   return session;
+}
+
+function normalizeOutsideWindowReason(value) {
+  if (value == null || value === "") return null;
+  const key = String(value).trim().toUpperCase();
+  if (!START_OUTSIDE_WINDOW_REASON_SET.has(key)) {
+    throw domainError(
+      400,
+      "START_OUTSIDE_WINDOW_REASON_INVALID",
+      "Choose a valid outside-window start reason.",
+    );
+  }
+  return key;
 }
 
 /**
@@ -206,20 +232,28 @@ async function requireOpenSession(tx, sessionId) {
  */
 async function startShiftSession(input, db = prisma) {
   const machineId = normalizePositiveInt(input?.machineId, "MACHINE_ID_INVALID", "Machine is required.");
-  const shiftId =
-    input?.shiftId == null || input.shiftId === ""
-      ? null
-      : normalizePositiveInt(input.shiftId, "SHIFT_ID_INVALID", "Shift is not valid.");
+  if (input?.shiftId == null || input.shiftId === "") {
+    throw domainError(400, "SHIFT_ID_REQUIRED", "Select a shift. Session date is the shift starting date and is never inferred.");
+  }
+  const shiftId = normalizePositiveInt(input.shiftId, "SHIFT_ID_INVALID", "Shift is not valid.");
   const sessionDate = normalizeSessionDate(input?.sessionDate);
   const startedByUserId = normalizeOptionalUserId(input?.startedByUserId ?? input?.actorUserId);
+  const actorRole = String(input?.actorRole ?? "").trim().toUpperCase();
   const handoverState = normalizeHandoverState(input?.handoverState);
   const operators = normalizeInitialOperators(input?.operators);
   const primaryOperatorId = operators.find((o) => o.isPrimary).operatorId;
+  const now = input?.now instanceof Date && Number.isFinite(input.now.getTime()) ? input.now : new Date();
+  const requestedOutsideReason = normalizeOutsideWindowReason(
+    input?.startedOutsideWindowReason ?? input?.outsideWindowReason,
+  );
+  const requestedOutsideRemarks = normalizeChangeReason(input?.startedOutsideWindowRemarks ?? input?.outsideWindowRemarks, {
+    required: false,
+  });
 
   try {
     return await withShiftSessionTx(db, async (tx) => {
       await assertMachineActive(tx, machineId);
-      await assertShiftActive(tx, shiftId);
+      const shift = await assertShiftActive(tx, shiftId);
       await assertOperatorsActive(
         tx,
         operators.map((o) => o.operatorId),
@@ -241,7 +275,57 @@ async function startShiftSession(input, db = prisma) {
         );
       }
 
-      const startedAt = new Date();
+      const unresolvedHandover = await findUnresolvedHandoverSession(tx, machineId);
+      if (unresolvedHandover) {
+        throwHandoverPending(unresolvedHandover);
+      }
+
+      const graceMinutesSnapshot = await readShiftGraceMinutes(tx);
+      const scheduled = buildScheduledWindow({
+        sessionDate,
+        startTime: shift?.startTime,
+        endTime: shift?.endTime,
+      });
+      const scheduledStartAt = scheduled?.scheduledStartAt ?? null;
+      const scheduledEndAt = scheduled?.scheduledEndAt ?? null;
+
+      let startedOutsideWindow = false;
+      let startedOutsideWindowReason = null;
+      let startedOutsideWindowRemarks = null;
+
+      if (scheduledStartAt) {
+        const startEval = evaluateStartWindow(scheduledStartAt, graceMinutesSnapshot, now);
+        if (!startEval.withinStartWindow) {
+          const manager = actorRole === "ADMIN" || actorRole === "PRODUCTION_MANAGER";
+          if (!manager) {
+            throw domainError(
+              403,
+              "SHIFT_START_OUTSIDE_WINDOW",
+              GUIDANCE.START_OUTSIDE_WINDOW,
+              { side: startEval.side },
+            );
+          }
+          if (!requestedOutsideReason) {
+            throw domainError(
+              400,
+              "START_OUTSIDE_WINDOW_REASON_REQUIRED",
+              "A reason is required to start this shift outside the allowed window.",
+            );
+          }
+          if (!requestedOutsideRemarks) {
+            throw domainError(
+              400,
+              "START_OUTSIDE_WINDOW_REMARKS_REQUIRED",
+              "Remarks are required to start this shift outside the allowed window.",
+            );
+          }
+          startedOutsideWindow = true;
+          startedOutsideWindowReason = requestedOutsideReason;
+          startedOutsideWindowRemarks = requestedOutsideRemarks;
+        }
+      }
+
+      const startedAt = now;
       let lastErr = null;
 
       for (let attempt = 0; attempt < MAX_ALLOCATE_ATTEMPTS; attempt += 1) {
@@ -258,6 +342,12 @@ async function startShiftSession(input, db = prisma) {
               primaryOperatorId,
               startedAt,
               startedByUserId,
+              scheduledStartAt,
+              scheduledEndAt,
+              graceMinutesSnapshot,
+              startedOutsideWindow,
+              startedOutsideWindowReason,
+              startedOutsideWindowRemarks,
               sessionOperators: {
                 create: operators.map((o) => ({
                   operatorId: o.operatorId,

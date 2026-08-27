@@ -21,6 +21,9 @@ const {
   getMappedAdjustmentRequest,
   getMappedReopenRequest,
 } = require("../services/machineShiftSessionReadService");
+const {
+  START_OUTSIDE_WINDOW_REASONS,
+} = require("../services/shiftSessionTimeWindowService");
 const { listEligibleRunsForMachine } = require("../services/machineShiftEligibleRunsService");
 const { getOpenDowntimeForMachine } = require("../services/machineShiftOpenDowntimeService");
 
@@ -33,6 +36,13 @@ const { zodStrictIsoDateString } = require("../services/strictIsoDate");
 const dateOnly = zodStrictIsoDateString(z, { required: true });
 
 const handoverStateEnum = z.enum(["RETAINED", "CLEARED", "UNKNOWN"]);
+const outsideWindowReasonEnum = z.enum([
+  START_OUTSIDE_WINDOW_REASONS.EARLY_START,
+  START_OUTSIDE_WINDOW_REASONS.LATE_ARRIVAL,
+  START_OUTSIDE_WINDOW_REASONS.PREVIOUS_SHIFT_DELAY,
+  START_OUTSIDE_WINDOW_REASONS.EMERGENCY,
+  START_OUTSIDE_WINDOW_REASONS.OTHER,
+]);
 const downtimeReasonEnum = z.enum([
   "MACHINE_BREAKDOWN",
   "WAITING_FOR_RM",
@@ -87,6 +97,12 @@ function stripActorFields(body) {
     segmentStartedByUserId,
     segmentEndedByUserId,
     closedByUserId,
+    overtimeApprovedByUserId,
+    liveProductionStoppedAt,
+    timeEndDetectedAt,
+    scheduledStartAt,
+    scheduledEndAt,
+    graceMinutesSnapshot,
     ...rest
   } = body;
   void actorUserId;
@@ -103,10 +119,20 @@ function stripActorFields(body) {
   void segmentStartedByUserId;
   void segmentEndedByUserId;
   void closedByUserId;
+  void overtimeApprovedByUserId;
+  void liveProductionStoppedAt;
+  void timeEndDetectedAt;
+  void scheduledStartAt;
+  void scheduledEndAt;
+  void graceMinutesSnapshot;
   return rest;
 }
 
 // ——— Session reads ———
+// GET /open may return unresolved HANDOVER_PENDING for continuity.
+// status stays HANDOVER_PENDING; isLiveProductionAllowed is false.
+// Consumers must not treat it as an OPEN live session.
+// Normal Start Shift still blocks via SHIFT_HANDOVER_PENDING.
 
 machineShiftSessionsRouter.get(
   "/open",
@@ -211,7 +237,7 @@ machineShiftSessionsRouter.post(
       const body = z
         .object({
           machineId: positiveInt,
-          shiftId: optionalPositiveInt,
+          shiftId: positiveInt,
           sessionDate: dateOnly,
           operators: z
             .array(
@@ -224,6 +250,8 @@ machineShiftSessionsRouter.post(
             )
             .min(1),
           handoverState: handoverStateEnum.optional(),
+          startedOutsideWindowReason: outsideWindowReasonEnum.optional(),
+          startedOutsideWindowRemarks: z.string().max(2000).optional().nullable(),
         })
         .strict()
         .parse(stripActorFields(req.body));
@@ -231,9 +259,93 @@ machineShiftSessionsRouter.post(
       const session = await ops.startShiftSession({
         ...body,
         startedByUserId: actorUserId,
+        actorRole: req.user?.role,
       });
       const detail = await getShiftSessionDetail(session.id);
       return res.status(201).json({ session: detail });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+machineShiftSessionsRouter.post(
+  "/:sessionId/end-shift",
+  requireAuth,
+  requireShiftAction(SHIFT_ACTION.MANAGER_TIME_CONTROLS),
+  async (req, res, next) => {
+    try {
+      const sessionId = parseId(req.params.sessionId, "sessionId");
+      const body = z
+        .object({
+          actualOperationalEndAt: z.string().min(1),
+        })
+        .strict()
+        .parse(stripActorFields(req.body));
+      await ops.endShiftForHandover({
+        sessionId,
+        actualOperationalEndAt: body.actualOperationalEndAt,
+        actorUserId: actorUserIdFromReq(req),
+        actorRole: req.user?.role,
+      });
+      const detail = await getShiftSessionDetail(sessionId);
+      return res.json({ session: detail });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+machineShiftSessionsRouter.post(
+  "/:sessionId/overtime",
+  requireAuth,
+  requireShiftAction(SHIFT_ACTION.MANAGER_TIME_CONTROLS),
+  async (req, res, next) => {
+    try {
+      const sessionId = parseId(req.params.sessionId, "sessionId");
+      const body = z
+        .object({
+          approvedUntil: z.string().min(1),
+          reason: z.string().min(1).max(2000),
+        })
+        .strict()
+        .parse(stripActorFields(req.body));
+      await ops.continueShiftOvertime({
+        sessionId,
+        approvedUntil: body.approvedUntil,
+        reason: body.reason,
+        actorUserId: actorUserIdFromReq(req),
+        actorRole: req.user?.role,
+      });
+      const detail = await getShiftSessionDetail(sessionId);
+      return res.json({ session: detail });
+    } catch (e) {
+      return next(e);
+    }
+  },
+);
+
+machineShiftSessionsRouter.post(
+  "/:sessionId/confirm-actual-end",
+  requireAuth,
+  requireShiftAction(SHIFT_ACTION.MANAGER_TIME_CONTROLS),
+  async (req, res, next) => {
+    try {
+      const sessionId = parseId(req.params.sessionId, "sessionId");
+      const body = z
+        .object({
+          actualOperationalEndAt: z.string().min(1),
+        })
+        .strict()
+        .parse(stripActorFields(req.body));
+      await ops.confirmShiftActualEnd({
+        sessionId,
+        actualOperationalEndAt: body.actualOperationalEndAt,
+        actorUserId: actorUserIdFromReq(req),
+        actorRole: req.user?.role,
+      });
+      const detail = await getShiftSessionDetail(sessionId);
+      return res.json({ session: detail });
     } catch (e) {
       return next(e);
     }

@@ -152,6 +152,9 @@ function createMemoryDb() {
         let rows = sessions.slice();
         if (where?.machineId != null) rows = rows.filter((s) => s.machineId === where.machineId);
         if (where?.status != null) rows = rows.filter((s) => s.status === where.status);
+        if (where?.previousSessionId != null) {
+          rows = rows.filter((s) => s.previousSessionId === where.previousSessionId);
+        }
         if (where?.id?.not != null) rows = rows.filter((s) => s.id !== where.id.not);
         if (where?.id?.gt != null) rows = rows.filter((s) => s.id > where.id.gt);
         if (where?.shiftSessionNo?.startsWith) {
@@ -166,6 +169,13 @@ function createMemoryDb() {
         return rows[0] || null;
       },
       findUnique: async ({ where }) => sessions.find((s) => s.id === where.id) || null,
+      updateMany: async ({ where, data }) => {
+        let rows = sessions.slice();
+        if (where?.id != null) rows = rows.filter((s) => s.id === where.id);
+        if (where?.status != null) rows = rows.filter((s) => s.status === where.status);
+        for (const row of rows) Object.assign(row, data);
+        return { count: rows.length };
+      },
       create: async ({ data, include }) => {
         if (data.status === "OPEN" && sessions.some((s) => s.machineId === data.machineId && s.status === "OPEN")) {
           const err = new Error("Unique constraint failed");
@@ -186,6 +196,10 @@ function createMemoryDb() {
           primaryOperatorId: data.primaryOperatorId,
           startedAt: data.startedAt,
           startedByUserId: data.startedByUserId ?? null,
+          scheduledStartAt: data.scheduledStartAt ?? null,
+          scheduledEndAt: data.scheduledEndAt ?? null,
+          graceMinutesSnapshot: data.graceMinutesSnapshot ?? null,
+          previousSessionId: data.previousSessionId ?? null,
           endedAt: null,
           endedByUserId: null,
           reopenCount: 0,
@@ -926,6 +940,7 @@ describe("Step 2B Shift Over + reopen", () => {
     await startShiftSession(
       {
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-25",
         operators: [{ operatorId: 100, isPrimary: true }],
         startedByUserId: 7,
@@ -961,6 +976,7 @@ describe("Step 2B Shift Over + reopen", () => {
     const other = await startShiftSession(
       {
         machineId: 2,
+        shiftId: 10,
         sessionDate: "2026-08-25",
         operators: [{ operatorId: 101, isPrimary: true }],
         startedByUserId: 7,
@@ -1040,6 +1056,7 @@ describe("Controlled shift session cancel", () => {
     const next = await startShiftSession(
       {
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 100, isPrimary: true }],
         startedByUserId: 7,
@@ -1390,6 +1407,128 @@ describe("Zero Production Shift Report", () => {
           db,
         ),
       (e) => e.code === "ADJUSTMENT_NOT_AVAILABLE_FOR_ZERO_REPORT",
+    );
+  });
+});
+
+describe("HANDOVER_PENDING Shift Report", () => {
+  it("allows draft save on HANDOVER_PENDING and blocks submit until actual end is confirmed", async () => {
+    const db = createMemoryDb();
+    const session = await startShiftSession(
+      {
+        machineId: 1,
+        shiftId: 10,
+        sessionDate: "2026-08-24",
+        startedByUserId: 7,
+        operators: [{ operatorId: 100, isPrimary: true }],
+      },
+      db,
+    );
+    const row = await db.machineShiftSession.findUnique({ where: { id: session.id } });
+    row.status = "HANDOVER_PENDING";
+    row.actualOperationalEndAt = null;
+
+    const draft = await saveShiftReportDraft(
+      {
+        sessionId: session.id,
+        lines: [],
+        zeroProductionReason: "NO_WORK_ORDER",
+      },
+      db,
+    );
+    assert.equal(draft.version.status, REPORT_VERSION_STATUS.DRAFT);
+
+    await assert.rejects(
+      () => submitShiftReport({ sessionId: session.id, declaredOperatorId: 100, declaredByUserId: 7 }, db),
+      (e) => e.code === "ACTUAL_END_CONFIRMATION_REQUIRED" && e.statusCode === 409,
+    );
+  });
+
+  it("submits from HANDOVER_PENDING after actual end is confirmed, then Shift Over after verify", async () => {
+    const db = createMemoryDb();
+    const session = await startShiftSession(
+      {
+        machineId: 1,
+        shiftId: 10,
+        sessionDate: "2026-08-24",
+        startedByUserId: 7,
+        operators: [{ operatorId: 100, isPrimary: true }],
+      },
+      db,
+    );
+    const row = await db.machineShiftSession.findUnique({ where: { id: session.id } });
+    row.status = "HANDOVER_PENDING";
+    row.actualOperationalEndAt = new Date("2026-08-24T14:00:00+05:30");
+
+    await saveShiftReportDraft(
+      {
+        sessionId: session.id,
+        lines: [],
+        zeroProductionReason: "NO_WORK_ORDER",
+      },
+      db,
+    );
+    const submitted = await submitShiftReport(
+      { sessionId: session.id, declaredOperatorId: 100, declaredByUserId: 7 },
+      db,
+    );
+    assert.equal(submitted.version.status, REPORT_VERSION_STATUS.SUBMITTED);
+
+    const verified = await verifyShiftReport({ versionId: submitted.version.id, actorUserId: 9 }, db);
+    assert.equal(verified.version.status, REPORT_VERSION_STATUS.VERIFIED);
+
+    const closed = await completeShiftOver(
+      { sessionId: session.id, handoverState: "CLEARED", actorUserId: 7 },
+      db,
+    );
+    assert.equal(closed.session.status, "SHIFT_OVER");
+  });
+
+  it("keeps active-run report lines valid on HANDOVER_PENDING without requiring close-run first", async () => {
+    const db = createMemoryDb();
+    const { session, runSegment } = await openSessionWithRun(db);
+    await seedApprovedPe(db, { sessionId: session.id, segmentId: runSegment.id, qty: 95 });
+    const row = await db.machineShiftSession.findUnique({ where: { id: session.id } });
+    row.status = "HANDOVER_PENDING";
+    row.actualOperationalEndAt = new Date("2026-08-24T14:00:00+05:30");
+
+    await saveShiftReportDraft(
+      {
+        sessionId: session.id,
+        lines: [{ runSegmentId: runSegment.id, itemId: 66, productionScrapQty: 5 }],
+      },
+      db,
+    );
+    const submitted = await submitShiftReport(
+      { sessionId: session.id, declaredOperatorId: 100, declaredByUserId: 7 },
+      db,
+    );
+    assert.equal(submitted.version.status, REPORT_VERSION_STATUS.SUBMITTED);
+    const seg = await db.machineShiftSessionRunSegment.findUnique({ where: { id: runSegment.id } });
+    assert.equal(seg.status, "ACTIVE");
+  });
+
+  it("still enforces zero-production blockers on HANDOVER_PENDING", async () => {
+    const db = createMemoryDb();
+    const { session, runSegment } = await openSessionWithRun(db);
+    await seedApprovedPe(db, { sessionId: session.id, segmentId: runSegment.id, qty: 10 });
+    const row = await db.machineShiftSession.findUnique({ where: { id: session.id } });
+    row.status = "HANDOVER_PENDING";
+    row.actualOperationalEndAt = new Date("2026-08-24T14:00:00+05:30");
+
+    await assert.rejects(
+      () =>
+        saveShiftReportDraft(
+          {
+            sessionId: session.id,
+            lines: [],
+            zeroProductionReason: "NO_WORK_ORDER",
+          },
+          db,
+        ),
+      (e) =>
+        e.code === "ZERO_PRODUCTION_NOT_ELIGIBLE" &&
+        e.details?.blockers?.includes("APPROVED_PRODUCTION"),
     );
   });
 });

@@ -156,6 +156,9 @@ function createMemoryDb(seed = {}) {
         let rows = sessions.slice();
         if (where?.machineId != null) rows = rows.filter((s) => s.machineId === where.machineId);
         if (where?.status != null) rows = rows.filter((s) => s.status === where.status);
+        if (where?.previousSessionId != null) {
+          rows = rows.filter((s) => s.previousSessionId === where.previousSessionId);
+        }
         if (where?.shiftSessionNo?.startsWith) {
           const p = where.shiftSessionNo.startsWith;
           rows = rows.filter((s) => String(s.shiftSessionNo).startsWith(p));
@@ -168,6 +171,17 @@ function createMemoryDb(seed = {}) {
         return rows[0] || null;
       },
       findUnique: async ({ where }) => sessions.find((s) => s.id === where.id) || null,
+      updateMany: async ({ where, data }) => {
+        let rows = sessions.slice();
+        if (where?.id != null) rows = rows.filter((s) => s.id === where.id);
+        if (where?.status != null) rows = rows.filter((s) => s.status === where.status);
+        if (where?.machineId != null) rows = rows.filter((s) => s.machineId === where.machineId);
+        if (where?.previousSessionId != null) {
+          rows = rows.filter((s) => s.previousSessionId === where.previousSessionId);
+        }
+        for (const row of rows) Object.assign(row, data);
+        return { count: rows.length };
+      },
       create: async ({ data, include }) => {
         // Simulate MySQL uq_mss_open
         if (data.status === "OPEN" && sessions.some((s) => s.machineId === data.machineId && s.status === "OPEN")) {
@@ -194,6 +208,17 @@ function createMemoryDb(seed = {}) {
           primaryOperatorId: data.primaryOperatorId,
           startedAt: data.startedAt,
           startedByUserId: data.startedByUserId ?? null,
+          scheduledStartAt: data.scheduledStartAt ?? null,
+          scheduledEndAt: data.scheduledEndAt ?? null,
+          graceMinutesSnapshot: data.graceMinutesSnapshot ?? null,
+          startedOutsideWindow: Boolean(data.startedOutsideWindow),
+          startedOutsideWindowReason: data.startedOutsideWindowReason ?? null,
+          startedOutsideWindowRemarks: data.startedOutsideWindowRemarks ?? null,
+          overtimeApprovedUntil: data.overtimeApprovedUntil ?? null,
+          liveProductionStoppedAt: data.liveProductionStoppedAt ?? null,
+          timeEndDetectedAt: data.timeEndDetectedAt ?? null,
+          actualOperationalEndAt: data.actualOperationalEndAt ?? null,
+          previousSessionId: data.previousSessionId ?? null,
           endedAt: null,
           endedByUserId: null,
           reopenCount: 0,
@@ -446,6 +471,7 @@ describe("startShiftSession", () => {
         startShiftSession(
           {
             machineId: 1,
+            shiftId: 10,
             sessionDate: "2026-08-24",
             operators: [{ operatorId: 100, isPrimary: false }],
           },
@@ -459,6 +485,7 @@ describe("startShiftSession", () => {
         startShiftSession(
           {
             machineId: 1,
+            shiftId: 10,
             sessionDate: "2026-08-24",
             operators: [{ operatorId: 100, isPrimary: true }],
           },
@@ -473,6 +500,7 @@ describe("startShiftSession", () => {
     await startShiftSession(
       {
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 100, isPrimary: true }],
       },
@@ -483,6 +511,7 @@ describe("startShiftSession", () => {
         startShiftSession(
           {
             machineId: 1,
+            shiftId: 10,
             sessionDate: "2026-08-25",
             operators: [{ operatorId: 101, isPrimary: true }],
           },
@@ -498,6 +527,7 @@ describe("operator management", () => {
     return startShiftSession(
       {
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [
           { operatorId: 100, isPrimary: true },
@@ -587,6 +617,7 @@ describe("operator management", () => {
     await startShiftSession(
       {
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 100, isPrimary: true }],
       },
@@ -597,6 +628,7 @@ describe("operator management", () => {
         startShiftSession(
           {
             machineId: 2,
+            shiftId: 10,
             sessionDate: "2026-08-24",
             operators: [{ operatorId: 100, isPrimary: true }],
           },
@@ -611,6 +643,7 @@ describe("operator management", () => {
     const a = await startShiftSession(
       {
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 100, isPrimary: true }],
       },
@@ -619,6 +652,7 @@ describe("operator management", () => {
     const b = await startShiftSession(
       {
         machineId: 2,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 101, isPrimary: true }],
       },
@@ -646,6 +680,7 @@ describe("operator management", () => {
     await startShiftSession(
       {
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 100, isPrimary: true }],
       },
@@ -654,6 +689,7 @@ describe("operator management", () => {
     const b = await startShiftSession(
       {
         machineId: 2,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 101, isPrimary: true }],
       },
@@ -687,6 +723,7 @@ describe("operator management", () => {
     const a = await startShiftSession(
       {
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [
           { operatorId: 100, isPrimary: true },
@@ -698,6 +735,7 @@ describe("operator management", () => {
     const b = await startShiftSession(
       {
         machineId: 2,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 102, isPrimary: true }],
       },
@@ -727,6 +765,7 @@ describe("run segments", () => {
     return startShiftSession(
       {
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 100, isPrimary: true }],
       },
@@ -825,6 +864,7 @@ describe("downtime", () => {
     const session = await startShiftSession(
       {
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 100, isPrimary: true }],
       },
@@ -892,6 +932,7 @@ describe("downtime", () => {
     const session2 = await startShiftSession(
       {
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-25",
         operators: [{ operatorId: 100, isPrimary: true }],
       },

@@ -74,6 +74,17 @@ describe("assertShiftActionAllowed", () => {
     );
   });
 
+  it("PRODUCTION never gets MANAGER_TIME_CONTROLS, even with no active manager", async () => {
+    const db = mockDb({ managerCount: 0 });
+    await assert.rejects(
+      () => assertShiftActionAllowed(db, { role: "PRODUCTION" }, SHIFT_ACTION.MANAGER_TIME_CONTROLS),
+      (e) => e.code === "PRODUCTION_MANAGER_ACTION_REQUIRED" && e.statusCode === 403,
+    );
+    const withPm = mockDb({ managerCount: 1 });
+    await assertShiftActionAllowed(withPm, { role: "ADMIN" }, SHIFT_ACTION.MANAGER_TIME_CONTROLS);
+    await assertShiftActionAllowed(withPm, { role: "PRODUCTION_MANAGER" }, SHIFT_ACTION.MANAGER_TIME_CONTROLS);
+  });
+
   it("PRODUCTION fallback for manager actions when no active manager", async () => {
     const db = mockDb({ managerCount: 0 });
     const r = await assertShiftActionAllowed(db, { role: "PRODUCTION" }, SHIFT_ACTION.START_SESSION);
@@ -172,6 +183,7 @@ describe("machine-shift-sessions API authorization", () => {
       .set("Authorization", bearer("ADMIN"))
       .send({
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 1, isPrimary: true }],
         unexpected: true,
@@ -224,6 +236,7 @@ describe("machine-shift-sessions API authorization", () => {
       .set("Authorization", bearer("ADMIN", 42))
       .send({
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 1, isPrimary: true }],
         actorUserId: 999999,

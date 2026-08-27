@@ -20,6 +20,7 @@ const SHIFT_ACTION = Object.freeze({
   DECIDE_REOPEN: "DECIDE_REOPEN",
   REQUEST_ADJUSTMENT: "REQUEST_ADJUSTMENT",
   DECIDE_APPLY_ADJUSTMENT: "DECIDE_APPLY_ADJUSTMENT",
+  MANAGER_TIME_CONTROLS: "MANAGER_TIME_CONTROLS",
 });
 
 /** Always allowed for ADMIN, PRODUCTION_MANAGER, and PRODUCTION (no fallback gate). */
@@ -32,6 +33,9 @@ const ALWAYS_ALLOWED_FOR_PRODUCTION = Object.freeze(
     SHIFT_ACTION.REQUEST_ADJUSTMENT,
   ]),
 );
+
+/** Admin / Production Manager only — no PRODUCTION fallback. */
+const ADMIN_PM_ONLY_ACTIONS = Object.freeze(new Set([SHIFT_ACTION.MANAGER_TIME_CONTROLS]));
 
 /** Manager-owned actions; PRODUCTION only when no active PRODUCTION_MANAGER exists. */
 const MANAGER_OWNED_ACTIONS = Object.freeze(
@@ -88,7 +92,7 @@ async function assertShiftActionAllowed(db, user, action) {
   if (!role) {
     throw shiftAuthError(401, "UNAUTHORIZED", "Unauthorized");
   }
-  if (!ALWAYS_ALLOWED_FOR_PRODUCTION.has(action) && !MANAGER_OWNED_ACTIONS.has(action)) {
+  if (!ALWAYS_ALLOWED_FOR_PRODUCTION.has(action) && !MANAGER_OWNED_ACTIONS.has(action) && !ADMIN_PM_ONLY_ACTIONS.has(action)) {
     throw shiftAuthError(403, "SHIFT_ACTION_UNKNOWN", "This shift action is not recognized.");
   }
 
@@ -99,6 +103,13 @@ async function assertShiftActionAllowed(db, user, action) {
   if (role === "PRODUCTION") {
     if (ALWAYS_ALLOWED_FOR_PRODUCTION.has(action)) {
       return { role, via: "PRODUCTION" };
+    }
+    if (ADMIN_PM_ONLY_ACTIONS.has(action)) {
+      throw shiftAuthError(
+        403,
+        "PRODUCTION_MANAGER_ACTION_REQUIRED",
+        "A Production Manager must perform this action. Ask a Production Manager or Admin.",
+      );
     }
     if (MANAGER_OWNED_ACTIONS.has(action)) {
       const managerExists = await hasActiveProductionManager(db);
@@ -164,6 +175,7 @@ async function getShiftCapabilities(user, db = prisma) {
       canPauseProduction: false,
       productionManagerAssigned: false,
       isFallbackControl: false,
+      canManageShiftTime: false,
     };
   }
 
@@ -177,6 +189,7 @@ async function getShiftCapabilities(user, db = prisma) {
       canPauseProduction,
       productionManagerAssigned,
       isFallbackControl: false,
+      canManageShiftTime: true,
     };
   }
 
@@ -188,6 +201,7 @@ async function getShiftCapabilities(user, db = prisma) {
     canPauseProduction,
     productionManagerAssigned,
     isFallbackControl: canPerformManagerActions,
+    canManageShiftTime: false,
   };
 }
 
@@ -195,6 +209,7 @@ module.exports = {
   SHIFT_ACTION,
   ALWAYS_ALLOWED_FOR_PRODUCTION,
   MANAGER_OWNED_ACTIONS,
+  ADMIN_PM_ONLY_ACTIONS,
   hasActiveProductionManager,
   assertShiftActionAllowed,
   requireShiftAction,

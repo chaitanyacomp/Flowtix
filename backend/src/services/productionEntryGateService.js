@@ -8,6 +8,7 @@
  * ## Authoritative gate sequence (do not reorder without owner-doc review)
  *
  * 1. **WO identity validation** — resolve context; WO/WOL exist; structural linkage
+ * 1b. **Linked shift live-window / status** — resolve session/segment; reject if not live OPEN
  * 2. **WO operationally open** — HOLD/PAUSED/terminal blocks all manufacturing flows
  * 3. **SO operationally open** — parent sales order not COMPLETED/CLOSED
  * 4. **NO_QTY / Green execution validation** — cycle/RS/release + shop-floor execution status
@@ -16,6 +17,7 @@
  * 7. **WO quantity tolerance validation** — REGULAR line plan +5% cap
  *
  * Approve-time RM **consumption posting** remains in the production approve route (MFG-07).
+ * Live-window rejection happens before RM/material calculations. No inventory mutation occurs in this module.
  */
 
 const { GREEN_LEVEL_WO_SOURCE_TYPE } = require("./greenLevelWorkOrderService");
@@ -33,6 +35,7 @@ const {
 } = require("./productionRmReadinessService");
 const { assertProductionEntryWoQtyTolerance } = require("./workOrderLifecycleService");
 const { assertRegularSoAdditionalProductionAllowed } = require("./regularSoProductionClosure");
+const { assertNormalLiveProductionEntryAllowed } = require("./productionEntryLiveWindowService");
 
 /**
  * @typedef {object} ProductionEntryGateContext
@@ -154,6 +157,17 @@ async function assertProductionEntryAllowed(tx, input) {
   // 1. WO identity validation
   const ctx = await resolveProductionEntryGateContext(tx, workOrderLineId);
 
+  // 1b. Linked shift session/segment, then live-window/status — before RM/material.
+  const liveGate = await assertNormalLiveProductionEntryAllowed(tx, {
+    workOrderId: ctx.wo.id,
+    workOrderLineId: ctx.wol.id,
+    fgItemId: ctx.wol.fgItemId,
+    runAllocationId: input.runAllocationId ?? null,
+    claimedMachineId: input.claimedMachineId ?? null,
+    now: input.now,
+  });
+  const resolvedRunAllocationId = liveGate.runAllocationId ?? input.runAllocationId ?? null;
+
   // 2. WO operationally open
   await assertWorkOrderOperationallyOpenForProduction(tx, ctx.wo.id, {
     wo: ctx.wo,
@@ -198,7 +212,7 @@ async function assertProductionEntryAllowed(tx, input) {
   const startGate = await assertProductionRunStartConfirmed(tx, {
     workOrderId: ctx.wo.id,
     fgItemId: ctx.wol.fgItemId,
-    runAllocationId: input.runAllocationId ?? null,
+    runAllocationId: resolvedRunAllocationId,
     claimedMachineId: input.claimedMachineId ?? null,
   });
 
@@ -219,7 +233,13 @@ async function assertProductionEntryAllowed(tx, input) {
     messageBuilder: input.woQtyToleranceMessageBuilder ?? defaultMessageBuilder,
   });
 
-  return { ...ctx, readiness: readinessResult, productionRunStartGate: startGate };
+  return {
+    ...ctx,
+    readiness: readinessResult,
+    productionRunStartGate: startGate,
+    resolvedRunAllocationId,
+    liveProductionGate: liveGate,
+  };
 }
 
 module.exports = {

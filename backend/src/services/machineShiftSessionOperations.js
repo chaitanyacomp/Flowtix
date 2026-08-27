@@ -21,6 +21,11 @@ module.exports = {
   SESSION_STATUS: session.SESSION_STATUS,
   withShiftSessionTx: session.withShiftSessionTx,
 
+  // Manager time controls
+  endShiftForHandover: require("./shiftSessionManagerTimeService").endShiftForHandover,
+  continueShiftOvertime: require("./shiftSessionManagerTimeService").continueShiftOvertime,
+  confirmShiftActualEnd: require("./shiftSessionManagerTimeService").confirmShiftActualEnd,
+
   // Operators
   joinSessionOperator: operators.joinSessionOperator,
   leaveSessionOperator: operators.leaveSessionOperator,

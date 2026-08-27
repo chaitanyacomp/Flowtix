@@ -58,6 +58,8 @@ describe("machineShiftSessionReadService mapping", () => {
     assert.equal(run.confirmationPending, false);
     assert.equal(run.primaryActionLabel, ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION);
     assert.equal(run.workOrderLineId, 200);
+    assert.equal(dto.status, "OPEN");
+    assert.equal(dto.isLiveProductionAllowed, true);
   });
 
   it("pending start maps Confirm Machine Start", () => {
@@ -100,5 +102,23 @@ describe("machineShiftSessionReadService mapping", () => {
     const dto = mapSessionDetail(sessionFixture(), null, new Date("2026-08-26T13:00:00+05:30"));
     assert.equal(dto.shiftOverdue, false);
     assert.equal(dto.shiftOverdueMessage, null);
+  });
+
+  it("HANDOVER_PENDING is not a live OPEN session", () => {
+    const dto = mapSessionDetail(
+      sessionFixture({
+        status: "HANDOVER_PENDING",
+        scheduledStartAt: new Date("2026-08-26T00:30:00.000Z"),
+        scheduledEndAt: new Date("2026-08-26T08:30:00.000Z"),
+        graceMinutesSnapshot: 15,
+        liveProductionStoppedAt: new Date("2026-08-26T08:45:00.000Z"),
+      }),
+      null,
+      new Date("2026-08-26T15:00:00+05:30"),
+    );
+    assert.equal(dto.status, "HANDOVER_PENDING");
+    assert.notEqual(dto.status, "OPEN");
+    assert.equal(dto.isLiveProductionAllowed, false);
+    assert.equal(dto.runSegments[0].primaryActionLabel, null);
   });
 });

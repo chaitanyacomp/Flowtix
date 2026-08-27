@@ -16,6 +16,7 @@ const {
   normalizeChangeReason,
   SESSION_STATUS,
 } = require("./machineShiftSessionService");
+const { reconcileSessionExpiry } = require("./shiftSessionTimeWindowService");
 const {
   aggregateShiftSessionProductionQuantities,
   buildCalculatedReportLines,
@@ -116,9 +117,27 @@ function approvedQtyTotal(approvedByLine) {
   return total;
 }
 
+function isReportEditableSessionStatus(status) {
+  const key = String(status || "").trim().toUpperCase();
+  return key === SESSION_STATUS.OPEN || key === SESSION_STATUS.HANDOVER_PENDING;
+}
+
+function assertActualEndConfirmedForHandoverSubmit(session) {
+  if (String(session?.status || "").trim().toUpperCase() !== SESSION_STATUS.HANDOVER_PENDING) {
+    return;
+  }
+  if (session.actualOperationalEndAt) return;
+  throw domainError(
+    409,
+    "ACTUAL_END_CONFIRMATION_REQUIRED",
+    "Confirm the actual operational end time before submitting this shift report.",
+    { sessionId: session.id, status: session.status },
+  );
+}
+
 /**
- * Zero-production report is allowed only on OPEN sessions with no approved PE,
- * no scrap, and no linked DRAFT ProductionEntries.
+ * Zero-production report is allowed on OPEN or HANDOVER_PENDING sessions with no
+ * approved PE, no scrap, and no linked DRAFT ProductionEntries.
  */
 async function assertZeroProductionEligible(tx, sessionId, { productionScrapQty = 0 } = {}) {
   const session = await loadSession(tx, sessionId);
@@ -129,11 +148,11 @@ async function assertZeroProductionEligible(tx, sessionId, { productionScrapQty 
       "This shift session was cancelled. Open a new shift if work needs to continue.",
     );
   }
-  if (session.status !== SESSION_STATUS.OPEN) {
+  if (!isReportEditableSessionStatus(session.status)) {
     throw domainError(
       409,
       "ZERO_PRODUCTION_NOT_ELIGIBLE",
-      "Zero production can only be recorded on an open shift session.",
+      "Zero production can only be recorded on an open or handover-pending shift session.",
       { status: session.status },
     );
   }
@@ -450,8 +469,9 @@ async function createDraftVersionFrom(tx, report, sourceVersion) {
  * Ensure report + editable DRAFT exist. After RETURNED, creates a new DRAFT from the returned version.
  * Never mutates SUBMITTED / RETURNED / VERIFIED versions.
  */
-async function ensureEditableDraftVersion(tx, sessionId) {
-  const session = await loadSession(tx, sessionId);
+async function ensureEditableDraftVersion(tx, sessionId, now = new Date()) {
+  let session = await loadSession(tx, sessionId);
+  session = await reconcileSessionExpiry(tx, session, now);
   if (session.status === SESSION_STATUS.CANCELLED) {
     throw domainError(
       409,
@@ -466,7 +486,7 @@ async function ensureEditableDraftVersion(tx, sessionId) {
       "This shift session is already closed (Shift Over). Request a controlled reopen to edit the report.",
     );
   }
-  if (session.status !== SESSION_STATUS.OPEN) {
+  if (!isReportEditableSessionStatus(session.status)) {
     throw domainError(409, "SHIFT_SESSION_NOT_OPEN", "This shift session is not open.");
   }
   const report = await ensureShiftProductionReport(tx, sessionId);
@@ -537,7 +557,9 @@ async function saveShiftReportDraft(input, db = prisma) {
 
   try {
     return await withShiftSessionTx(db, async (tx) => {
-      const { session, report, version } = await ensureEditableDraftVersion(tx, sessionId);
+      const now =
+        input?.now instanceof Date && Number.isFinite(input.now.getTime()) ? input.now : new Date();
+      const { session, report, version } = await ensureEditableDraftVersion(tx, sessionId, now);
       if (version.status !== REPORT_VERSION_STATUS.DRAFT) {
         throw domainError(409, "REPORT_NOT_DRAFT", "Only a draft shift report can be saved.");
       }
@@ -712,7 +734,10 @@ async function submitShiftReport(input, db = prisma) {
 
   try {
     return await withShiftSessionTx(db, async (tx) => {
-      const session = await loadSession(tx, sessionId);
+      const now =
+        input?.now instanceof Date && Number.isFinite(input.now.getTime()) ? input.now : new Date();
+      let session = await loadSession(tx, sessionId);
+      session = await reconcileSessionExpiry(tx, session, now);
       if (session.status === SESSION_STATUS.CANCELLED) {
         throw domainError(
           409,
@@ -720,9 +745,10 @@ async function submitShiftReport(input, db = prisma) {
           "This shift session was cancelled. Open a new shift if work needs to continue.",
         );
       }
-      if (session.status !== SESSION_STATUS.OPEN) {
-        throw domainError(409, "SHIFT_SESSION_NOT_OPEN", "Only an open shift session can submit a report.");
+      if (!isReportEditableSessionStatus(session.status)) {
+        throw domainError(409, "SHIFT_SESSION_NOT_OPEN", "Only an open or handover-pending shift session can submit a report.");
       }
+      assertActualEndConfirmedForHandoverSubmit(session);
       const report = await ensureShiftProductionReport(tx, sessionId);
       let version = versionId
         ? await tx.shiftProductionReportVersion.findUnique({
@@ -765,7 +791,6 @@ async function submitShiftReport(input, db = prisma) {
 
         await assertOperatorParticipated(tx, sessionId, declaredOperatorId);
 
-        const now = new Date();
         const submitted = await tx.shiftProductionReportVersion.update({
           where: { id: version.id },
           data: {
@@ -828,7 +853,6 @@ async function submitShiftReport(input, db = prisma) {
 
       await assertOperatorParticipated(tx, sessionId, declaredOperatorId);
 
-      const now = new Date();
       const submitted = await tx.shiftProductionReportVersion.update({
         where: { id: version.id },
         data: {

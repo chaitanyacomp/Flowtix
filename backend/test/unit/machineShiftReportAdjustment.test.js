@@ -412,6 +412,7 @@ async function closedVerifiedSession(db) {
   const session = await startShiftSession(
     {
       machineId: 1,
+      shiftId: 10,
       sessionDate: "2026-08-24",
       startedByUserId: 7,
       operators: [{ operatorId: 100, isPrimary: true }],
@@ -596,6 +597,7 @@ describe("Step 2C historical adjustment", () => {
     const session = await startShiftSession(
       {
         machineId: 1,
+        shiftId: 10,
         sessionDate: "2026-08-24",
         operators: [{ operatorId: 100, isPrimary: true }],
         startedByUserId: 7,

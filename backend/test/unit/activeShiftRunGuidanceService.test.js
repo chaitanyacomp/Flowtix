@@ -247,6 +247,38 @@ describe("activeShiftRunGuidanceService", () => {
     assert.doesNotMatch(guidance.workspaceHref, /focusConfirmStart=1/);
   });
 
+  it("HANDOVER_PENDING session is not treated as a live run", () => {
+    const guidance = mapActiveRunSegmentToGuidance({
+      id: 9,
+      status: "ACTIVE",
+      sessionId: 7,
+      machineId: 3,
+      runAllocationId: 55,
+      workOrderId: 1001,
+      segmentNo: 1,
+      segmentStartedAt: new Date(),
+      session: {
+        id: 7,
+        status: "HANDOVER_PENDING",
+        shiftSessionNo: "SS-26-0004",
+        machineId: 3,
+        primaryOperatorId: 1,
+        machine: { id: 3, machineCode: "INJ-01", machineName: "Injection 01" },
+        shift: { id: 1, shiftCode: "A", shiftName: "Morning A" },
+        primaryOperator: { id: 1, operatorName: "Ramesh Kumar", operatorCode: "OP-01" },
+      },
+      workOrder: { id: 1001, docNo: "WO-R-26-0001" },
+      runAllocation: {
+        id: 55,
+        workOrderId: 1001,
+        workOrderLineId: 200,
+        startConfirmation: { id: 1, status: "CONFIRMED" },
+        workOrder: { id: 1001, docNo: "WO-R-26-0001" },
+      },
+    });
+    assert.equal(guidance, null);
+  });
+
   it("shouldOverrideProductionActionLabel covers Ready-to-Start synonyms", () => {
     assert.equal(shouldOverrideProductionActionLabel("Ready to Start Production"), true);
     assert.equal(shouldOverrideProductionActionLabel("Continue Production"), true);

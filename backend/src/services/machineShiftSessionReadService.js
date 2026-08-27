@@ -13,6 +13,13 @@ const { evaluateOpenShiftOverdue } = require("./shiftOverdueGuidance");
 const {
   resolveActiveShiftRunPrimaryAction,
 } = require("./activeShiftRunGuidanceService");
+const {
+  mapShiftTimeWindowDto,
+  reconcileSessionExpiry,
+  findUnresolvedHandoverSession,
+  isLiveProductionAllowed,
+  SESSION_STATUS,
+} = require("./shiftSessionTimeWindowService");
 
 function qtyNum(v) {
   if (v == null) return 0;
@@ -110,10 +117,11 @@ function mapParticipation(row) {
   };
 }
 
-function mapRunSegment(row) {
+function mapRunSegment(row, session = null, now = new Date()) {
   const runAllocationId = row.runAllocationId ?? row.runAllocation?.id ?? null;
   const startConfirmationStatus = row.runAllocation?.startConfirmation?.status ?? null;
   const requiresStartConfirmation = Number(runAllocationId) > 0;
+  const liveAllowed = isLiveProductionAllowed(session, now);
   return {
     id: row.id,
     segmentNo: row.segmentNo,
@@ -126,11 +134,13 @@ function mapRunSegment(row) {
     confirmationPending:
       requiresStartConfirmation &&
       String(startConfirmationStatus ?? "").trim().toUpperCase() !== "CONFIRMED",
-    primaryActionLabel: resolveActiveShiftRunPrimaryAction({
-      startConfirmationStatus,
-      runAllocationId,
-      requiresStartConfirmation,
-    }),
+    primaryActionLabel: liveAllowed
+      ? resolveActiveShiftRunPrimaryAction({
+          startConfirmationStatus,
+          runAllocationId,
+          requiresStartConfirmation,
+        })
+      : null,
     startedAt: row.segmentStartedAt,
     closedAt: row.closedAt,
     closeReason: row.closeReason ?? null,
@@ -370,6 +380,7 @@ function mapSessionDetail(session, reportCtx = null, now = new Date()) {
     startTime: shiftBrief?.startTime,
     endTime: shiftBrief?.endTime,
   }, now);
+  const timeWindow = mapShiftTimeWindowDto(session, now);
 
   return {
     id: session.id,
@@ -379,6 +390,7 @@ function mapSessionDetail(session, reportCtx = null, now = new Date()) {
     shiftOverdue: overdue.overdue,
     shiftOverdueMessage: overdue.message,
     shiftExpectedEndAt: overdue.expectedEndAt,
+    ...timeWindow,
     machine: mapMachineBrief(session.machine),
     shift: shiftBrief,
     primaryOperator: mapOperatorBrief(session.primaryOperator),
@@ -392,7 +404,7 @@ function mapSessionDetail(session, reportCtx = null, now = new Date()) {
     reopenCount: session.reopenCount,
     canCancel: Boolean(reportCtx?.canCancel),
     operators: (session.sessionOperators || []).map(mapParticipation),
-    runSegments: (session.runSegments || []).map(mapRunSegment),
+    runSegments: (session.runSegments || []).map((row) => mapRunSegment(row, session, now)),
     downtimeIncidents: (session.downtimeSegments || [])
       .map((s) => s.incident)
       .filter(Boolean)
@@ -474,55 +486,14 @@ const SESSION_DETAIL_INCLUDE = Object.freeze({
   },
 });
 
-async function getShiftSessionDetail(sessionId, db = prisma) {
-  const id = Number(sessionId);
-  if (!Number.isInteger(id) || id <= 0) {
-    throw domainError(400, "SESSION_ID_INVALID", "Shift session is required.");
-  }
-  const session = await db.machineShiftSession.findUnique({
-    where: { id },
-    include: SESSION_DETAIL_INCLUDE,
-  });
-  if (!session) {
-    throw domainError(404, "SHIFT_SESSION_NOT_FOUND", "Shift session was not found.");
-  }
-  const aggregation = await aggregateShiftSessionProductionQuantities(db, id);
-  const {
-    getShiftSessionProductionQtyLock,
-  } = require("./machineShiftProductionQtyLockService");
-  const qtyLock = await getShiftSessionProductionQtyLock(db, id);
-  let canCancel = false;
-  if (session.status === "OPEN") {
-    const { assessShiftSessionCancelEligibility } = require("./machineShiftSessionLifecycleService");
-    const eligibility = await assessShiftSessionCancelEligibility(db, id);
-    canCancel = eligibility.eligible;
-  }
-  return mapSessionDetail(session, {
-    aggregation,
-    productionQtyLocked: qtyLock.productionQtyLocked,
-    productionQtyLockReason: qtyLock.productionQtyLockReason,
-    canCancel,
-  });
-}
-
-async function getOpenShiftSessionForMachine(machineId, db = prisma) {
-  const mid = Number(machineId);
-  if (!Number.isInteger(mid) || mid <= 0) {
-    throw domainError(400, "MACHINE_ID_INVALID", "Machine is required.");
-  }
-  const session = await db.machineShiftSession.findFirst({
-    where: { machineId: mid, status: "OPEN" },
-    orderBy: { id: "desc" },
-    include: SESSION_DETAIL_INCLUDE,
-  });
-  if (!session) return null;
+async function loadSessionDetailMapped(session, db) {
   const aggregation = await aggregateShiftSessionProductionQuantities(db, session.id);
   const {
     getShiftSessionProductionQtyLock,
   } = require("./machineShiftProductionQtyLockService");
   const qtyLock = await getShiftSessionProductionQtyLock(db, session.id);
   let canCancel = false;
-  if (session.status === "OPEN") {
+  if (session.status === SESSION_STATUS.OPEN) {
     const { assessShiftSessionCancelEligibility } = require("./machineShiftSessionLifecycleService");
     const eligibility = await assessShiftSessionCancelEligibility(db, session.id);
     canCancel = eligibility.eligible;
@@ -533,6 +504,69 @@ async function getOpenShiftSessionForMachine(machineId, db = prisma) {
     productionQtyLockReason: qtyLock.productionQtyLockReason,
     canCancel,
   });
+}
+
+async function getShiftSessionDetail(sessionId, db = prisma) {
+  const id = Number(sessionId);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw domainError(400, "SESSION_ID_INVALID", "Shift session is required.");
+  }
+  let session = await db.machineShiftSession.findUnique({
+    where: { id },
+    include: SESSION_DETAIL_INCLUDE,
+  });
+  if (!session) {
+    throw domainError(404, "SHIFT_SESSION_NOT_FOUND", "Shift session was not found.");
+  }
+  const beforeStatus = session.status;
+  session = await reconcileSessionExpiry(db, session);
+  if (session.status !== beforeStatus) {
+    session = await db.machineShiftSession.findUnique({
+      where: { id },
+      include: SESSION_DETAIL_INCLUDE,
+    });
+  }
+  return loadSessionDetailMapped(session, db);
+}
+
+/**
+ * Current operational session for a machine.
+ * Prefers OPEN (after expiry reconcile). If none, may return unresolved
+ * HANDOVER_PENDING for continuity — status remains HANDOVER_PENDING and
+ * isLiveProductionAllowed is false. Do not treat that payload as an OPEN
+ * live session. Normal Start Shift still blocks via SHIFT_HANDOVER_PENDING.
+ */
+async function getOpenShiftSessionForMachine(machineId, db = prisma) {
+  const mid = Number(machineId);
+  if (!Number.isInteger(mid) || mid <= 0) {
+    throw domainError(400, "MACHINE_ID_INVALID", "Machine is required.");
+  }
+  let session = await db.machineShiftSession.findFirst({
+    where: { machineId: mid, status: SESSION_STATUS.OPEN },
+    orderBy: { id: "desc" },
+    include: SESSION_DETAIL_INCLUDE,
+  });
+  if (session) {
+    const beforeStatus = session.status;
+    session = await reconcileSessionExpiry(db, session);
+    if (session.status !== beforeStatus) {
+      session = await db.machineShiftSession.findUnique({
+        where: { id: session.id },
+        include: SESSION_DETAIL_INCLUDE,
+      });
+    }
+  }
+  if (!session) {
+    const pending = await findUnresolvedHandoverSession(db, mid);
+    if (pending) {
+      session = await db.machineShiftSession.findUnique({
+        where: { id: pending.id },
+        include: SESSION_DETAIL_INCLUDE,
+      });
+    }
+  }
+  if (!session) return null;
+  return loadSessionDetailMapped(session, db);
 }
 
 async function listReopenRequestsForSession(sessionId, db = prisma) {

@@ -205,7 +205,7 @@ async function completeShiftOver(input, db = prisma) {
 
   try {
     return await withShiftSessionTx(db, async (tx) => {
-      const session = await tx.machineShiftSession.findUnique({ where: { id: sessionId } });
+      let session = await tx.machineShiftSession.findUnique({ where: { id: sessionId } });
       if (!session) {
         throw domainError(404, "SHIFT_SESSION_NOT_FOUND", "Shift session was not found.");
       }
@@ -229,7 +229,11 @@ async function completeShiftOver(input, db = prisma) {
         };
       }
 
-      if (session.status !== SESSION_STATUS.OPEN) {
+      const now = input?.now instanceof Date && Number.isFinite(input.now.getTime()) ? input.now : new Date();
+      const { reconcileSessionExpiry } = require("./shiftSessionTimeWindowService");
+      session = await reconcileSessionExpiry(tx, session, now);
+
+      if (session.status !== SESSION_STATUS.OPEN && session.status !== SESSION_STATUS.HANDOVER_PENDING) {
         throw domainError(409, "SHIFT_SESSION_NOT_OPEN", "This shift session is not open.");
       }
 
@@ -243,7 +247,6 @@ async function completeShiftOver(input, db = prisma) {
         );
       }
 
-      const now = new Date();
       const closedRunSegmentIds = [];
 
       // Close ACTIVE run segment(s) for this machine/session with controlled system reason.

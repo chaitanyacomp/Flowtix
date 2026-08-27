@@ -157,16 +157,22 @@ export function PendingActionsPage() {
 
   const showInitialBucketSkeleton = initialLoading && buckets.length === 0;
   const showEmpty = firstLoadDone && !error && sorted.length === 0;
+  const singleTaskMode = !initialLoading && count === 1 && buckets.length <= 1;
 
   return (
     <PageContainer>
       <StickyWorkspaceHead lead={<ERPBackNavigation defaultTo="/dashboard" defaultLabel="Back to Dashboard" />}>
         <PageHeader
           title="Pending Actions"
-          subtitle="Work grouped by type — open the workspace to work through each list. Nothing is edited on this page."
+          subtitle={
+            singleTaskMode
+              ? "One task assigned — open it to continue."
+              : "Work grouped by type — open the workspace to work through each list. Nothing is edited on this page."
+          }
         />
       </StickyWorkspaceHead>
 
+      {!singleTaskMode ? (
       <div className="mb-4 max-w-full overflow-x-auto pb-0.5">
         <ErpKpiStrip className="min-w-0" role="region" aria-label="Pending actions summary">
           <ErpKpiSegment>
@@ -185,7 +191,9 @@ export function PendingActionsPage() {
           </ErpKpiSegment>
         </ErpKpiStrip>
       </div>
+      ) : null}
 
+      {!singleTaskMode ? (
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className="text-sm text-slate-600">Sort by:</span>
         <Button
@@ -211,6 +219,11 @@ export function PendingActionsPage() {
           </div>
         ) : null}
       </div>
+      ) : refreshing ? (
+        <div className="mb-3 flex justify-end">
+          <ErpRefreshingBadge />
+        </div>
+      ) : null}
 
       {error ? (
         <Card className="mb-3 border-red-200 bg-red-50/80">

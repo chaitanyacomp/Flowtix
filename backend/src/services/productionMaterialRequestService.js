@@ -25,6 +25,7 @@ const {
   cancelAllocationsForPmr,
   loadPmrAllocationByItem,
   syncAllocationsForPmrIssueStatus,
+  refreshAllocationsForOpenPmrReconcile,
 } = require("./materialAllocationService");
 const auditLog = require("./auditLog");
 const {
@@ -36,6 +37,23 @@ const {
   assessIssueAgainstPlannedAllowance,
   recoverIncludedRunnerQty,
 } = require("./plannedProcessAllowanceService");
+const {
+  resolvePmrLineIssueRounding,
+  assertIssueWithinRoundingTarget,
+  computeRoundedIssueTargetQty,
+  kgIssueRoundingApplies,
+} = require("./rmIssueRoundingService");
+const {
+  planOpenPmrPlannedRequirementReconcile,
+  CLOSED_SKIP_STATUSES,
+  OPERATOR_RECONCILE_FAILED_MESSAGE,
+  describePrismaUniqueViolation,
+} = require("./pmrPlannedRequirementReconcileService");
+const {
+  snapshotProductionRmMap,
+  mergePurgingIntoRmNeeded,
+  buildPurgingPlanningSummary,
+} = require("./bomPurgingRmPlanningService");
 const {
   resolveApprovedRequestForIssue,
   markRmAllowanceApprovalIssued,
@@ -77,16 +95,18 @@ function runInTransaction(db, fn) {
 }
 
 function pendingQty(line) {
-  const req = n(line.requiredQty);
+  const ceiling =
+    n(line.roundedIssueTargetQty) > STOCK_EPS ? n(line.roundedIssueTargetQty) : n(line.requiredQty);
   const iss = n(line.issuedQty);
   const waived = n(line.waivedQty);
-  return Math.max(0, req - iss - waived);
+  return Math.max(0, ceiling - iss - waived);
 }
 
 function effectiveRequiredQty(line) {
-  const req = n(line.requiredQty);
+  const ceiling =
+    n(line.roundedIssueTargetQty) > STOCK_EPS ? n(line.roundedIssueTargetQty) : n(line.requiredQty);
   const waived = n(line.waivedQty);
-  return round3(Math.max(0, req - waived));
+  return round3(Math.max(0, ceiling - waived));
 }
 
 function excessIssueQty(line) {
@@ -338,6 +358,10 @@ function mapPmrLine(ln) {
     excessIssueQty: excess,
     pendingQty: pending,
     remainingQty: pending,
+    issueIncrementSnapshot: ln.issueIncrementSnapshot != null ? n(ln.issueIncrementSnapshot) : null,
+    roundedIssueTargetQty: ln.roundedIssueTargetQty != null ? n(ln.roundedIssueTargetQty) : null,
+    productionRmQty: ln.productionRmQty != null ? n(ln.productionRmQty) : null,
+    purgingRmQty: ln.purgingRmQty != null ? n(ln.purgingRmQty) : null,
   };
 }
 
@@ -519,12 +543,13 @@ async function recalcPmrStatus(tx, pmrId) {
   let anyIssued = false;
   let anyWaived = false;
   for (const ln of pmr.lines) {
-    const req = n(ln.requiredQty);
+    const ceiling =
+      n(ln.roundedIssueTargetQty) > STOCK_EPS ? n(ln.roundedIssueTargetQty) : n(ln.requiredQty);
     const iss = n(ln.issuedQty);
     const waived = n(ln.waivedQty);
     if (iss > STOCK_EPS) anyIssued = true;
     if (waived > STOCK_EPS) anyWaived = true;
-    if (iss + waived + STOCK_EPS < req) allSatisfied = false;
+    if (iss + waived + STOCK_EPS < ceiling) allSatisfied = false;
   }
 
   let next = pmr.status;
@@ -541,7 +566,208 @@ async function recalcPmrStatus(tx, pmrId) {
 }
 
 /**
+ * Persist WO-authoritative planned requirement (+ Kg rounding snapshots) onto an open PMR.
+ * Safe for pre-migration PMRs that stored production-only requiredQty (missing planned purge).
+ * Skips completed/closed PMRs. Never rewrites historical MIN rows.
+ *
+ * Persistence is per canonical RM itemId (update existing line; upsert only for truly new items).
+ * Allocation refresh reuses MAL-{pmrId}-{itemId} so soft-cancel+create cannot hit P2002.
+ */
+async function reconcileOpenPmrPlannedRequirementAgainstWoPlan(pmrId, db = prisma, actor = {}) {
+  const pmr = await db.productionMaterialRequest.findUnique({
+    where: { id: pmrId },
+    include: {
+      lines: true,
+      workOrder: { select: { id: true, salesOrderId: true, docNo: true } },
+    },
+  });
+  if (!pmr) {
+    const err = new Error("Production material request not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const status = String(pmr.status ?? "").toUpperCase();
+  if (CLOSED_SKIP_STATUSES.has(status)) {
+    return {
+      pmrId,
+      applied: false,
+      skipped: true,
+      skipReason: "PMR_CLOSED_OR_COMPLETE",
+      reviewRequired: false,
+      failed: false,
+      lineResults: [],
+    };
+  }
+
+  const suggestions = await buildBomSuggestionsForWorkOrder(pmr.workOrderId, db);
+  const itemIds = [
+    ...new Set([
+      ...(pmr.lines || []).map((l) => Number(l.itemId)),
+      ...(suggestions.lines || []).map((l) => Number(l.itemId)),
+    ]),
+  ].filter((id) => Number.isFinite(id) && id > 0);
+
+  const items =
+    itemIds.length > 0
+      ? await db.item.findMany({
+          where: { id: { in: itemIds } },
+          include: { unitRef: { select: { unitCode: true, unitName: true } } },
+        })
+      : [];
+  const itemsById = new Map(items.map((i) => [i.id, i]));
+
+  const plan = planOpenPmrPlannedRequirementReconcile({
+    pmr,
+    suggestionLines: suggestions.lines,
+    itemsById,
+  });
+
+  if (!plan.eligible || plan.skipped) {
+    return {
+      pmrId,
+      applied: false,
+      skipped: true,
+      skipReason: plan.skipReason,
+      reviewRequired: false,
+      failed: false,
+      lineResults: [],
+      suggestions,
+    };
+  }
+
+  if (!plan.changed) {
+    return {
+      pmrId,
+      applied: false,
+      skipped: false,
+      reviewRequired: plan.reviewRequired,
+      failed: false,
+      lineResults: plan.linePlans,
+      addLineResults: plan.addLinePlans,
+      suggestions,
+    };
+  }
+
+  const upsertPmrLineByItem = async (tx, patch) => {
+    const itemId = Number(patch.itemId);
+    const existing = await tx.productionMaterialRequestLine.findFirst({
+      where: { productionMaterialRequestId: pmrId, itemId },
+      select: { id: true, issuedQty: true },
+    });
+    if (existing) {
+      return tx.productionMaterialRequestLine.update({
+        where: { id: existing.id },
+        data: {
+          requiredQty: patch.requiredQty,
+          productionRmQty: patch.productionRmQty,
+          purgingRmQty: patch.purgingRmQty,
+          issueIncrementSnapshot: patch.issueIncrementSnapshot,
+          roundedIssueTargetQty: patch.roundedIssueTargetQty,
+          ...(patch.unitSnapshot != null ? { unitSnapshot: patch.unitSnapshot } : {}),
+        },
+      });
+    }
+    return tx.productionMaterialRequestLine.create({
+      data: {
+        productionMaterialRequestId: pmrId,
+        itemId,
+        requiredQty: patch.requiredQty,
+        issuedQty: "0",
+        unitSnapshot: patch.unitSnapshot || null,
+        productionRmQty: patch.productionRmQty,
+        purgingRmQty: patch.purgingRmQty,
+        issueIncrementSnapshot: patch.issueIncrementSnapshot,
+        roundedIssueTargetQty: patch.roundedIssueTargetQty,
+      },
+    });
+  };
+
+  const run = async (tx) => {
+    for (const lp of plan.linePlans) {
+      if (lp.action !== "UPDATE" || !lp.patch || !lp.lineId) continue;
+      await tx.productionMaterialRequestLine.update({
+        where: { id: lp.lineId },
+        data: lp.patch,
+      });
+    }
+    for (const ap of plan.addLinePlans) {
+      if (ap.action !== "UPSERT" || !ap.patch) continue;
+      await upsertPmrLineByItem(tx, ap.patch);
+    }
+
+    const refreshed = await tx.productionMaterialRequest.findUnique({
+      where: { id: pmrId },
+      include: {
+        lines: true,
+        workOrder: { select: { salesOrderId: true } },
+      },
+    });
+    if (refreshed) {
+      await refreshAllocationsForOpenPmrReconcile(
+        tx,
+        {
+          ...refreshed,
+          salesOrderId: refreshed.workOrder?.salesOrderId ?? pmr.workOrder?.salesOrderId,
+        },
+        refreshed.lines,
+        actor,
+      );
+    }
+  };
+
+  try {
+    if (typeof db?.$transaction === "function") {
+      await db.$transaction(run);
+    } else {
+      await run(db);
+    }
+  } catch (err) {
+    const detail = describePrismaUniqueViolation(err);
+    console.error("[pmr-reconcile] failed", {
+      pmrId,
+      prismaCode: detail.code,
+      model: detail.model,
+      constraint: detail.constraint || detail.target,
+      message: detail.message,
+      /**
+       * Historical failure mode before fix:
+       * cancelAllocationsForPmr (soft CANCELLED) + createAllocationsForPmr createMany
+       * reusing allocationNo MAL-{pmrId}-{itemId} → P2002 on MaterialAllocation.allocationNo.
+       * Alternate: create second ProductionMaterialRequestLine for same itemId → P2002 on
+       * PmrLine_pmrId_itemId_key when production+purge were not aggregated.
+       */
+      failedOperationHint:
+        detail.target === "allocationNo" || /allocationNo/i.test(detail.message)
+          ? "MaterialAllocation.allocationNo unique (MAL-{pmrId}-{itemId}) during allocation refresh"
+          : detail.target?.includes?.("itemId") || /PmrLine_pmrId_itemId/i.test(detail.message)
+            ? "ProductionMaterialRequestLine unique (productionMaterialRequestId, itemId)"
+            : "unknown unique / transaction failure during PMR planned-requirement reconcile",
+    });
+    const soft = new Error(OPERATOR_RECONCILE_FAILED_MESSAGE);
+    soft.statusCode = 409;
+    soft.code = "PMR_PLANNED_REQUIREMENT_RECONCILE_FAILED";
+    soft.cause = err;
+    soft.reconcileFailed = true;
+    soft.prismaDetail = detail;
+    throw soft;
+  }
+
+  return {
+    pmrId,
+    applied: true,
+    skipped: false,
+    reviewRequired: plan.reviewRequired,
+    failed: false,
+    lineResults: plan.linePlans,
+    addLineResults: plan.addLinePlans,
+    suggestions,
+  };
+}
+
+/**
  * BOM-based RM suggestions for a work order (approved BOM explosion on planned FG qty).
+ * Includes production/shot RM (runner in baseQty) + planned purging once.
  */
 async function buildBomSuggestionsForWorkOrder(workOrderId, db = prisma) {
   const wo = await db.workOrder.findUnique({
@@ -570,24 +796,50 @@ async function buildBomSuggestionsForWorkOrder(workOrderId, db = prisma) {
   }
 
   const { rmNeeded, missingChildBoms } = await aggregateRmDemandForFgLines(db, fgLines);
+  const productionRmByItemId = snapshotProductionRmMap(rmNeeded);
+  const plannedPurgeCount = n(wo.plannedPurgeCount);
+  const purgingPlanning = await buildPurgingPlanningSummary(db, fgLines, { plannedPurgeCount });
+  mergePurgingIntoRmNeeded(rmNeeded, purgingPlanning.purgingRmByItemId);
+
   const itemIds = [...rmNeeded.keys()];
   const items =
     itemIds.length > 0
-      ? await db.item.findMany({ where: { id: { in: itemIds } }, select: { id: true, itemName: true, unit: true, itemType: true } })
+      ? await db.item.findMany({
+          where: { id: { in: itemIds } },
+          select: {
+            id: true,
+            itemName: true,
+            unit: true,
+            itemType: true,
+            issueIncrement: true,
+            unitRef: { select: { unitCode: true, unitName: true } },
+          },
+        })
       : [];
   const itemById = new Map(items.map((i) => [i.id, i]));
 
   const lines = [...rmNeeded.entries()]
     .map(([itemId, requiredQty]) => {
       const it = itemById.get(itemId);
+      const productionRmQty = n(productionRmByItemId.get(itemId));
+      const purgingRmQty = round3(Math.max(0, n(requiredQty) - productionRmQty));
+      const increment = n(it?.issueIncrement);
+      const applies = kgIssueRoundingApplies(it, { issueIncrement: increment });
+      const roundedIssueTargetQty = applies
+        ? computeRoundedIssueTargetQty(requiredQty, increment)
+        : null;
       return {
         itemId,
         itemName: it?.itemName ?? `Item #${itemId}`,
         unit: it?.unit ?? "",
         itemType: it?.itemType ?? "RM",
         requiredQty,
+        productionRmQty,
+        purgingRmQty,
+        issueIncrement: applies ? increment : null,
+        roundedIssueTargetQty,
         issuedQty: 0,
-        pendingQty: requiredQty,
+        pendingQty: applies ? roundedIssueTargetQty : requiredQty,
       };
     })
     .sort((a, b) => a.itemName.localeCompare(b.itemName));
@@ -596,6 +848,7 @@ async function buildBomSuggestionsForWorkOrder(workOrderId, db = prisma) {
     workOrderId: wo.id,
     workOrderNo: wo.docNo,
     salesOrderNo: wo.salesOrder?.docNo ?? null,
+    plannedPurgeCount,
     fgLines,
     lines,
     missingChildBoms,
@@ -856,9 +1109,18 @@ async function createProductionMaterialRequest(input, actor = {}, db = prisma) {
     }
 
     let linePayload = input.lines;
+    let suggestionByItemId = new Map();
     if (!linePayload?.length && input.useBom !== false) {
       const bom = await buildBomSuggestionsForWorkOrder(input.workOrderId, tx);
-      linePayload = bom.lines.map((l) => ({ itemId: l.itemId, requiredQty: l.requiredQty }));
+      linePayload = bom.lines.map((l) => ({
+        itemId: l.itemId,
+        requiredQty: l.requiredQty,
+        productionRmQty: l.productionRmQty,
+        purgingRmQty: l.purgingRmQty,
+        issueIncrement: l.issueIncrement,
+        roundedIssueTargetQty: l.roundedIssueTargetQty,
+      }));
+      suggestionByItemId = new Map(bom.lines.map((l) => [l.itemId, l]));
     }
     if (!linePayload?.length) {
       const err = new Error("Add at least one RM line or enable BOM suggestions.");
@@ -867,7 +1129,10 @@ async function createProductionMaterialRequest(input, actor = {}, db = prisma) {
     }
 
     const itemIds = [...new Set(linePayload.map((l) => l.itemId))];
-    const items = await tx.item.findMany({ where: { id: { in: itemIds } } });
+    const items = await tx.item.findMany({
+      where: { id: { in: itemIds } },
+      include: { unitRef: { select: { unitCode: true, unitName: true } } },
+    });
     if (items.length !== itemIds.length) {
       const err = new Error("One or more items not found");
       err.statusCode = 400;
@@ -898,10 +1163,38 @@ async function createProductionMaterialRequest(input, actor = {}, db = prisma) {
               throw err;
             }
             const it = itemById.get(l.itemId);
+            const suggestion = suggestionByItemId.get(l.itemId);
+            const increment =
+              l.issueIncrement != null
+                ? n(l.issueIncrement)
+                : suggestion?.issueIncrement != null
+                  ? n(suggestion.issueIncrement)
+                  : n(it?.issueIncrement);
+            const applies = kgIssueRoundingApplies(it, { issueIncrement: increment });
+            const rounded =
+              l.roundedIssueTargetQty != null
+                ? n(l.roundedIssueTargetQty)
+                : applies
+                  ? computeRoundedIssueTargetQty(qty, increment)
+                  : null;
             return {
               itemId: l.itemId,
               requiredQty: String(qty),
               unitSnapshot: it?.unit ?? null,
+              productionRmQty:
+                l.productionRmQty != null
+                  ? String(n(l.productionRmQty))
+                  : suggestion?.productionRmQty != null
+                    ? String(n(suggestion.productionRmQty))
+                    : null,
+              purgingRmQty:
+                l.purgingRmQty != null
+                  ? String(n(l.purgingRmQty))
+                  : suggestion?.purgingRmQty != null
+                    ? String(n(suggestion.purgingRmQty))
+                    : null,
+              issueIncrementSnapshot: applies ? String(increment) : null,
+              roundedIssueTargetQty: applies && rounded != null ? String(rounded) : null,
             };
           }),
         },
@@ -1050,6 +1343,24 @@ async function ensureSubmittedProductionMaterialRequestForWorkOrder(workOrderId,
  * Store issues material against PMR → creates MIN + updates issued qty on PMR lines.
  */
 async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
+  try {
+    const reconcile = await reconcileOpenPmrPlannedRequirementAgainstWoPlan(pmrId, prisma, actor);
+    if (reconcile.reviewRequired) {
+      const err = new Error(
+        "PMR planned requirement needs manual review after WO reconcile before further issue.",
+      );
+      err.statusCode = 409;
+      err.code = "PMR_RECONCILE_REVIEW_REQUIRED";
+      throw err;
+    }
+  } catch (err) {
+    if (err?.code === "PMR_RECONCILE_REVIEW_REQUIRED") throw err;
+    if (err?.reconcileFailed || err?.code === "PMR_PLANNED_REQUIREMENT_RECONCILE_FAILED") {
+      throw err;
+    }
+    throw err;
+  }
+
   const pmr = await prisma.productionMaterialRequest.findUnique({
     where: { id: pmrId },
     include: { lines: true, workOrder: { include: { salesOrder: { select: { orderType: true } } } } },
@@ -1072,7 +1383,7 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
 
   const lineById = new Map(pmr.lines.map((l) => [l.id, l]));
   const itemIds = [...new Set(pmr.lines.map((l) => l.itemId))];
-  const [issueAvailabilityRows, woLines] = await Promise.all([
+  const [issueAvailabilityRows, woLines, items] = await Promise.all([
     getMaterialAvailabilityByItems({
       db: prisma,
       itemIds,
@@ -1085,8 +1396,13 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
       where: { workOrderId: pmr.workOrderId },
       select: { fgItemId: true, plannedQty: true, qty: true },
     }),
+    prisma.item.findMany({
+      where: { id: { in: itemIds } },
+      include: { unitRef: { select: { unitCode: true, unitName: true } } },
+    }),
   ]);
   const issueAvailabilityByItem = new Map(issueAvailabilityRows.map((row) => [row.itemId, row]));
+  const itemById = new Map(items.map((i) => [i.id, i]));
   const fgItemIds = [...new Set(woLines.map((ln) => ln.fgItemId).filter(Boolean))];
   const approvedBoms = fgItemIds.length
     ? await prisma.bom.findMany({
@@ -1124,63 +1440,97 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
     }
     const qty = n(row.issueQty);
     if (qty <= STOCK_EPS) continue;
-    const pend = pendingQty(pl);
-    // PMR requiredQty is the canonical BOM quantity. Runner material is already
-    // included by BOM explosion and must not be added again.
+    const item = itemById.get(pl.itemId);
+    const availability = issueAvailabilityByItem.get(pl.itemId);
+    const freeStoreStock = n(availability?.freeStockQty);
+    const roundingPlan = resolvePmrLineIssueRounding({
+      line: pl,
+      item,
+      availableQty: freeStoreStock,
+    });
+    assertIssueWithinRoundingTarget({ issueQty: qty, plan: roundingPlan, itemId: pl.itemId });
+
+    // PMR requiredQty is planned requirement (BOM+runner+purge). Runner not added again.
     const theoreticalBomQty = n(pl.requiredQty);
     const alreadyIssuedQty = n(pl.issuedQty);
-    const enteredAllowanceQty = row.enteredAllowanceQty ?? row.plannedAllowanceQty ?? 0;
+    const kgRounded = Boolean(roundingPlan.applies);
+
+    let planning;
     let approvedAllowanceRequest = null;
-    if (String(actor.role || "").toUpperCase() !== "ADMIN") {
-      approvedAllowanceRequest = await resolveApprovedRequestForIssue(
-        {
-          pmrLineId: pl.id,
-          allowanceApprovalRequestId: row.allowanceApprovalRequestId,
-          enteredAllowanceQty,
-          issueQty: qty,
-          theoreticalBomQty,
-          alreadyIssuedQty,
-        },
-        prisma,
-      );
-    }
-    const planning = validatePlannedProcessAllowance(
-      {
+    if (kgRounded) {
+      // Kg upward rounding replaces free Add Qty / Planned Process Allowance on normal issue.
+      if (n(row.enteredAllowanceQty ?? row.plannedAllowanceQty ?? 0) > STOCK_EPS) {
+        const err = new Error(
+          "Add Qty / Planned Process Allowance is not used for Kg RM issue. Unexpected extra RM requires an Additional Material Request.",
+        );
+        err.statusCode = 400;
+        err.code = "KG_RM_USE_ADDITIONAL_MATERIAL_REQUEST";
+        throw err;
+      }
+      planning = {
         allowanceInputSource: "QUANTITY",
         theoreticalBomQty,
-        alreadyIssuedQty,
-        issueQty: qty,
-        enteredAllowanceQty,
-        // Percentage is never client-authored; omit so only Extra Qty is authoritative.
-        plannedAllowanceQty: enteredAllowanceQty,
-        recommendedIssueQty: row.recommendedIssueQty,
-        allowanceReason: row.allowanceReason,
-      },
-      { ...actor, mode: "ISSUE", approvedAllowanceRequest },
-    );
-    // REGULAR_SO: cumulative excess vs theoretical cannot be bypassed by splitting issues.
-    if (isRegularSoOrderType(pmr.workOrder?.salesOrder?.orderType)) {
-      assertRegularSoCumulativeAllowanceGate({
-        theoreticalRmRequiredQty: theoreticalBomQty,
-        cumulativeNetIssuedAfter: alreadyIssuedQty + qty,
-        role: actor.role,
-        hasApprovedRequest: Boolean(approvedAllowanceRequest),
-      });
+        enteredAllowancePct: 0,
+        enteredAllowanceQty: 0,
+        plannedAllowancePct: 0,
+        plannedAllowanceQty: 0,
+        recommendedIssueQty: roundingPlan.suggestedIssueQty,
+        allowanceReason: null,
+        approvalStatus: null,
+        requiresAdminApproval: false,
+      };
+    } else {
+      const enteredAllowanceQty = row.enteredAllowanceQty ?? row.plannedAllowanceQty ?? 0;
+      if (String(actor.role || "").toUpperCase() !== "ADMIN") {
+        approvedAllowanceRequest = await resolveApprovedRequestForIssue(
+          {
+            pmrLineId: pl.id,
+            allowanceApprovalRequestId: row.allowanceApprovalRequestId,
+            enteredAllowanceQty,
+            issueQty: qty,
+            theoreticalBomQty,
+            alreadyIssuedQty,
+          },
+          prisma,
+        );
+      }
+      planning = validatePlannedProcessAllowance(
+        {
+          allowanceInputSource: "QUANTITY",
+          theoreticalBomQty,
+          alreadyIssuedQty,
+          issueQty: qty,
+          enteredAllowanceQty,
+          plannedAllowanceQty: enteredAllowanceQty,
+          recommendedIssueQty: row.recommendedIssueQty,
+          allowanceReason: row.allowanceReason,
+        },
+        { ...actor, mode: "ISSUE", approvedAllowanceRequest },
+      );
+      if (isRegularSoOrderType(pmr.workOrder?.salesOrder?.orderType)) {
+        assertRegularSoCumulativeAllowanceGate({
+          theoreticalRmRequiredQty: theoreticalBomQty,
+          cumulativeNetIssuedAfter: alreadyIssuedQty + qty,
+          role: actor.role,
+          hasApprovedRequest: Boolean(approvedAllowanceRequest),
+        });
+      }
     }
+
     const includedRunnerQty = recoverIncludedRunnerQty(
       theoreticalBomQty,
       snapshotFgWeight,
       snapshotRunnerWeight,
     );
-    const issuePosition = assessIssueAgainstPlannedAllowance({
-      issueQty: qty,
-      alreadyIssuedQty,
-      theoreticalBomQty,
-      extraAllowanceQty: planning.plannedAllowanceQty,
-    });
+    const issuePosition = kgRounded
+      ? { excessIssueQty: Math.max(0, alreadyIssuedQty + qty - theoreticalBomQty) }
+      : assessIssueAgainstPlannedAllowance({
+          issueQty: qty,
+          alreadyIssuedQty,
+          theoreticalBomQty,
+          extraAllowanceQty: planning.plannedAllowanceQty,
+        });
     const overIssueQty = issuePosition.excessIssueQty;
-    const availability = issueAvailabilityByItem.get(pl.itemId);
-    const freeStoreStock = n(availability?.freeStockQty);
     if (qty > freeStoreStock + STOCK_EPS) {
       const err = new Error(
         `Issue qty exceeds free store stock for item #${pl.itemId}. Free: ${round3(freeStoreStock)}, requested: ${round3(qty)}.`,
@@ -1195,6 +1545,8 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
       pmrLineId: pl.id,
       theoreticalBomQty,
       includedRunnerQty,
+      skipPlannedAllowance: kgRounded,
+      alreadyIssuedQty,
       allowanceInputSource: planning.allowanceInputSource,
       enteredAllowancePct: planning.enteredAllowancePct,
       enteredAllowanceQty: planning.enteredAllowanceQty,
@@ -1203,12 +1555,16 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
       recommendedIssueQty: planning.recommendedIssueQty,
       allowanceReason: planning.allowanceReason,
       allowanceApprovalRequestId: approvedAllowanceRequest?.id ?? null,
+      issueIncrementSnapshot: roundingPlan.applies ? roundingPlan.issueIncrement : null,
+      plannedRequiredQtySnapshot: roundingPlan.applies ? roundingPlan.plannedRequiredQty : null,
+      roundedIssueTargetQty: roundingPlan.applies ? roundingPlan.roundedIssueTargetQty : null,
+      roundingExcessQty: roundingPlan.applies ? roundingPlan.roundingExcessQty : null,
     });
-    if (overIssueQty > STOCK_EPS) {
+    if (overIssueQty > STOCK_EPS && !kgRounded) {
       overIssueAuditLines.push({
         pmrLineId: pl.id,
         itemId: pl.itemId,
-        pendingQty: pend,
+        pendingQty: pendingQty(pl),
         recommendedIssueQty: planning.recommendedIssueQty,
         issueQty: qty,
         overIssueQty,
@@ -1245,6 +1601,7 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
           pmrLineId: l.pmrLineId,
           theoreticalBomQty: l.theoreticalBomQty,
           includedRunnerQty: l.includedRunnerQty,
+          skipPlannedAllowance: l.skipPlannedAllowance,
           allowanceInputSource: l.allowanceInputSource,
           enteredAllowancePct: l.enteredAllowancePct,
           enteredAllowanceQty: l.enteredAllowanceQty,
@@ -1254,6 +1611,10 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
           allowanceReason: l.allowanceReason,
           allowanceApprovalRequestId: l.allowanceApprovalRequestId,
           alreadyIssuedQty: n(lineById.get(l.pmrLineId)?.issuedQty),
+          issueIncrementSnapshot: l.issueIncrementSnapshot,
+          plannedRequiredQtySnapshot: l.plannedRequiredQtySnapshot,
+          roundedIssueTargetQty: l.roundedIssueTargetQty,
+          roundingExcessQty: l.roundingExcessQty,
         })),
       },
       actor,
@@ -1316,6 +1677,36 @@ async function issueMaterialAgainstPmr(pmrId, input, actor = {}) {
 
 /** Store issue context for a PMR (all lines + store availability for guided issue UI). */
 async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
+  let reconcile = {
+    applied: false,
+    skipped: false,
+    reviewRequired: false,
+    failed: false,
+    operatorMessage: null,
+    lineResults: [],
+  };
+  try {
+    reconcile = {
+      ...(await reconcileOpenPmrPlannedRequirementAgainstWoPlan(pmrId, db)),
+      failed: false,
+      operatorMessage: null,
+    };
+  } catch (err) {
+    if (err?.reconcileFailed || err?.code === "PMR_PLANNED_REQUIREMENT_RECONCILE_FAILED") {
+      reconcile = {
+        applied: false,
+        skipped: false,
+        reviewRequired: false,
+        failed: true,
+        operatorMessage: err.message || OPERATOR_RECONCILE_FAILED_MESSAGE,
+        lineResults: [],
+        prismaDetail: err.prismaDetail || null,
+      };
+    } else {
+      throw err;
+    }
+  }
+
   const pmr = await getProductionMaterialRequestById(pmrId, db);
   const woRelease = await db.workOrder.findUnique({
     where: { id: pmr.workOrderId },
@@ -1324,12 +1715,13 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
       materialReleasedByUserId: true,
     },
   });
-  const canIssue = STORE_ISSUE_STATUSES.includes(pmr.status);
+  const canIssueBase = STORE_ISSUE_STATUSES.includes(pmr.status);
+  const canIssue = canIssueBase && !reconcile.reviewRequired && !reconcile.failed;
   const releaseAssessment = assessPmrReleaseEligibility(pmr.lines, {
     alreadyReleased: Boolean(woRelease?.materialReleasedToProductionAt),
   });
   const canRelease = releaseAssessment.canRelease;
-  if (!canIssue && !canRelease && releaseAssessment.totalIssued <= STOCK_EPS) {
+  if (!canIssueBase && !canRelease && releaseAssessment.totalIssued <= STOCK_EPS) {
     const err = new Error("This request is not open for store issue.");
     err.statusCode = 400;
     throw err;
@@ -1387,6 +1779,14 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
   const globalAvailabilityByItem = new Map(globalAvailabilityRows.map((row) => [row.itemId, row]));
   const issueAvailabilityByItem = new Map(issueAvailabilityRows.map((row) => [row.itemId, row]));
   const currentAllocationByItem = await loadPmrAllocationByItem(db, pmrId);
+  const itemRows =
+    itemIds.length > 0
+      ? await db.item.findMany({
+          where: { id: { in: itemIds } },
+          include: { unitRef: { select: { unitCode: true, unitName: true } } },
+        })
+      : [];
+  const itemById = new Map(itemRows.map((i) => [i.id, i]));
 
   async function enrichLine(l) {
     let totalStoreStock = null;
@@ -1401,18 +1801,37 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
       freeStoreStock = issueAvailability?.freeStockQty ?? 0;
     }
     const woLine = woIssueSnapshot?.linesByItemId?.get(l.itemId) ?? null;
-    const linePendingQty = n(l.pendingQty);
+    const item = itemById.get(l.itemId);
+    const roundingPlan = resolvePmrLineIssueRounding({
+      line: {
+        ...l,
+        requiredQty: l.requiredQty ?? l.fullWoRmNeed,
+        issuedQty: l.issuedQty,
+        waivedQty: l.waivedQty,
+        issueIncrementSnapshot: l.issueIncrementSnapshot,
+        roundedIssueTargetQty: l.roundedIssueTargetQty,
+      },
+      item,
+      availableQty: freeStoreStock,
+    });
+    const linePendingQty = roundingPlan.remainingIssueQty;
     const issueCapQty = linePendingQty;
     const woStillRequired = woLine ? n(woLine.stillRequiredQty) : null;
     const rmIssueToleranceQty = 0;
-    const maxAllowedIssueQty =
-      freeStoreStock == null ? linePendingQty : round3(Math.max(linePendingQty, n(freeStoreStock)));
-    const suggestedIssueQty =
-      freeStoreStock == null
-        ? 0
-        : round3(Math.min(Math.max(0, issueCapQty), Math.max(0, n(freeStoreStock))));
+    const maxAllowedIssueQty = roundingPlan.applies
+      ? linePendingQty
+      : freeStoreStock == null
+        ? linePendingQty
+        : round3(Math.max(linePendingQty, n(freeStoreStock)));
+    const suggestedIssueQty = roundingPlan.suggestedIssueQty;
     const enriched = {
       ...l,
+      kgIssueRoundingApplies: roundingPlan.applies,
+      issueIncrement: roundingPlan.issueIncrement,
+      plannedRequiredQty: roundingPlan.plannedRequiredQty,
+      roundedIssueTargetQty: roundingPlan.roundedIssueTargetQty,
+      roundingExcessQty: roundingPlan.roundingExcessQty,
+      allowProcessAllowance: !roundingPlan.applies,
       totalStoreStock,
       reservedForOtherOrdersQty,
       freeStoreStock,
@@ -1473,7 +1892,11 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
   const canIssueAnyPendingLine = pendingLines.some((l) => l.lineReadinessKey === "READY" || l.lineReadinessKey === "PARTIAL");
   const waitingProcurement = pendingLines.some((l) => l.waitingProcurement === true);
   const waitingProcurementLines = pendingLines.filter((l) => l.lineReadinessKey === "WAITING_PROCUREMENT");
-  const blockerReason = !canIssue
+  const blockerReason = reconcile.failed
+    ? reconcile.operatorMessage || OPERATOR_RECONCILE_FAILED_MESSAGE
+    : reconcile.reviewRequired
+    ? "PMR planned requirement needs manual review after WO reconcile (issued qty vs rounded target)."
+    : !canIssueBase
     ? "This request is not open for store issue."
     : canIssueAnyPendingLine
       ? null
@@ -1507,13 +1930,19 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
     pmrStatus: pmr.status,
     pmrStatusLabel: pmr.statusLabel ?? null,
     canIssueMore: canIssue,
-    canIssueAnyPendingLine,
+    canIssueAnyPendingLine: canIssue && canIssueAnyPendingLine,
     waitingProcurement,
     waitingProcurementLineCount: waitingProcurementLines.length,
     blockerReason,
-    storeActionKey: storeReadiness.storeActionKey,
-    storeActionLabel: storeReadiness.storeActionLabel,
-    storeIssueReady: storeReadiness.storeIssueReady,
+    storeActionKey: canIssue ? storeReadiness.storeActionKey : "NONE",
+    storeActionLabel: canIssue
+      ? storeReadiness.storeActionLabel
+      : reconcile.failed
+        ? "Planned qty refresh failed"
+        : reconcile.reviewRequired
+          ? "Manual review required"
+          : storeReadiness.storeActionLabel,
+    storeIssueReady: canIssue && storeReadiness.storeIssueReady,
     issueQueueState,
     canWaiveRemaining:
       canIssue && n(pmr.totalIssued) > STOCK_EPS && n(pmr.totalPending) > STOCK_EPS,
@@ -1524,10 +1953,34 @@ async function buildPmrIssueContext(pmrId, fromLocationId, db = prisma) {
     materialReleasedToProductionAt: woRelease?.materialReleasedToProductionAt ?? null,
     showPartialDecisionPanel:
       n(pmr.totalIssued) > STOCK_EPS && n(pmr.totalPending) > STOCK_EPS && pmr.status !== "SHORT_ISSUE_ACCEPTED",
+    plannedRequirementReconcile: {
+      applied: Boolean(reconcile.applied),
+      skipped: Boolean(reconcile.skipped),
+      skipReason: reconcile.skipReason ?? null,
+      reviewRequired: Boolean(reconcile.reviewRequired),
+      failed: Boolean(reconcile.failed),
+      operatorMessage: reconcile.failed
+        ? reconcile.operatorMessage || OPERATOR_RECONCILE_FAILED_MESSAGE
+        : null,
+      lines: (reconcile.lineResults || [])
+        .filter((r) => r.action === "UPDATE" || r.reviewRequired)
+        .map((r) => ({
+          itemId: r.itemId,
+          lineId: r.lineId,
+          action: r.action,
+          plannedRequiredQty: r.plannedRequiredQty,
+          roundedIssueTargetQty: r.roundedIssueTargetQty,
+          roundingExcessQty: r.roundingExcessQty,
+          productionRmQty: r.productionRmQty,
+          purgingRmQty: r.purgingRmQty,
+          reviewRequired: r.reviewRequired,
+          reviewReason: r.reviewReason,
+        })),
+    },
   };
 
   return {
-    pmr: { ...pmr, productionItemName, ...storeReadiness, issueQueueState },
+    pmr: { ...pmr, productionItemName, ...storeReadiness, issueQueueState, storeIssueReady: canIssue && storeReadiness.storeIssueReady },
     lines,
     pendingLines,
     issueDecision,
@@ -1829,6 +2282,7 @@ module.exports = {
   cancelProductionMaterialRequest,
   issueMaterialAgainstPmr,
   buildPmrIssueContext,
+  reconcileOpenPmrPlannedRequirementAgainstWoPlan,
   waiveRemainingPmrQty,
   releaseWorkOrderMaterialToProduction,
   acknowledgePmrIssueLater,

@@ -110,6 +110,92 @@ function normalizeSalesOrderDraftLineQuantities(bodyLine, orderType, maxBufferPe
   return { customerPoQty: q, bufferPercent: 0, plannedQty: q };
 }
 
+/**
+ * Enforce customer PO qty against approved quotation lines for REGULAR from-quotation create.
+ * Structural item/order matching is assumed to be checked by the caller when override lines are provided.
+ * Duplicate itemIds are aggregated defensively before comparing to quoted totals.
+ *
+ * @param {Array<{ itemId: number; qty?: unknown }>} quotationLines
+ * @param {Array<{ itemId: number; customerPoQty?: unknown }> | null | undefined} overrideLines
+ *   When null/undefined, defaults use quotation qty (always within cap).
+ */
+function assertFromQuotationCustomerPoQuantities(quotationLines, overrideLines) {
+  const qLines = quotationLines || [];
+  if (!qLines.length) {
+    const err = new Error("Quotation has no lines");
+    err.statusCode = 400;
+    err.code = "QUOTATION_HAS_NO_LINES";
+    throw err;
+  }
+
+  if (overrideLines == null) return;
+
+  if (overrideLines.length !== qLines.length) {
+    const err = new Error("Line count must match the quotation.");
+    err.statusCode = 400;
+    err.code = "SO_LINE_COUNT_MISMATCH";
+    throw err;
+  }
+
+  /** @type {Map<number, number>} */
+  const quotedByItem = new Map();
+  /** @type {Map<number, number>} */
+  const enteredByItem = new Map();
+
+  for (let i = 0; i < qLines.length; i += 1) {
+    const qLine = qLines[i];
+    const oLine = overrideLines[i];
+    if (Number(qLine.itemId) !== Number(oLine.itemId)) {
+      const err = new Error("Line itemId order must match the quotation.");
+      err.statusCode = 400;
+      err.code = "SO_LINE_ITEM_MISMATCH";
+      throw err;
+    }
+
+    const quoted = Number(qLine.qty);
+    const entered = Number(oLine.customerPoQty);
+    if (!Number.isFinite(entered) || entered <= 0) {
+      const err = new Error("Customer PO Qty must be greater than zero for each line.");
+      err.statusCode = 400;
+      err.code = "SO_CUSTOMER_PO_QTY_INVALID";
+      throw err;
+    }
+    if (!Number.isFinite(quoted) || quoted < 0) {
+      const err = new Error("Approved quotation line quantity is invalid.");
+      err.statusCode = 400;
+      err.code = "QUOTATION_LINE_QTY_INVALID";
+      throw err;
+    }
+
+    if (entered > quoted) {
+      const err = new Error(
+        `Customer PO qty (${entered}) exceeds approved quotation qty (${quoted}) for this line.`,
+      );
+      err.statusCode = 422;
+      err.code = "SO_QTY_EXCEEDS_QUOTATION";
+      err.details = { itemId: Number(qLine.itemId), quotedQty: quoted, enteredQty: entered, lineIndex: i };
+      throw err;
+    }
+
+    const itemId = Number(qLine.itemId);
+    quotedByItem.set(itemId, (quotedByItem.get(itemId) ?? 0) + quoted);
+    enteredByItem.set(itemId, (enteredByItem.get(itemId) ?? 0) + entered);
+  }
+
+  for (const [itemId, enteredSum] of enteredByItem) {
+    const quotedSum = quotedByItem.get(itemId) ?? 0;
+    if (enteredSum > quotedSum) {
+      const err = new Error(
+        `Customer PO qty (${enteredSum}) exceeds approved quotation qty (${quotedSum}) for item ${itemId}.`,
+      );
+      err.statusCode = 422;
+      err.code = "SO_QTY_EXCEEDS_QUOTATION";
+      err.details = { itemId, quotedQty: quotedSum, enteredQty: enteredSum };
+      throw err;
+    }
+  }
+}
+
 module.exports = {
   computePlannedQtyFromCustomerBuffer,
   dispatchFifoQtyForSoLine,
@@ -117,4 +203,5 @@ module.exports = {
   aggregateSoDispatchCommitmentQtyByItemId,
   clampMaxRegularSoBufferPercent,
   normalizeSalesOrderDraftLineQuantities,
+  assertFromQuotationCustomerPoQuantities,
 };

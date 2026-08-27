@@ -2,6 +2,7 @@ const { COMPANY_STATE } = require("../config/company");
 const { DocType, Prisma } = require("../prismaClientPackage");
 const { allocateDocNo } = require("./docNoService");
 const { findApplicableRateContractLine, normalizeUtcDateOnly } = require("./rateContractService");
+const { parseStrictIsoDateOnly, INVALID_MESSAGE } = require("./strictIsoDate");
 const { assertAnyAdminPassword } = require("./adminPasswordAuth");
 const {
   gstModeFromCompanyVsPos,
@@ -37,6 +38,26 @@ function round2(n) {
 function startOfUtcDay(d = new Date()) {
   const x = d instanceof Date ? d : new Date(d);
   return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate()));
+}
+
+/**
+ * Strict calendar date-only → UTC midnight (bill / receipt / due persistence).
+ * @param {unknown} raw
+ * @param {{ required?: boolean, emptyMessage?: string, invalidMessage?: string }} [opts]
+ * @returns {Date|null}
+ */
+function parseUtcMidnightDateOnly(raw, opts = {}) {
+  const required = opts.required !== false;
+  if (raw == null || raw === "") {
+    if (required) throw friendlyError(opts.emptyMessage || INVALID_MESSAGE, 400);
+    return null;
+  }
+  const parsed = parseStrictIsoDateOnly(raw, { required: true });
+  if (!parsed.ok || !parsed.utcDate) {
+    throw friendlyError(opts.invalidMessage || INVALID_MESSAGE, 400);
+  }
+  const d = parsed.utcDate;
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
 function friendlyError(message, statusCode = 400) {
@@ -740,9 +761,9 @@ async function updateDraft(prisma, billId, body) {
     if (bill.status !== "DRAFT") throw friendlyError("Only draft Sales Bills can be edited.", 409);
 
     const trimmedBillNo = billNo != null && String(billNo).trim() !== "" ? String(billNo).trim() : null;
-    let parsedBillDate = billDate instanceof Date ? billDate : new Date(billDate);
-    if (Number.isNaN(parsedBillDate.getTime())) throw friendlyError("Please enter a valid bill date.");
-    parsedBillDate = new Date(Date.UTC(parsedBillDate.getUTCFullYear(), parsedBillDate.getUTCMonth(), parsedBillDate.getUTCDate()));
+    const parsedBillDate = parseUtcMidnightDateOnly(billDate, {
+      invalidMessage: "Please enter a valid bill date.",
+    });
 
     const prevBillDateNorm = normalizeUtcDateOnly(bill.billDate);
     const billDateChanged =
@@ -1021,11 +1042,10 @@ async function addSalesBillReceipt(prisma, billId, input, { userId, role }) {
   let amount = Number(input?.amount);
   if (!Number.isFinite(amount) || amount <= 0) throw friendlyError("Amount must be positive.", 400);
 
-  const receiptDateRaw = input?.receiptDate;
-  if (receiptDateRaw == null || receiptDateRaw === "") throw friendlyError("Receipt date is required.", 400);
-  const rd = receiptDateRaw instanceof Date ? receiptDateRaw : new Date(receiptDateRaw);
-  if (Number.isNaN(rd.getTime())) throw friendlyError("Invalid receipt date.", 400);
-  const receiptDateVal = new Date(Date.UTC(rd.getUTCFullYear(), rd.getUTCMonth(), rd.getUTCDate()));
+  const receiptDateVal = parseUtcMidnightDateOnly(input?.receiptDate, {
+    emptyMessage: "Receipt date is required.",
+    invalidMessage: "Invalid receipt date.",
+  });
 
   const refTrim = input?.referenceNo != null ? String(input.referenceNo).trim().slice(0, 128) : "";
   const remarksTrim = input?.remarks != null ? String(input.remarks).trim().slice(0, 4000) : "";
@@ -1134,9 +1154,9 @@ async function updateSalesBillPaymentTracking(prisma, billId, input) {
       if (dueDateRaw === null || dueDateRaw === "") {
         dueDateVal = null;
       } else {
-        const d = dueDateRaw instanceof Date ? dueDateRaw : new Date(dueDateRaw);
-        if (Number.isNaN(d.getTime())) throw friendlyError("Please enter a valid due date.", 400);
-        dueDateVal = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+        dueDateVal = parseUtcMidnightDateOnly(dueDateRaw, {
+          invalidMessage: "Please enter a valid due date.",
+        });
       }
     }
 

@@ -26,7 +26,7 @@ export const dashboardShell = {
 export function dashboardWorkspaceHeadline(role: string): { title: string; subtitle: string } {
   switch (role) {
     case "PRODUCTION":
-      return { title: "Production Dashboard", subtitle: "Shop floor · production · embedded QA" };
+      return { title: "Production Dashboard", subtitle: "" };
     case "QA":
       return {
         title: "Quality Inspection Dashboard",

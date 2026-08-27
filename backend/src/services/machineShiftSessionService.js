@@ -36,19 +36,13 @@ function normalizeSessionDate(sessionDate) {
   if (sessionDate == null || sessionDate === "") {
     throw domainError(400, "SESSION_DATE_REQUIRED", "Shift session date is required (use the shift starting date for night shifts).");
   }
-  if (sessionDate instanceof Date && Number.isFinite(sessionDate.getTime())) {
-    return new Date(Date.UTC(sessionDate.getUTCFullYear(), sessionDate.getUTCMonth(), sessionDate.getUTCDate()));
+  const { parseStrictIsoDateOnly, INVALID_MESSAGE } = require("./strictIsoDate");
+  const parsed = parseStrictIsoDateOnly(sessionDate, { required: true });
+  if (!parsed.ok || !parsed.ymd) {
+    throw domainError(400, "SESSION_DATE_INVALID", INVALID_MESSAGE);
   }
-  const raw = String(sessionDate).trim();
-  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (m) {
-    return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-  }
-  const parsed = new Date(raw);
-  if (!Number.isFinite(parsed.getTime())) {
-    throw domainError(400, "SESSION_DATE_INVALID", "Shift session date is not valid.");
-  }
-  return new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
+  const [y, mo, d] = parsed.ymd.split("-").map(Number);
+  return new Date(Date.UTC(y, mo - 1, d));
 }
 
 function normalizeOptionalUserId(userId) {

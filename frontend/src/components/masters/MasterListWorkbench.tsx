@@ -469,4 +469,21 @@ export function mastersHubLinkClassName(active?: boolean) {
   return cn("text-sm font-medium text-slate-700 hover:text-slate-900", active && "text-slate-900");
 }
 
+export function MasterReadOnlyField({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="grid gap-0.5 text-[11px]">
+      <span className="font-medium text-slate-500">{label}</span>
+      <div className="text-sm font-medium text-slate-900">{value ?? "—"}</div>
+    </div>
+  );
+}
+
+export function MasterReadOnlyPlaceholder({ entityLabel }: { entityLabel: string }) {
+  return (
+    <p className="text-sm text-slate-500" data-testid="master-read-only-placeholder">
+      Select a {entityLabel} to view details.
+    </p>
+  );
+}
+
 export { resultCountLabel, MASTERS_LANDING_PATH, Link };

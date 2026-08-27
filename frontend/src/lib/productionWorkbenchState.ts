@@ -31,6 +31,10 @@ export type ProductionWorkbenchStateSource = ProductionEligibilitySource & {
   nextAction?: string | null;
   actionLabel?: string | null;
   productionReportConfirmed?: boolean | null;
+  activeShiftRun?: {
+    primaryActionLabel?: string | null;
+    confirmationPending?: boolean | null;
+  } | null;
 };
 
 function upper(v: unknown): string {
@@ -95,6 +99,9 @@ export function classifyProductionWorkbenchState(
   }
 
   if (backendState === "CONTINUE_PRODUCTION" && eligibility.canAcceptNewProductionEntry) {
+    return "CONTINUE_PRODUCTION";
+  }
+  if (row.activeShiftRun && eligibility.canAcceptNewProductionEntry) {
     return "CONTINUE_PRODUCTION";
   }
   if (backendState === "READY_TO_START" && eligibility.canAcceptNewProductionEntry) {
@@ -188,6 +195,25 @@ export function workbenchStatePrimaryActionLabel(state: ProductionWorkbenchState
     case "COMPLETED_OR_CLOSED":
       return "View";
   }
+}
+
+/** Prefer active-shift guidance CTA over generic Start / Continue labels. */
+export function workbenchRowPrimaryActionLabel(
+  row: ProductionWorkbenchStateSource,
+  state: ProductionWorkbenchState = classifyProductionWorkbenchState(row),
+): string {
+  const shift = row.activeShiftRun;
+  if (shift) {
+    const label = String(shift.primaryActionLabel ?? "").trim();
+    if (label === "Confirm Machine Start" || label === "Record Production") return label;
+    if (shift.confirmationPending) return "Confirm Machine Start";
+    return "Record Production";
+  }
+  const backendLabel = String(row.actionLabel ?? "").trim();
+  if (backendLabel === "Confirm Machine Start" || backendLabel === "Record Production") {
+    return backendLabel;
+  }
+  return workbenchStatePrimaryActionLabel(state);
 }
 
 export function productionBucketForWorkbenchState(

@@ -23,6 +23,7 @@ const {
   summarizeComponentLines,
 } = require("../services/bomComponentService");
 const { parseStandardPurgingQtyGrams, STANDARD_PURGING_QTY_LABEL } = require("../services/bomUtils");
+const { parseStrictIsoDateOnly, INVALID_MESSAGE } = require("../services/strictIsoDate");
 
 const bomRouter = express.Router();
 
@@ -67,10 +68,19 @@ const headerSchema = z.object({
     .union([z.string(), z.date()])
     .optional()
     .nullable()
+    .superRefine((v, ctx) => {
+      if (v == null || v === "") return;
+      const parsed = parseStrictIsoDateOnly(v, { required: true });
+      if (!parsed.ok) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: INVALID_MESSAGE });
+      }
+    })
     .transform((v) => {
       if (v == null || v === "") return null;
-      const d = v instanceof Date ? v : new Date(String(v));
-      return Number.isFinite(d.getTime()) ? d : null;
+      const parsed = parseStrictIsoDateOnly(v, { required: true });
+      if (!parsed.ok || !parsed.utcDate) return z.NEVER;
+      const d = parsed.utcDate;
+      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
     }),
   remarks: z.string().trim().max(500).optional().nullable(),
 });

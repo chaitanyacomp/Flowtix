@@ -31,7 +31,7 @@ import {
 import {
   classifyProductionWorkbenchState,
   entryQcWithBalanceHint,
-  workbenchStatePrimaryActionLabel,
+  workbenchRowPrimaryActionLabel,
   workbenchStateStatusLabel,
 } from "../../lib/productionWorkbenchState";
 import {
@@ -558,7 +558,7 @@ export function OperationalProductionWorkspace({
                     ? resumeBusyId === row.workOrderId
                       ? "Resuming…"
                       : "Resume Production"
-                    : workbenchStatePrimaryActionLabel(state);
+                    : workbenchRowPrimaryActionLabel(row, state);
                 const rem = remainingQtyForCard(row);
                 const focused = focusWoId === row.workOrderId;
                 const qcHint = entryQcWithBalanceHint(row);
@@ -579,6 +579,7 @@ export function OperationalProductionWorkspace({
                   state,
                   workOrderNo: displayWorkOrderNo(row.workOrderId, row.workOrderNo),
                   itemName: row.itemName,
+                  row,
                 });
 
                 return (

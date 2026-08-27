@@ -86,6 +86,14 @@ export function materialWorkflowBackHref(
   if (returnTo === "rm-control-center") return "/reports/rm-shortage";
   if (returnTo === "pending-actions") return "/pending-actions";
   if (returnTo === "work-orders") return "/work-orders";
+  if (returnTo === "work-order-detail") {
+    if (workOrderId && workOrderId > 0) return `/work-orders/${workOrderId}`;
+    return "/work-orders?flow=REGULAR_SO";
+  }
+  if (returnTo === "prepare-wo") {
+    if (workOrderId && workOrderId > 0) return `/work-orders/${workOrderId}`;
+    return "/work-orders/prepare";
+  }
   if (returnTo === "green-level-wo") return "/store/green-level-wo";
   if (returnTo === "rm-purchase") return "/rm-po-grn";
   if (returnTo === "requirement-sheet" || returnTo === "requirement-sheet-execution") {

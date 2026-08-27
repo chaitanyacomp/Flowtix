@@ -17,6 +17,7 @@ import { DependencyLifecycleModal, type DependencySummary } from "../components/
 import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { confirmLeaveIfDirty } from "../lib/unsavedChangesPolicy";
 import { snapshotItemForm } from "../lib/itemMasterDirtySnapshot";
+import { showIssueIncrementOnItemMaster } from "../lib/rmIssueRounding";
 import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 import {
   MasterBulkActionBar,
@@ -73,6 +74,8 @@ type Item = {
   minimumStockQty?: string | null;
   reorderQty?: string | null;
   fgManualGreenLevelQty?: string | null;
+  issueIncrement?: number | string | null;
+  unitCode?: string | null;
   isActive: boolean;
 };
 
@@ -173,6 +176,7 @@ export function ItemsPage() {
   // RM Stock Control: Minimum Stock (mandatory) + optional Target Stock.
   // Low Stock Level / Buffer % are no longer Store-facing (derived internally when needed).
   const [minimumStock, setMinimumStock] = React.useState("");
+  const [issueIncrement, setIssueIncrement] = React.useState("1");
   const [lowStockAlert, setLowStockAlert] = React.useState("");
   const [, setLowStockTouched] = React.useState(false);
   const [bufferPct, setBufferPct] = React.useState("");
@@ -231,6 +235,14 @@ export function ItemsPage() {
   const itemFormScrollRef = React.useRef<HTMLDivElement | null>(null);
 
   const isRmStockForm = creatingType === "RM";
+  const selectedUnitForForm =
+    unitId === "" ? null : units.find((u) => u.id === Number(unitId)) ?? null;
+  const showKgIssueIncrement = showIssueIncrementOnItemMaster({
+    itemType: creatingType,
+    unitCode: selectedUnitForForm?.unitCode,
+    unitName: selectedUnitForForm?.unitName,
+    unit: selectedUnitForForm?.unitName,
+  });
   const showPlanningSensitivity = creatingType === "FG" || creatingType === "SFG";
   const showFgGreenLevel = creatingType === "FG";
 
@@ -390,6 +402,7 @@ export function ItemsPage() {
     setHsnCode("");
     setGstRateStr("");
     setFgManualGreenLevel("");
+    setIssueIncrement("1");
     // New item: keep tax fields visible by default.
     setTaxOpen(true);
     setPlanningOpen(false);
@@ -463,6 +476,11 @@ export function ItemsPage() {
         ? String(i.fgManualGreenLevelQty)
         : "";
     setFgManualGreenLevel(nextFg);
+    const nextInc =
+      i.issueIncrement != null && String(i.issueIncrement).trim() !== "" && Number(i.issueIncrement) > 0
+        ? String(i.issueIncrement)
+        : "1";
+    setIssueIncrement(nextInc);
     // Editing: collapse only when tax info already exists; otherwise keep it open so it’s discoverable.
     const hasTaxInfo = Boolean((i.hsnCode ?? "").trim()) && Boolean(String(i.gstRate ?? "").trim());
     setTaxOpen(!hasTaxInfo);
@@ -593,6 +611,18 @@ export function ItemsPage() {
       return;
     }
 
+    let issueIncrementPayload: number | null | undefined;
+    if (showKgIssueIncrement) {
+      const inc = Number(String(issueIncrement).trim());
+      if (!Number.isFinite(inc) || !(inc > 0)) {
+        setError("Issue Increment (Kg) must be greater than 0.");
+        return;
+      }
+      issueIncrementPayload = inc;
+    } else {
+      issueIncrementPayload = null;
+    }
+
     const itemKey = normalizeMasterNameKey(itemName);
     const dup = rows.some((r) => r.id !== editingId && normalizeMasterNameKey(r.itemName) === itemKey);
     if (dup) {
@@ -627,6 +657,7 @@ export function ItemsPage() {
             ...(fgManualGreenLevelPayload !== undefined
               ? { fgManualGreenLevelQty: fgManualGreenLevelPayload }
               : {}),
+            ...(issueIncrementPayload !== undefined ? { issueIncrement: issueIncrementPayload } : {}),
             ...unitPatch,
           }),
         });
@@ -656,6 +687,7 @@ export function ItemsPage() {
             ...(showFgGreenLevel && fgManualGreenLevelPayload !== undefined
               ? { fgManualGreenLevelQty: fgManualGreenLevelPayload }
               : {}),
+            ...(issueIncrementPayload !== undefined ? { issueIncrement: issueIncrementPayload } : {}),
           }),
         });
       }
@@ -1177,6 +1209,21 @@ export function ItemsPage() {
                                     </div>
                                   ) : null}
                                 </div>
+                                {showKgIssueIncrement ? (
+                                  <div className="erp-form-field max-w-xs" data-testid="item-issue-increment-field">
+                                    <span className="erp-form-label">Issue Increment (Kg)</span>
+                                    <DecimalInput
+                                      value={issueIncrement}
+                                      onValueChange={setIssueIncrement}
+                                      normalizeOnBlur={false}
+                                      placeholder="1"
+                                      required
+                                    />
+                                    <p className="mt-1 text-xs text-slate-500">
+                                      Store issues upward to this step (e.g. 1 Kg). Must be greater than 0.
+                                    </p>
+                                  </div>
+                                ) : null}
                               </>
                             ) : (
                               <div className="grid gap-2.5 sm:grid-cols-2">

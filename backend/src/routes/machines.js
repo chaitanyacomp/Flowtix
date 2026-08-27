@@ -40,6 +40,7 @@ const updateBodySchema = z.object({
 /** Production master — readable by ops roles that use machines (Shift Production includes PRODUCTION_MANAGER). */
 const READ_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER", "STORE"];
 /** Maintain like other production masters (ADMIN); PRODUCTION may also maintain. */
+/** ADMIN maintains masters; PRODUCTION may update registers; PRODUCTION_MANAGER is read-only. */
 const WRITE_ROLES = ["ADMIN", "PRODUCTION"];
 
 machinesRouter.get("/", requireAuth, requireRole(READ_ROLES), async (req, res, next) => {

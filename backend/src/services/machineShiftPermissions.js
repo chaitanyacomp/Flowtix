@@ -26,6 +26,7 @@ const SHIFT_ACTION = Object.freeze({
 const ALWAYS_ALLOWED_FOR_PRODUCTION = Object.freeze(
   new Set([
     SHIFT_ACTION.VIEW,
+    SHIFT_ACTION.DOWNTIME,
     SHIFT_ACTION.SAVE_SUBMIT_REPORT,
     SHIFT_ACTION.REQUEST_REOPEN,
     SHIFT_ACTION.REQUEST_ADJUSTMENT,
@@ -38,7 +39,6 @@ const MANAGER_OWNED_ACTIONS = Object.freeze(
     SHIFT_ACTION.START_SESSION,
     SHIFT_ACTION.MANAGE_OPERATORS,
     SHIFT_ACTION.RUN_SEGMENT,
-    SHIFT_ACTION.DOWNTIME,
     SHIFT_ACTION.RETURN_VERIFY_REPORT,
     SHIFT_ACTION.SHIFT_OVER,
     SHIFT_ACTION.CANCEL_SESSION,
@@ -161,27 +161,31 @@ async function getShiftCapabilities(user, db = prisma) {
     return {
       canView: false,
       canPerformManagerActions: false,
+      canPauseProduction: false,
       productionManagerAssigned: false,
       isFallbackControl: false,
     };
   }
 
   const productionManagerAssigned = await hasActiveProductionManager(db);
+  const canPauseProduction = true;
 
   if (role === "ADMIN" || role === "PRODUCTION_MANAGER") {
     return {
       canView: true,
       canPerformManagerActions: true,
+      canPauseProduction,
       productionManagerAssigned,
       isFallbackControl: false,
     };
   }
 
-  // PRODUCTION — manager actions only via fallback when no active PM
+  // PRODUCTION — pause/resume always; other manager actions only via fallback when no active PM
   const canPerformManagerActions = !productionManagerAssigned;
   return {
     canView: true,
     canPerformManagerActions,
+    canPauseProduction,
     productionManagerAssigned,
     isFallbackControl: canPerformManagerActions,
   };

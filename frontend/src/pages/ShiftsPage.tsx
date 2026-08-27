@@ -5,6 +5,8 @@
 import * as React from "react";
 import { apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
+import { useAuth } from "../hooks/useAuth";
+import { canWriteProductionMasters } from "../lib/productionMasterPermissions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
@@ -17,6 +19,8 @@ import {
   MasterListPagination,
   MasterListToolbar,
   MasterSearchInput,
+  MasterReadOnlyField,
+  MasterReadOnlyPlaceholder,
   resultCountLabel,
 } from "../components/masters/MasterListWorkbench";
 import { useMasterListWorkbench } from "../hooks/useMasterListWorkbench";
@@ -65,6 +69,8 @@ function rowToForm(r: ShiftRow) {
 
 export function ShiftsPage() {
   const toast = useToast();
+  const auth = useAuth();
+  const canWrite = canWriteProductionMasters(auth.user?.role);
   useListScrollRestoration();
   const [rows, setRows] = React.useState<ShiftRow[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -277,9 +283,15 @@ export function ShiftsPage() {
         title="Shifts"
         description="Reusable shift templates used when starting Shift Sessions. Overnight sessions use the shift’s starting date. Soft-deactivate only."
         actions={
-          <Button type="button" size="sm" variant="outline" onClick={onNewShift} data-testid="shift-new-btn">
-            New
-          </Button>
+          canWrite ? (
+            <Button type="button" size="sm" variant="outline" onClick={onNewShift} data-testid="shift-new-btn">
+              New
+            </Button>
+          ) : (
+            <span className="text-[11px] font-medium text-slate-500" data-testid="shift-readonly-badge">
+              Read-only
+            </span>
+          )
         }
       />
 
@@ -362,19 +374,23 @@ export function ShiftsPage() {
                       )}
                     </td>
                     <td className="px-2 py-1.5 text-right">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2"
-                        disabled={saving}
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          void toggleActive(r);
-                        }}
-                      >
-                        {r.isActive ? "Deactivate" : "Activate"}
-                      </Button>
+                      {canWrite ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2"
+                          disabled={saving}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            void toggleActive(r);
+                          }}
+                        >
+                          {r.isActive ? "Deactivate" : "Activate"}
+                        </Button>
+                      ) : (
+                        <span className="text-[11px] text-slate-400">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -419,7 +435,7 @@ export function ShiftsPage() {
               className="col-start-1 row-start-1 flex min-h-[2.75rem] shrink-0 items-center border-b border-slate-200 bg-white px-3 py-2 pr-[11.5rem]"
             >
               <h3 className="truncate text-sm font-bold text-slate-800">
-                {selectedId ? "Edit shift" : "New shift"}
+                {selectedId ? (canWrite ? "Edit shift" : "View shift") : canWrite ? "New shift" : "Shift detail"}
               </h3>
             </div>
             <div
@@ -427,6 +443,7 @@ export function ShiftsPage() {
               className="col-start-1 row-start-2 min-h-0 overflow-y-auto px-3 py-2 pb-3"
               style={{ scrollbarGutter: "stable" }}
             >
+              {canWrite ? (
               <div className="grid gap-2">
                 <label className="grid gap-0.5 text-[11px] font-medium text-slate-600">
                   Shift code <span className="font-normal text-red-600">*</span>
@@ -551,7 +568,27 @@ export function ShiftsPage() {
                   overnight. Shifts cannot be hard-deleted.
                 </p>
               </div>
+              ) : selectedId ? (
+                <div className="grid gap-2" data-testid="shift-read-only-detail">
+                  <MasterReadOnlyField label="Shift code" value={form.shiftCode} />
+                  <MasterReadOnlyField label="Shift name" value={form.shiftName} />
+                  <MasterReadOnlyField label="Start time" value={form.startTime} />
+                  <MasterReadOnlyField label="End time" value={form.endTime} />
+                  <MasterReadOnlyField label="Planned break minutes" value={form.plannedBreakMinutes || "0"} />
+                  <MasterReadOnlyField label="Remarks" value={form.remarks || "—"} />
+                  <MasterReadOnlyField label="Status" value={form.isActive ? "Active" : "Inactive"} />
+                  {"error" in durationPreview ? null : (
+                    <MasterReadOnlyField
+                      label="Net production duration"
+                      value={`${durationPreview.netProductionDurationMinutes} min`}
+                    />
+                  )}
+                </div>
+              ) : (
+                <MasterReadOnlyPlaceholder entityLabel="shift" />
+              )}
             </div>
+            {canWrite ? (
             <div
               data-testid="shift-form-actions"
               className="col-start-1 row-start-1 z-[3] flex flex-row-reverse flex-wrap items-center gap-2 justify-self-end self-center bg-white px-3 py-2"
@@ -577,6 +614,7 @@ export function ShiftsPage() {
                 </Button>
               ) : null}
             </div>
+            ) : null}
           </form>
         </section>
       </div>

@@ -5,6 +5,8 @@
 import * as React from "react";
 import { apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
+import { useAuth } from "../hooks/useAuth";
+import { canWriteProductionMasters } from "../lib/productionMasterPermissions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
@@ -17,6 +19,8 @@ import {
   MasterListPagination,
   MasterListToolbar,
   MasterSearchInput,
+  MasterReadOnlyField,
+  MasterReadOnlyPlaceholder,
   resultCountLabel,
 } from "../components/masters/MasterListWorkbench";
 import { useMasterListWorkbench } from "../hooks/useMasterListWorkbench";
@@ -62,6 +66,8 @@ function rowToForm(r: OperatorRow) {
 
 export function OperatorsPage() {
   const toast = useToast();
+  const auth = useAuth();
+  const canWrite = canWriteProductionMasters(auth.user?.role);
   useListScrollRestoration();
   const [rows, setRows] = React.useState<OperatorRow[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -255,9 +261,15 @@ export function OperatorsPage() {
         title="Operators"
         description="Shop-floor operator register. Operators can join and leave Shift Sessions. Soft-deactivate only."
         actions={
-          <Button type="button" size="sm" variant="outline" onClick={onNewOperator} data-testid="operator-new-btn">
-            New
-          </Button>
+          canWrite ? (
+            <Button type="button" size="sm" variant="outline" onClick={onNewOperator} data-testid="operator-new-btn">
+              New
+            </Button>
+          ) : (
+            <span className="text-[11px] font-medium text-slate-500" data-testid="operator-readonly-badge">
+              Read-only
+            </span>
+          )
         }
       />
 
@@ -332,19 +344,23 @@ export function OperatorsPage() {
                       )}
                     </td>
                     <td className="px-2 py-1.5 text-right">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2"
-                        disabled={saving}
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          void toggleActive(r);
-                        }}
-                      >
-                        {r.isActive ? "Deactivate" : "Activate"}
-                      </Button>
+                      {canWrite ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2"
+                          disabled={saving}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            void toggleActive(r);
+                          }}
+                        >
+                          {r.isActive ? "Deactivate" : "Activate"}
+                        </Button>
+                      ) : (
+                        <span className="text-[11px] text-slate-400">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -389,7 +405,7 @@ export function OperatorsPage() {
               className="col-start-1 row-start-1 flex min-h-[2.75rem] shrink-0 items-center border-b border-slate-200 bg-white px-3 py-2 pr-[11.5rem]"
             >
               <h3 className="truncate text-sm font-bold text-slate-800">
-                {selectedId ? "Edit operator" : "New operator"}
+                {selectedId ? (canWrite ? "Edit operator" : "View operator") : canWrite ? "New operator" : "Operator detail"}
               </h3>
             </div>
             <div
@@ -397,6 +413,7 @@ export function OperatorsPage() {
               className="col-start-1 row-start-2 min-h-0 overflow-y-auto px-3 py-2 pb-3"
               style={{ scrollbarGutter: "stable" }}
             >
+              {canWrite ? (
               <div className="grid gap-2">
                 <label className="grid gap-0.5 text-[11px] font-medium text-slate-600">
                   Operator code <span className="font-normal text-red-600">*</span>
@@ -487,7 +504,21 @@ export function OperatorsPage() {
                   here.
                 </p>
               </div>
+              ) : selectedId ? (
+                <div className="grid gap-2" data-testid="operator-read-only-detail">
+                  <MasterReadOnlyField label="Operator code" value={form.operatorCode} />
+                  <MasterReadOnlyField label="Operator name" value={form.operatorName} />
+                  <MasterReadOnlyField label="Employee number" value={form.employeeNumber || "—"} />
+                  <MasterReadOnlyField label="Department" value={form.department || "—"} />
+                  <MasterReadOnlyField label="Designation / skill" value={form.designationSkill || "—"} />
+                  <MasterReadOnlyField label="Remarks" value={form.remarks || "—"} />
+                  <MasterReadOnlyField label="Status" value={form.isActive ? "Active" : "Inactive"} />
+                </div>
+              ) : (
+                <MasterReadOnlyPlaceholder entityLabel="operator" />
+              )}
             </div>
+            {canWrite ? (
             <div
               data-testid="operator-form-actions"
               className="col-start-1 row-start-1 z-[3] flex flex-row-reverse flex-wrap items-center gap-2 justify-self-end self-center bg-white px-3 py-2"
@@ -513,6 +544,7 @@ export function OperatorsPage() {
                 </Button>
               ) : null}
             </div>
+            ) : null}
           </form>
         </section>
       </div>

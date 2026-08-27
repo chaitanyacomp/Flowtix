@@ -2774,6 +2774,18 @@
     @apply sticky bottom-0 z-[25] -mx-4 mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200/95 bg-white/95 px-4 py-2 shadow-[0_-2px_8px_0_rgb(15_23_42_/0.06)] backdrop-blur-sm supports-[backdrop-filter]:bg-white/90;
   }
 
+  /**
+   * READY_FOR_WO confirmation — sticky top workflow toolbar (below app header,
+   * sticks within erp-main scroll). Same horizontal inset as sibling sections.
+   */
+  .erp-ready-for-wo-toolbar {
+    @apply sticky top-0 z-[26] w-full rounded-md border border-slate-200/90 bg-white/95 px-3 py-2 shadow-[0_1px_3px_0_rgb(15_23_42_/0.08)] backdrop-blur-sm supports-[backdrop-filter]:bg-white/90;
+  }
+
+  .erp-ready-for-wo-section {
+    @apply w-full rounded-md border border-slate-200/70 bg-white erp-card-surface;
+  }
+
   .erp-mat-issue-table thead th {
     @apply px-2 py-1 text-[10px];
   }

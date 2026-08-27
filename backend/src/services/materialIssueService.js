@@ -268,6 +268,22 @@ async function createMaterialIssueNote(input, actor = {}, outerTx = null) {
       const enteredAllowanceQty = line.enteredAllowanceQty ?? line.plannedAllowanceQty ?? 0;
       const theoreticalBomQty = line.theoreticalBomQty;
       const alreadyIssuedQty = line.alreadyIssuedQty;
+      if (line.skipPlannedAllowance) {
+        planningByLineIndex.push({
+          allowanceInputSource: "QUANTITY",
+          theoreticalBomQty: n(theoreticalBomQty),
+          enteredAllowancePct: 0,
+          enteredAllowanceQty: 0,
+          plannedAllowancePct: 0,
+          plannedAllowanceQty: 0,
+          recommendedIssueQty: n(line.recommendedIssueQty ?? line.issueQty),
+          allowanceReason: null,
+          approvalStatus: null,
+          requiresAdminApproval: false,
+        });
+        approvedRowByLineIndex.push(null);
+        continue;
+      }
       let approvedRow = null;
       if (actorRole !== "ADMIN") {
         const probe = calculatePlannedProcessAllowance(
@@ -396,6 +412,13 @@ async function createMaterialIssueNote(input, actor = {}, outerTx = null) {
               allowanceEnteredByUserId: actor.userId ?? null,
               allowanceEnteredAt: new Date(),
               conversionBasis: l.conversionBasis?.trim() || "Canonical BOM/Item Master quantity in stock UOM; runner already included",
+              issueIncrementSnapshot:
+                l.issueIncrementSnapshot != null ? String(n(l.issueIncrementSnapshot)) : null,
+              plannedRequiredQtySnapshot:
+                l.plannedRequiredQtySnapshot != null ? String(n(l.plannedRequiredQtySnapshot)) : null,
+              roundedIssueTargetQty:
+                l.roundedIssueTargetQty != null ? String(n(l.roundedIssueTargetQty)) : null,
+              roundingExcessQty: l.roundingExcessQty != null ? String(n(l.roundingExcessQty)) : null,
             };
           }),
         },

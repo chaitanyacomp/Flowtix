@@ -939,6 +939,8 @@ model Item {
   minimumStockQty                   Decimal? @db.Decimal(18, 3)
   /// Optional reorder quantity (future use).
   reorderQty                        Decimal? @db.Decimal(18, 3)
+  /// Store issue ceil step in item UOM. Only meaningful for RM + Kg; NULL = exact issue (no upward rounding).
+  issueIncrement                    Decimal? @db.Decimal(18, 6)
   /// P11 — manually entered FG Green Level qty (used when greenLevelSource = MANUAL).
   fgManualGreenLevelQty             Decimal? @db.Decimal(18, 3)
   createdAt                         DateTime @default(now())
@@ -2249,6 +2251,14 @@ model ProductionMaterialRequestLine {
   waivedQty                   Decimal @default(0) @db.Decimal(18, 3)
   returnedQty                 Decimal @default(0) @db.Decimal(18, 3)
   unitSnapshot                String? @db.VarChar(64)
+  /// Snapshot of Item.issueIncrement at PMR create (Kg RM only).
+  issueIncrementSnapshot      Decimal? @db.Decimal(18, 6)
+  /// ceil(requiredQty / increment) × increment when Kg rounding applies; else null.
+  roundedIssueTargetQty       Decimal? @db.Decimal(18, 6)
+  /// Production/shot RM (incl. runner) before purging merge — audit only.
+  productionRmQty             Decimal? @db.Decimal(18, 6)
+  /// Planned purging RM included once in requiredQty — audit only.
+  purgingRmQty                Decimal? @db.Decimal(18, 6)
 
   productionMaterialRequest ProductionMaterialRequest @relation(fields: [productionMaterialRequestId], references: [id], onDelete: Cascade)
   item                      Item                      @relation(fields: [itemId], references: [id], onDelete: Restrict)
@@ -2348,6 +2358,11 @@ model MaterialIssueLine {
   allowanceEnteredByUserId Int?
   allowanceEnteredAt DateTime?
   conversionBasis     String? @db.VarChar(500)
+  /// Kg RM upward-rounding snapshots (null for exact / non-Kg issues).
+  issueIncrementSnapshot      Decimal? @db.Decimal(18, 6)
+  plannedRequiredQtySnapshot  Decimal? @db.Decimal(18, 6)
+  roundedIssueTargetQty       Decimal? @db.Decimal(18, 6)
+  roundingExcessQty           Decimal? @db.Decimal(18, 6)
 
   materialIssueNote MaterialIssueNote @relation(fields: [materialIssueNoteId], references: [id], onDelete: Cascade)
   item              Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)

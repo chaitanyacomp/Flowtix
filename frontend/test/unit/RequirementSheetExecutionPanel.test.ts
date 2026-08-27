@@ -100,8 +100,10 @@ describe("RequirementSheetExecutionPanel layout", () => {
     expect(panelSource).toContain("mergePlacementDraftQtys");
     expect(panelSource).toContain("rmPreviewSignature");
     expect(panelSource).toContain("rmPreviewRequestIdRef");
-    // Quantity signature + soft BOM/stock refresh only — not whole `data` / line array identity.
-    expect(panelSource).toContain("[sheetId, rmPreviewSignature, bomRefreshTick]");
+    // Quantity signature + soft BOM/stock refresh + productionRuns (preview POST body) —
+    // not whole `data` / line array identity.
+    expect(panelSource).toContain("[sheetId, rmPreviewSignature, bomRefreshTick, productionRuns]");
+    expect(panelSource).toContain("productionRuns: runsToApiPayload(productionRuns)");
     expect(panelSource).not.toContain("[sheetId, data, requestedLines, suggestedLines]");
   });
 

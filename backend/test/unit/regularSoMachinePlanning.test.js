@@ -24,6 +24,7 @@ describe("REGULAR_SO machine planning roles", () => {
   it("Production may write machine runs but cannot create REGULAR WO", () => {
     assert.ok(WO_MACHINE_RUN_WRITE_ROLES.includes("PRODUCTION"));
     assert.ok(WO_MACHINE_RUN_WRITE_ROLES.includes("ADMIN"));
+    assert.ok(WO_MACHINE_RUN_WRITE_ROLES.includes("PRODUCTION_MANAGER"));
     assert.ok(!WO_MACHINE_RUN_WRITE_ROLES.includes("STORE"));
     assert.ok(REGULAR_SO_WO_CREATE_ROLES.includes("STORE"));
     assert.ok(REGULAR_SO_WO_CREATE_ROLES.includes("ADMIN"));

@@ -75,6 +75,7 @@ export function useDashboardPendingActionsDesk(options?: {
         loading: query.initialLoading,
         refreshing: query.refreshing,
         error: query.error,
+        actions: actionsList ?? [],
       }
     : undefined;
 

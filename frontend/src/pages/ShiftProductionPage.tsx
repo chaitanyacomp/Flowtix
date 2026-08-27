@@ -108,7 +108,15 @@ export function ShiftProductionPage() {
           <h1 className="text-xl font-semibold text-slate-900">Shift Production</h1>
           <p className="mt-1 text-sm text-slate-600">Start and operate machine shift sessions on the floor.</p>
         </div>
-        <Button type="button" variant="outline" onClick={() => void load()} disabled={loading}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 text-xs font-medium text-slate-700"
+          onClick={() => void load()}
+          disabled={loading}
+          data-testid="shift-production-refresh"
+        >
           Refresh
         </Button>
       </div>

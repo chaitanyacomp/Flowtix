@@ -20,26 +20,27 @@ const pageHeaderSource = readFileSync(resolve(root, "src/components/PageHeader.t
 describe("Machine Run Planning premium UI contract", () => {
   it("uses fluid page width without max-w-6xl gutter", () => {
     expect(pageHeaderSource).toContain("full operational workspace width");
-    expect(rmCheckSource).toContain('data-page-width={useCompactMachinePlanning ? "fluid"');
+    expect(rmCheckSource).toContain(
+      'data-page-width={useCompactMachinePlanning || useReadyForWoConfirmation ? "fluid" : "narrow"}',
+    );
     expect(rmCheckSource).toContain("w-full min-w-0");
     expect(rmCheckSource).not.toContain("max-w-6xl");
-    // Compact path must not force a narrow column that leaves a large right gutter.
-    expect(rmCheckSource).toMatch(/useCompactMachinePlanning \? "space-y-3 pb-3" : "max-w-5xl"/);
+    // Compact / Ready-for-WO paths must not force a narrow column that leaves a large right gutter.
+    expect(rmCheckSource).toMatch(
+      /useCompactMachinePlanning \|\| useReadyForWoConfirmation \? "space-y-3 pb-3" : "max-w-5xl"/,
+    );
   });
 
-  it("reuses shared typography / KPI / section tokens (readable hierarchy)", () => {
+  it("reuses shared typography / section tokens (readable hierarchy)", () => {
     expect(erpTypography.pageTitle).toBe("erp-type-page-title");
     expect(erpTypography.sectionTitle).toBe("erp-type-section-title");
     expect(erpTypography.tableBody).toBe("erp-type-table-body");
     expect(erpTypography.helper).toBe("erp-type-helper");
     expect(compactSource).toContain("erpTypography");
-    expect(compactSource).toContain("erpKpi");
     expect(compactSource).toContain("Customer Qty");
     expect(compactSource).toContain("Planned Qty");
-    expect(compactSource).toContain("Next Owner");
     expect(compactSource).not.toMatch(/>CUST</);
     expect(compactSource).not.toMatch(/>PLAN</);
-    expect(compactSource).not.toMatch(/>NEXT</);
     expect(allocationSource).toContain("erpTypography");
   });
 
@@ -65,24 +66,23 @@ describe("Machine Run Planning premium UI contract", () => {
     expect(rmCheckSource).toContain("switchSalesOrder");
   });
 
-  it("symmetrical metric row with equal value/control height", () => {
-    expect(compactSource).toContain("erpKpi.strip");
-    expect(compactSource).toContain('data-testid="machine-planning-metric-cell"');
-    expect(compactSource).toContain("flex h-8 items-center");
+  it("optional buffer control without duplicate qty strip chrome", () => {
+    expect(compactSource).toContain("+ Add production buffer");
+    expect(compactSource).toContain("machine-planning-add-buffer");
+    expect(compactSource).toContain("machine-planning-buffer-summary");
+    expect(compactSource).toContain("machine-planning-buffer-editor");
     expect(compactSource).toContain("Customer Qty");
-    expect(compactSource).toContain("Buffer %");
-    expect(compactSource).toContain("Additional Qty");
-    expect(compactSource).toContain("Planned Qty");
-    expect(compactSource).toContain("FG Stock Adjustment");
     expect(compactSource).toContain("CircleHelp");
     expect(compactSource).toContain("DecimalInput");
+    expect(compactSource).not.toContain("Additional Qty");
   });
 
   it("equal-height action buttons via shared sticky workflow bar", () => {
     expect(compactSource).toContain("erp-sticky-workflow-bar");
     expect(compactSource).toContain("Complete Machine Planning");
     expect(compactSource).toContain("Save Draft");
-    expect(compactSource).toContain("Back to Planning Hub");
+    expect(compactSource).toContain('data-testid="machine-planning-back-hub"');
+    expect(compactSource).toMatch(/>\s*Back\s*</);
     expect(compactSource).toContain("ArrowLeft");
     expect(compactSource).toContain('variant="outline"');
     expect(compactSource).toContain('variant="default"');
@@ -92,7 +92,9 @@ describe("Machine Run Planning premium UI contract", () => {
 
   it("1280 usability + wide-screen fluid markers", () => {
     expect(rmCheckSource).toContain('data-machine-planning-layout={useCompactMachinePlanning ? "compact"');
-    expect(rmCheckSource).toContain('data-page-width={useCompactMachinePlanning ? "fluid"');
+    expect(rmCheckSource).toContain(
+      'data-page-width={useCompactMachinePlanning || useReadyForWoConfirmation ? "fluid" : "narrow"}',
+    );
     expect(rmCheckSource).toContain("w-full min-w-0");
     expect(pageHeaderSource).toContain("overflow-x-hidden");
   });

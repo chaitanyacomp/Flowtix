@@ -23,19 +23,20 @@ const PRODUCTION_FLOW_ITEMS = [
 ];
 
 describe("productionNavFilter — Requirement & Cycle Planning", () => {
-  it("PRODUCTION sees Requirement & Cycle Planning (plan-dash)", () => {
-    expect(isProductionNavItemVisible("PRODUCTION", "plan-dash")).toBe(true);
-    expect(listVisibleProductionFlowNavKeys("PRODUCTION", PRODUCTION_FLOW_ITEMS)).toContain("plan-dash");
+  it("PRODUCTION nav hides Requirement & Cycle Planning (Production Manager–owned)", () => {
+    expect(isProductionNavItemVisible("PRODUCTION", "plan-dash")).toBe(false);
+    expect(listVisibleProductionFlowNavKeys("PRODUCTION", PRODUCTION_FLOW_ITEMS)).not.toContain("plan-dash");
     expect(listVisibleProductionFlowNavKeys("PRODUCTION", PRODUCTION_FLOW_ITEMS)).toEqual(
-      expect.arrayContaining(["plan-dash", "wo", "prod", "shift-prod"]),
+      expect.arrayContaining(["wo", "prod", "shift-prod"]),
     );
     expect(listVisibleProductionFlowNavKeys("PRODUCTION", PRODUCTION_FLOW_ITEMS)).not.toContain("no-qty-agreements");
   });
 
-  it("ADMIN sees Requirement & Cycle Planning", () => {
+  it("ADMIN and PRODUCTION_MANAGER see Requirement & Cycle Planning", () => {
     expect(isProductionNavItemVisible("ADMIN", "plan-dash")).toBe(true);
     expect(listVisibleProductionFlowNavKeys("ADMIN", PRODUCTION_FLOW_ITEMS)).toContain("plan-dash");
     expect(hasErpRole("ADMIN", PLANNING_DASHBOARD_ROLES)).toBe(true);
+    expect(hasErpRole("PRODUCTION_MANAGER", PLANNING_DASHBOARD_ROLES)).toBe(true);
   });
 
   it("STORE does not receive machine-planning edit access", () => {

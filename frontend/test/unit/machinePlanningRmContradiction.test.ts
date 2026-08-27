@@ -104,7 +104,9 @@ describe("compact Machine Run Planning page contract", () => {
     expect(rmCheckSource).toContain("MachineRunCombinedRmSummary");
     expect(rmCheckSource).toContain("MachineRunPlanningActionBar");
     expect(compactSource).toContain('data-testid="machine-planning-rm-badge"');
-    expect(compactSource).toContain("Back to Planning Hub");
+    // Approved sticky-bar back control: short "Back" label + hub test id (not long hub copy).
+    expect(compactSource).toContain('data-testid="machine-planning-back-hub"');
+    expect(compactSource).toMatch(/>\s*Back\s*</);
     expect(rmCheckSource).not.toContain('data-testid="machine-run-planning-page-title"');
   });
 

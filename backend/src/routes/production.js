@@ -2246,13 +2246,16 @@ productionRouter.post(
 
       let entryDate;
       if (body.date != null && String(body.date).trim() !== "") {
-        const d = new Date(body.date);
-        if (Number.isNaN(d.getTime())) {
-          const err = new Error("Invalid production date.");
+        const { parseStrictIsoDateOnly, INVALID_MESSAGE } = require("../services/strictIsoDate");
+        const parsed = parseStrictIsoDateOnly(String(body.date).trim(), { required: true });
+        if (!parsed.ok || !parsed.utcDate) {
+          const err = new Error(INVALID_MESSAGE);
           err.statusCode = 400;
+          err.code = "INVALID_DATE";
           throw err;
         }
-        entryDate = d;
+        // DateTime column: persist validated calendar day at UTC noon (stable day key).
+        entryDate = parsed.utcDate;
       }
 
       const result = await prisma.$transaction(async (tx) => {
@@ -2334,13 +2337,15 @@ productionRouter.put(
 
       let entryDate;
       if (body.date != null && String(body.date).trim() !== "") {
-        const d = new Date(body.date);
-        if (Number.isNaN(d.getTime())) {
-          const err = new Error("Invalid production date.");
+        const { parseStrictIsoDateOnly, INVALID_MESSAGE } = require("../services/strictIsoDate");
+        const parsed = parseStrictIsoDateOnly(String(body.date).trim(), { required: true });
+        if (!parsed.ok || !parsed.utcDate) {
+          const err = new Error(INVALID_MESSAGE);
           err.statusCode = 400;
+          err.code = "INVALID_DATE";
           throw err;
         }
-        entryDate = d;
+        entryDate = parsed.utcDate;
       }
 
       const updated = await prisma.$transaction(async (tx) => {

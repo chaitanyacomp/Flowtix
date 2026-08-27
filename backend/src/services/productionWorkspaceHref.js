@@ -5,6 +5,7 @@ function productionBucketForPendingActionLabel(actionLabel) {
   const label = String(actionLabel ?? "").trim();
   if (label === PRODUCTION_EXECUTION_PENDING_LABELS.NOT_STARTED) return "readyToStart";
   if (label === PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING) return "inProgress";
+  if (label === "Confirm Machine Start" || label === "Record Production") return "inProgress";
   return null;
 }
 

@@ -147,6 +147,8 @@ export type MaterialIssueDeepLinkBuildInput = {
   salesOrderId?: number | null;
   requirementSheetId?: number | null;
   allowanceApprovalId?: number | null;
+  /** Optional business WO number for breadcrumbs (e.g. WO-R-26-0001). */
+  workOrderNo?: string | null;
   /** When true (default for PA), set from=pending-actions if returnTo is pending-actions. */
   listOnly?: boolean;
 };
@@ -170,6 +172,8 @@ export function buildMaterialIssueDeepLink(input: MaterialIssueDeepLinkBuildInpu
   if (input.allowanceApprovalId != null && Number(input.allowanceApprovalId) > 0) {
     qs.set("allowanceApprovalId", String(input.allowanceApprovalId));
   }
+  const woNo = input.workOrderNo?.trim();
+  if (woNo) qs.set("workOrderNo", woNo);
   const returnTo = input.returnTo?.trim() || null;
   const from = input.from?.trim() || null;
   if (returnTo) qs.set("returnTo", returnTo);

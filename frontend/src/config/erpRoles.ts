@@ -87,12 +87,14 @@ export const NO_QTY_FLOW_STATE_READ_ROLES = ["ADMIN", "STORE", "PRODUCTION", "QA
 export const WO_WRITE_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
 export const WO_PLAN_PREP_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
 /** ADMIN + PRODUCTION edit machine production-run allocations; STORE is read-only on runs. */
-export const WO_MACHINE_RUN_WRITE_ROLES = ["ADMIN", "PRODUCTION"] as const;
+export const WO_MACHINE_RUN_WRITE_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER"] as const;
+/** Past Start Date on Machine Run Planning — Admin / Production Manager only. */
+export const MACHINE_PLANNING_BACKDATE_ROLES = ["ADMIN", "PRODUCTION_MANAGER"] as const;
 /** REGULAR_SO WO create after machine planning — Store primary; Admin secondary. */
 export const REGULAR_SO_WO_CREATE_ROLES = ["ADMIN", "STORE"] as const;
 /** STORE — Green Level replenishment WO placement (monthly plan handoff) */
 export const GREEN_LEVEL_WO_PLACEMENT_ROLES = ["ADMIN", "STORE"] as const;
-export const PRODUCTION_WRITE_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER"] as const;
+export const PRODUCTION_WRITE_ROLES = ["ADMIN", "PRODUCTION"] as const;
 export const PRODUCTION_READ_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER", "STORE", "QA"] as const;
 export const PRODUCTION_DASHBOARD_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER"] as const;
 export const WO_PREPARE_CREATION_DASHBOARD_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
@@ -119,8 +121,8 @@ export const PURCHASE_BILL_WRITE_ROLES = ["ADMIN", "PURCHASE"] as const;
 export const PURCHASE_BILL_DRAFT_ROLES = ["ADMIN", "PURCHASE"] as const;
 export const PURCHASE_BILL_READ_ROLES = ["ADMIN", "PURCHASE"] as const;
 
-/** NO_QTY cycle / requirement planning hub */
-export const PLANNING_DASHBOARD_ROLES = ["ADMIN", "STORE", "PRODUCTION"] as const;
+/** NO_QTY cycle / requirement planning hub (+ Production Manager machine-run allocation) */
+export const PLANNING_DASHBOARD_ROLES = ["ADMIN", "STORE", "PRODUCTION", "PRODUCTION_MANAGER"] as const;
 export const REPORTS_ROLES = ["ADMIN"] as const;
 
 /** @deprecated Use REPORTS_ROLES */
@@ -136,6 +138,12 @@ export const SHIFT_PRODUCTION_ROLES = ["ADMIN", "PRODUCTION_MANAGER", "PRODUCTIO
 
 /** Production master registers readable by PRODUCTION_MANAGER (mirrors backend READ_ROLES). */
 export const PRODUCTION_MASTER_READ_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER"] as const;
+
+/**
+ * Who may create/edit/deactivate production masters (Machines, Operators, Shifts, FG Standards).
+ * PRODUCTION_MANAGER is never included — read-only on these registers.
+ */
+export const PRODUCTION_MASTER_WRITE_ROLES = ["ADMIN", "PRODUCTION"] as const;
 
 /** Dashboard / control-tower / pending-actions shell (PRODUCTION_MANAGER uses Shift Production landing). */
 export const DASHBOARD_SHELL_ROLES = ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "QA"] as const;

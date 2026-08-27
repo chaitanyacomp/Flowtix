@@ -40,7 +40,7 @@ const PROGRESS_TONE_CLASS: Record<ProductionOperationalStatusTone, string> = {
 export const ACTIVE_PRODUCTION_STATUS_TITLE = "Current Production Monitor";
 
 export const ACTIVE_PRODUCTION_STATUS_HELPER =
-  "Read-only work-order status. Ready to Start is not Running.";
+  "Live work-order status for lines without an active shift run.";
 
 export function DashboardCurrentProductionStatus({
   rows,

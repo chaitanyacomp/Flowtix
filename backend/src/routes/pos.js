@@ -3,6 +3,7 @@ const { z } = require("zod");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { createSalesOrderFromPo } = require("../services/salesOrderFromPo");
+const { parseStrictIsoDateOnly, INVALID_MESSAGE } = require("../services/strictIsoDate");
 
 const poRouter = express.Router();
 
@@ -12,14 +13,40 @@ function lineTotal(qty, rate, discountPct, gstPct) {
   return (Math.round((base + gst) * 100) / 100).toFixed(2);
 }
 
+/** Strict date-only input → UTC midnight Date for CustomerPO persistence. */
+function zodPoDateOnly(required) {
+  const base = required
+    ? z.union([z.string().min(1), z.date()])
+    : z.union([z.string(), z.date(), z.null()]).optional().nullable();
+  return base.superRefine((val, ctx) => {
+    if (val == null || val === "") {
+      if (required) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: INVALID_MESSAGE });
+      }
+      return;
+    }
+    const parsed = parseStrictIsoDateOnly(val, { required: true });
+    if (!parsed.ok) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: parsed.message });
+    }
+  }).transform((val) => {
+    if (val === undefined) return undefined;
+    if (val == null || val === "") return null;
+    const parsed = parseStrictIsoDateOnly(val, { required: true });
+    if (!parsed.ok || !parsed.utcDate) return z.NEVER;
+    const d = parsed.utcDate;
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  });
+}
+
 poRouter.post("/", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
     const schema = z.object({
       customerId: z.number().int(),
       supplierId: z.number().int().optional().nullable(),
       poNumber: z.string().trim().min(1, "PO Number is required"),
-      poDate: z.coerce.date(),
-      requiredDate: z.coerce.date().optional().nullable(),
+      poDate: zodPoDateOnly(true),
+      requiredDate: zodPoDateOnly(false),
       lines: z
         .array(
           z.object({
@@ -68,8 +95,8 @@ poRouter.put("/:id", requireAuth, requireRole(["ADMIN"]), async (req, res, next)
     const schema = z.object({
       supplierId: z.number().int().optional().nullable(),
       poNumber: z.string().trim().min(1).optional(),
-      poDate: z.coerce.date().optional(),
-      requiredDate: z.coerce.date().optional().nullable(),
+      poDate: zodPoDateOnly(false),
+      requiredDate: zodPoDateOnly(false),
       lines: z
         .array(
           z.object({

@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import { apiFetch } from "../services/api";
 import {
   actionLabel,
@@ -222,7 +223,7 @@ export function ActivityPage() {
               <label className="text-xs font-medium text-slate-600" htmlFor="act-from">
                 From
               </label>
-              <input
+              <Input
                 id="act-from"
                 type="date"
                 className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm"
@@ -234,7 +235,7 @@ export function ActivityPage() {
               <label className="text-xs font-medium text-slate-600" htmlFor="act-to">
                 To
               </label>
-              <input
+              <Input
                 id="act-to"
                 type="date"
                 className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm"

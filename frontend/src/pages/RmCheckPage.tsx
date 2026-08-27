@@ -37,6 +37,7 @@ import { useIsAdmin } from "../hooks/useIsAdmin";
 import { useToast } from "../contexts/ToastContext";
 import { cn } from "../lib/utils";
 import { REGULAR_TERMS, NO_QTY_TERMS } from "../lib/flowTerminology";
+import { resolveListBackTarget } from "../lib/listNavigationState";
 import type { WoPrepareDashboardQueues } from "../components/erp/WoPrepareOperationalQueuesCard";
 import { WoPrepareGuidedStrip } from "../components/erp/WoPrepareGuidedStrip";
 import { WoPrepareOperationalHeader } from "../components/erp/WoPrepareOperationalHeader";
@@ -55,11 +56,25 @@ import {
   deriveWoPrepareWorkflowStepLabel,
   formatGuidedStripOwner,
 } from "../lib/woPrepareWorkflowGuidance";
-import { REGULAR_SO_WO_CREATE_ROLES, WO_MACHINE_RUN_WRITE_ROLES, hasErpRole } from "../config/erpRoles";
+import {
+  REGULAR_SO_WO_CREATE_ROLES,
+  WO_MACHINE_RUN_WRITE_ROLES,
+  hasErpRole,
+} from "../config/erpRoles";
+import {
+  classifyMachinePlanningSaveError,
+  localTodayYmd,
+  normalizePlanningYmd,
+  runsHavePastStartDate,
+  runsSatisfySoStartDateFloor,
+} from "../lib/machinePlanningBackdate";
 import {
   machinePlanningStageBadge,
   summarizeAuthoritativeRmReadiness,
 } from "../lib/machinePlanningRmReadiness";
+import { shouldUseCompactMachinePlanningLayout } from "../lib/machinePlanningLayout";
+import { shouldUseReadyForWoConfirmationLayout } from "../lib/regularSoReadyForWoLayout";
+import { RegularSoReadyForWoConfirmation } from "../components/erp/RegularSoReadyForWoConfirmation";
 import {
   MachineRunCombinedRmSummary,
   MachineRunPlanningActionBar,
@@ -67,6 +82,7 @@ import {
   MachineRunPlanningHandoffStrip,
   MachineRunPlanningQtyStrip,
   MachineRunPlanningSoChangeControl,
+  machinePlanningCompleteDisabledReason,
 } from "../components/erp/MachineRunPlanningCompact";
 import { fetchMachines, type MachineRow } from "../lib/machineApi";
 import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
@@ -77,6 +93,7 @@ import {
   derivePlannedSetupCountFromRuns,
   mapApiRunsToDraft,
   runsToApiPayload,
+  sumAllocatedQtyForFg,
   type ProductionRunDraft,
 } from "../lib/woProductionRunAllocation";
 import { type PurgingPlanningSummary } from "../lib/woPlanningPurging";
@@ -142,6 +159,7 @@ type SoDetail = {
   poId?: number | null;
   orderType?: "NORMAL" | "REPLACEMENT" | "NO_QTY";
   customerPoReference?: string | null;
+  createdAt?: string | null;
   quotation?: { id: number; quotationNo: string | null } | null;
   lines: SoDetailLine[];
 };
@@ -339,8 +357,6 @@ function RmCheckPageContent() {
   const urlSoId = Number(searchParams.get("salesOrderId")) || Number(searchParams.get("soId")) || 0;
   const machinePlanningIntent = (searchParams.get("intent") ?? "") === "machine-planning";
   const roleUpper = String(auth.user?.role ?? "").trim().toUpperCase();
-  /** Production always uses compact Machine Run Planning on this route (no Store WO chrome). */
-  const useCompactMachinePlanning = machinePlanningIntent || roleUpper === "PRODUCTION";
   const [savingMachinePlanning, setSavingMachinePlanning] = React.useState(false);
   const [completingMachinePlanning, setCompletingMachinePlanning] = React.useState(false);
   const [reopeningMachinePlanning, setReopeningMachinePlanning] = React.useState(false);
@@ -350,6 +366,18 @@ function RmCheckPageContent() {
   const [orders, setOrders] = React.useState<SoRow[]>([]);
   const [soId, setSoId] = React.useState(0);
   const [data, setData] = React.useState<RmCheckResponse | null>(null);
+  /**
+   * Compact Machine Run Planning layout mounts for:
+   * - URL intent=machine-planning
+   * - PRODUCTION role
+   * - OR live response stage MACHINE_PLANNING_PENDING / IN_PROGRESS / AWAITING_COMPLETION
+   * Admin Prepare Work Order without intent must not keep legacy panels during those stages.
+   */
+  const useCompactMachinePlanning = shouldUseCompactMachinePlanningLayout({
+    intentMachinePlanning: machinePlanningIntent,
+    roleUpper,
+    machinePlanningKey: data?.machinePlanning?.key ?? null,
+  });
   const [soDetail, setSoDetail] = React.useState<SoDetail | null>(null);
   const [errorPresentation, setErrorPresentation] = React.useState<OperationalErrorPresentation | null>(null);
   const [initializingPlanning, setInitializingPlanning] = React.useState(false);
@@ -360,6 +388,9 @@ function RmCheckPageContent() {
   const [shifts, setShifts] = React.useState<ShiftRow[]>([]);
   const [runAllocationError, setRunAllocationError] = React.useState<string | null>(null);
   const [fgBufferReason, setFgBufferReason] = React.useState("");
+  const [machinePlanningBackdateReason, setMachinePlanningBackdateReason] = React.useState("");
+  const [soCreatedYmd, setSoCreatedYmd] = React.useState<string | null>(null);
+  const [startDateFieldError, setStartDateFieldError] = React.useState<string | null>(null);
   const [suggestedFgPlanningBufferPercent, setSuggestedFgPlanningBufferPercent] = React.useState<number | null>(null);
   const [savingBuffer, setSavingBuffer] = React.useState(false);
   const [bufferApproval, setBufferApproval] = React.useState<RegularSoBufferApprovalDetail | null>(null);
@@ -469,6 +500,9 @@ function RmCheckPageContent() {
     setAllowSoChange(false);
     setFgBufferPercentInput("0");
     setFgBufferReason("");
+    setMachinePlanningBackdateReason("");
+    setSoCreatedYmd(null);
+    setStartDateFieldError(null);
     setProductionRuns([]);
     setRunAllocationError(null);
   }, [urlSoId]);
@@ -623,6 +657,7 @@ function RmCheckPageContent() {
       setSavingMachinePlanning(true);
     }
     setRunAllocationError(null);
+    setStartDateFieldError(null);
     try {
       await apiFetch(`/api/sales-orders/${soId}/production-planning-snapshot`, {
         method: "PUT",
@@ -630,6 +665,9 @@ function RmCheckPageContent() {
           bufferPercent: normalized,
           productionRuns: productionRunsPayload(),
           machinePlanningMode: mode,
+          ...(machinePlanningBackdateReason.trim()
+            ? { machinePlanningBackdateReason: machinePlanningBackdateReason.trim() }
+            : {}),
           ...(classifyRegularSoBufferPercent(normalized) === "REQUIRES_ADMIN_APPROVAL"
             ? { bufferReason: fgBufferReason.trim() || effectiveBufferReason }
             : {}),
@@ -650,8 +688,23 @@ function RmCheckPageContent() {
       await runCheck(undefined, { skipPlanInit: false });
       return true;
     } catch (e) {
+      const field = classifyMachinePlanningSaveError(e, { soCreatedYmd });
+      if (field.kind === "start_date") {
+        setStartDateFieldError(field.startDateMessage ?? null);
+        setRunAllocationError(null);
+        setErrorPresentation(null);
+        // Keep form open — do not toast or mount page-level Retry panel for field validation.
+        return false;
+      }
+      if (field.kind === "field") {
+        setStartDateFieldError(null);
+        setRunAllocationError(field.fieldMessage ?? null);
+        setErrorPresentation(null);
+        return false;
+      }
       const presented = presentOperationalError(e);
-      setRunAllocationError(presented.userMessage);
+      setRunAllocationError(null);
+      setStartDateFieldError(null);
       toast.showError(presented.userMessage);
       setErrorPresentation(presented);
       return false;
@@ -708,6 +761,9 @@ function RmCheckPageContent() {
         body: JSON.stringify({
           bufferPercent: normalized,
           ...(canEditMachineRuns ? { productionRuns: productionRunsPayload() } : {}),
+          ...(canEditMachineRuns && machinePlanningBackdateReason.trim()
+            ? { machinePlanningBackdateReason: machinePlanningBackdateReason.trim() }
+            : {}),
           ...(classifyRegularSoBufferPercent(normalized) === "REQUIRES_ADMIN_APPROVAL"
             ? { bufferReason: fgBufferReason.trim() || effectiveBufferReason }
             : {}),
@@ -730,11 +786,12 @@ function RmCheckPageContent() {
     const seq = ++bufferPersistSeqRef.current;
     setSavingBuffer(true);
     try {
+      // Buffer-only persist: do not re-submit runs. Backend revises Planned Qty and marks
+      // machine planning incomplete when existing allocations no longer match.
       await apiFetch(`/api/sales-orders/${soId}/production-planning-snapshot`, {
         method: "PUT",
         body: JSON.stringify({
           bufferPercent: normalized,
-          ...(canEditMachineRuns ? { productionRuns: productionRunsPayload() } : {}),
           ...(classifyRegularSoBufferPercent(normalized) === "REQUIRES_ADMIN_APPROVAL"
             ? { bufferReason: fgBufferReason.trim() || effectiveBufferReason }
             : {}),
@@ -810,6 +867,15 @@ function RmCheckPageContent() {
       ]);
       setData(res);
       setSoDetail(so);
+      setSoCreatedYmd(
+        so.createdAt
+          ? (() => {
+              const d = new Date(so.createdAt);
+              if (!Number.isNaN(d.getTime())) return localTodayYmd(d);
+              return normalizePlanningYmd(String(so.createdAt).slice(0, 10));
+            })()
+          : null,
+      );
       if (Array.isArray(snap.productionRuns)) {
         setProductionRuns(mapApiRunsToDraft(snap.productionRuns as any));
       }
@@ -880,9 +946,11 @@ function RmCheckPageContent() {
       workOrderId: wo.id,
       pmrId,
       salesOrderId: soId,
-      source: "prepare-wo",
+      workOrderNo: wo.docNo ?? null,
+      source: "create-work-order",
     });
-    nav(href);
+    // Replace Prepare WO in history so browser Back cannot reopen create / duplicate WO.
+    nav(href, { replace: true });
   }
 
   async function createWorkOrder() {
@@ -1103,7 +1171,7 @@ function RmCheckPageContent() {
 
   function renderWorkflowContinuityNav() {
     if (!soId) return null;
-    if (useCompactMachinePlanning) {
+    if (useCompactMachinePlanning || useReadyForWoConfirmation) {
       // Sticky action bar owns hub navigation — avoid duplicate bottom links.
       return null;
     }
@@ -1412,6 +1480,13 @@ function RmCheckPageContent() {
     procurementQueueCtx,
   ]);
 
+  const useReadyForWoConfirmation = shouldUseReadyForWoConfirmationLayout({
+    useCompactMachinePlanning,
+    workflowState,
+    machinePlanningComplete: Boolean(data?.machinePlanning?.machinePlanningComplete),
+    machinePlanningKey: data?.machinePlanning?.key ?? null,
+  });
+
   const workflowStepLabel = React.useMemo(() => {
     if (!data || workflowState == null) return null;
     return deriveWoPrepareWorkflowStepLabel({
@@ -1603,11 +1678,12 @@ function RmCheckPageContent() {
     <PageContainer
       className={cn(
         "erp-txn-workspace w-full min-w-0",
-        useCompactMachinePlanning ? "space-y-3 pb-3" : "max-w-5xl",
+        useCompactMachinePlanning || useReadyForWoConfirmation ? "space-y-3 pb-3" : "max-w-5xl",
       )}
       data-testid="rm-check-workspace"
       data-machine-planning-layout={useCompactMachinePlanning ? "compact" : undefined}
-      data-page-width={useCompactMachinePlanning ? "fluid" : "narrow"}
+      data-ready-for-wo-layout={useReadyForWoConfirmation ? "confirmation" : undefined}
+      data-page-width={useCompactMachinePlanning || useReadyForWoConfirmation ? "fluid" : "narrow"}
     >
       {fromCustomerTracking && customerTrackingShortfallQty > 0 && soId > 0 ? (
         <div className="rounded-md border border-amber-400 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-950">
@@ -1744,18 +1820,42 @@ function RmCheckPageContent() {
               primaryFgLine?.orderQty ??
               contextCustomerQty;
 
+            const compactFgLines = (data.fgLines || [])
+              .filter((f) => !f.note)
+              .map((f) => ({
+                fgItemId: f.fgItemId,
+                fgName: f.fgName,
+                plannedQty: Math.max(
+                  0,
+                  Number(f.plannedProductionQty ?? f.rmPlanningQty ?? f.toProduce) || 0,
+                ),
+              }));
+            const compactPlannedTotal = compactFgLines.reduce((s, f) => s + f.plannedQty, 0);
+            const compactAllocatedTotal = compactFgLines.reduce(
+              (s, f) => s + sumAllocatedQtyForFg(productionRuns, f.fgItemId),
+              0,
+            );
+            const compactRunCount = derivePlannedSetupCountFromRuns(productionRuns);
+            const compactAllocationError = allocationQtyError(productionRuns, compactFgLines);
+            const completeDisabledReason = canMutatePlanning
+              ? machinePlanningCompleteDisabledReason({
+                  runCount: compactRunCount,
+                  allocationError: compactAllocationError ?? runAllocationError,
+                  plannedQty: compactPlannedTotal,
+                  allocatedQty: compactAllocatedTotal,
+                })
+              : null;
+
             return (
-              <div className="space-y-2" data-testid="machine-run-planning-compact-workspace">
+              <div className="space-y-2 pb-16" data-testid="machine-run-planning-compact-workspace">
                 <MachineRunPlanningContextStrip
                   soLabel={soDisplayLabel}
                   fgName={primaryFgLine?.fgName ?? data.machinePlanning?.primaryFgName ?? contextFgName}
                   customerQty={customerQtyDisplay}
                   plannedQty={plannedQtyDisplay != null ? Number(plannedQtyDisplay) : null}
-                  bomRevision={data.machinePlanning?.approvedBomRevision ?? null}
                   statusLabel={stageBadge.label}
                   statusTone={stageBadge.tone}
                   rmLabel={rmReady.rmLabel}
-                  nextOwner={nextOwner}
                   soChange={compactSoChangeControl}
                 />
 
@@ -1780,6 +1880,20 @@ function RmCheckPageContent() {
                     }}
                     disabled={loading || initializingPlanning || !canMutatePlanning}
                     readOnly={!canMutatePlanning}
+                    allocationStale={
+                      productionRuns.length > 0 && Boolean(compactAllocationError)
+                    }
+                    bufferReason={fgBufferReason || effectiveBufferReason}
+                    onBufferReasonChange={(v) => {
+                      markBufferFieldsTouched();
+                      setFgBufferReason(v);
+                    }}
+                    bufferRequiresAdminApproval={fgBufferRequiresAdmin}
+                    isAdmin={isAdmin}
+                    allowStoreReasonEntry={!isAdmin}
+                    approvalStatus={bufferApprovalUiStatus}
+                    requestingApproval={requestingBufferApproval}
+                    onRequestAdminApproval={() => void handleRequestBufferApproval()}
                   />
                 ) : null}
 
@@ -1787,42 +1901,33 @@ function RmCheckPageContent() {
                   <WoPrepareProductionRunAllocationPanel
                     className="mt-0"
                     compactCapacity
-                    fgLines={(data.fgLines || [])
-                      .filter((f) => !f.note)
-                      .map((f) => ({
-                        fgItemId: f.fgItemId,
-                        fgName: f.fgName,
-                        plannedQty: Math.max(
-                          0,
-                          Number(f.plannedProductionQty ?? f.rmPlanningQty ?? f.toProduce) || 0,
-                        ),
-                      }))}
+                    fgLines={compactFgLines}
                     runs={productionRuns}
                     onChange={(next) => {
                       if (!canMutatePlanning) return;
                       setPlanningRunsDirty(true);
                       setProductionRuns(next);
-                      setRunAllocationError(
-                        allocationQtyError(
-                          next,
-                          (data.fgLines || [])
-                            .filter((f) => !f.note)
-                            .map((f) => ({
-                              fgItemId: f.fgItemId,
-                              fgName: f.fgName,
-                              plannedQty: Math.max(
-                                0,
-                                Number(f.plannedProductionQty ?? f.rmPlanningQty ?? f.toProduce) || 0,
-                              ),
-                            })),
-                        ),
-                      );
+                      setRunAllocationError(allocationQtyError(next, compactFgLines));
+                      if (startDateFieldError && runsSatisfySoStartDateFloor(next, soCreatedYmd)) {
+                        setStartDateFieldError(null);
+                      }
+                      if (!runsHavePastStartDate(next)) {
+                        setMachinePlanningBackdateReason("");
+                      }
                     }}
                     machines={machines}
                     standards={fgStandards}
                     shifts={shifts}
                     readOnly={!canMutatePlanning}
                     disabled={loading || initializingPlanning || !canMutatePlanning}
+                    actorRole={roleUpper}
+                    soCreatedYmd={soCreatedYmd}
+                    backdateReason={machinePlanningBackdateReason}
+                    onBackdateReasonChange={(v) => {
+                      setMachinePlanningBackdateReason(v);
+                      setPlanningRunsDirty(true);
+                    }}
+                    startDateError={startDateFieldError}
                     error={
                       !canEditMachineRuns && !handedOff
                         ? "Machine allocation pending — Production action required."
@@ -1844,6 +1949,7 @@ function RmCheckPageContent() {
                     purgingPlanning={data.purgingPlanning}
                     plannedPurgeCount={plannedPurgeCountForDisplay()}
                     productionRunCount={derivePlannedSetupCountFromRuns(productionRuns)}
+                    overallRmLabel={rmReady.rmLabel}
                   />
                 ) : null}
 
@@ -1852,11 +1958,69 @@ function RmCheckPageContent() {
                   saving={savingMachinePlanning}
                   completing={completingMachinePlanning}
                   disabled={loading || initializingPlanning || savingBuffer}
+                  completeDisabledReason={completeDisabledReason}
                   onSaveDraft={() => void persistMachinePlanning("draft")}
                   onComplete={() => void persistMachinePlanning("complete")}
                   onBackNavigate={() => confirmLeavePlanning()}
                 />
               </div>
+            );
+          })()
+        ) : useReadyForWoConfirmation ? (
+          (() => {
+            const rmReady = summarizeAuthoritativeRmReadiness(data.rmSummary, {
+              machinePlanningComplete: true,
+              storeCanCreateWorkOrder: canCreateWoMaterial,
+            });
+            const plannedQtyDisplay =
+              productionPlanningMetrics?.plannedProductionQty ??
+              primaryFgLine?.plannedProductionQty ??
+              primaryFgLine?.rmPlanningQty ??
+              null;
+            const customerQtyDisplay =
+              productionPlanningMetrics?.customerCommittedQty ??
+              primaryFgLine?.customerCommittedQty ??
+              primaryFgLine?.orderQty ??
+              contextCustomerQty;
+            const bufferQtyDisplay = productionPlanningMetrics?.productionBufferQty ??
+              primaryFgLine?.productionBufferQty ??
+              null;
+            const salesOrdersFallback = `/sales-orders?salesOrderId=${encodeURIComponent(String(soId))}`;
+            const backHref =
+              roleUpper === "PRODUCTION"
+                ? "/planning-dashboard"
+                : resolveListBackTarget(searchParams.get("returnTo"), salesOrdersFallback);
+            return (
+              <RegularSoReadyForWoConfirmation
+                soLabel={soDisplayLabel}
+                fgName={primaryFgLine?.fgName ?? data.machinePlanning?.primaryFgName ?? contextFgName}
+                customerQty={customerQtyDisplay != null ? Number(customerQtyDisplay) : null}
+                bufferQty={bufferQtyDisplay != null ? Number(bufferQtyDisplay) : null}
+                plannedWoQty={plannedQtyDisplay != null ? Number(plannedQtyDisplay) : null}
+                rmReadyLabel={rmReady.rmLabel}
+                soChange={compactSoChangeControl}
+                runs={productionRuns}
+                machines={machines}
+                standards={fgStandards}
+                shifts={shifts}
+                rmRows={data.rmSummary ?? []}
+                hasPendingMr={hasPendingWoPlanningMr}
+                canCreateWorkOrderMaterial={canCreateWoMaterial}
+                purgingPlanning={data.purgingPlanning}
+                plannedPurgeCount={plannedPurgeCountForDisplay()}
+                productionRunCount={derivePlannedSetupCountFromRuns(productionRuns)}
+                canCreateWoRole={canCreateWoRole}
+                createDisabled={woCreateDisabled}
+                creating={creatingWo}
+                onCreateWorkOrder={() => void createWorkOrder()}
+                backHref={backHref}
+                backLabel={
+                  roleUpper === "PRODUCTION"
+                    ? "Back to Planning Hub"
+                    : REGULAR_TERMS.BACK_TO_SALES_ORDERS
+                }
+                handoffText="Store or Admin must create the Work Order."
+              />
             );
           })()
         ) : (
@@ -1935,6 +2099,7 @@ function RmCheckPageContent() {
               onRequestAdminApproval={() => void handleRequestBufferApproval()}
               saving={savingBuffer}
               disabled={loading || initializingPlanning}
+              readOnlyBuffer
             />
           ) : null}
 
@@ -1970,12 +2135,26 @@ function RmCheckPageContent() {
                       })),
                   ),
                 );
+                if (startDateFieldError && runsSatisfySoStartDateFloor(next, soCreatedYmd)) {
+                  setStartDateFieldError(null);
+                }
+                if (!runsHavePastStartDate(next)) {
+                  setMachinePlanningBackdateReason("");
+                }
               }}
               machines={machines}
               standards={fgStandards}
               shifts={shifts}
               readOnly={!canEditMachineRuns}
               disabled={loading || initializingPlanning || !canEditMachineRuns}
+              actorRole={roleUpper}
+              soCreatedYmd={soCreatedYmd}
+              backdateReason={machinePlanningBackdateReason}
+              onBackdateReasonChange={(v) => {
+                setMachinePlanningBackdateReason(v);
+                setPlanningRunsDirty(true);
+              }}
+              startDateError={startDateFieldError}
               error={
                 machineAllocationPending && !canEditMachineRuns
                   ? "Machine allocation pending — Production action required."

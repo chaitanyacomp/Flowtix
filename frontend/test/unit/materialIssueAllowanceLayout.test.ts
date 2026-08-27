@@ -16,7 +16,7 @@ const pageSource = readFileSync(
 );
 
 describe("Material Issue compact RM table layout contract", () => {
-  it("uses a single-header table with required columns", () => {
+  it("uses compact table with required columns (legacy + Kg rounding sections)", () => {
     expect(pageSource).toContain("MaterialIssueRmTable");
     expect(tableSource).toContain("material-issue-compact-grid");
     expect(tableSource).toContain("material-issue-rm-table-body");
@@ -24,13 +24,25 @@ describe("Material Issue compact RM table layout contract", () => {
     expect(pageSource).toContain("material-issue-action-bar");
     expect(tableSource).toContain("RM Item");
     expect(tableSource).toContain("BOM Qty");
+    expect(tableSource).toContain("Planned Requirement");
+    expect(tableSource).toContain("Rounding Rule");
+    expect(tableSource).toContain("formatKgRoundingRuleLabel");
+    expect(tableSource).toContain("Issue Target");
+    expect(tableSource).toContain("Already Issued");
+    expect(tableSource).toContain("Rounding Excess");
+    expect(tableSource).toContain("Available");
+    expect(tableSource).toContain("Issue Now");
+    expect(tableSource).toContain("material-issue-kg-card");
+    expect(tableSource).toContain("material-issue-rounding-rule");
+    expect(tableSource).toContain("KG_ROUNDING_RULE_TOOLTIP");
     expect(tableSource).toContain("Allowance %");
     expect(tableSource).toContain("Available Stock");
     expect(tableSource).toContain("Add Qty");
-    expect(tableSource).toContain("Issue Now");
-    expect(tableSource).toContain("Already Issued");
     expect(tableSource).toContain("Remaining");
     expect(tableSource).toContain("Status");
+    expect(tableSource).toContain("MaterialIssueRmTableSection");
+    expect(tableSource).toContain('align="center"');
+    expect(tableSource).not.toContain(">Increment<");
     expect(tableSource).not.toContain("Issue Status");
     expect(tableSource).not.toMatch(/FieldLabel[^>]*>\s*Pending\s*</);
     expect(tableSource).not.toContain("Use Recommended");

@@ -169,14 +169,14 @@ export function ScrapReportPage() {
           <Input value={workOrderId} onChange={(e) => patch({ workOrderId: e.target.value || null })} placeholder="e.g. 12" />
         </ReportFilterField>
         <ReportFilterField label="From">
-          <input
+          <Input
             type="date"
             value={dateFrom}
             onChange={(e) => patch({ dateFrom: e.target.value || null, from: null })}
           />
         </ReportFilterField>
         <ReportFilterField label="To">
-          <input type="date" value={dateTo} onChange={(e) => patch({ dateTo: e.target.value || null, to: null })} />
+          <Input type="date" value={dateTo} onChange={(e) => patch({ dateTo: e.target.value || null, to: null })} />
         </ReportFilterField>
       </ReportFilterToolbar>
 

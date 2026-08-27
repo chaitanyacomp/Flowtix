@@ -209,7 +209,16 @@ export function pendingActionWorkspaceListHref(href: string): string {
 }
 
 function appendProductionWorkspaceBucket(href: string, groupKey: string): string {
-  if (groupKey !== "Ready to Start Production" && groupKey !== "Continue Production") return href;
+  if (
+    groupKey !== "Ready to Start Production" &&
+    groupKey !== "Continue Production" &&
+    groupKey !== "Confirm Machine Start" &&
+    groupKey !== "Record Production"
+  ) {
+    return href;
+  }
+  // Active-shift CTAs already carry WO/run/session deep-link params — leave intact.
+  if (groupKey === "Confirm Machine Start" || groupKey === "Record Production") return href;
   const bucket = groupKey === "Ready to Start Production" ? "readyToStart" : "inProgress";
   try {
     const url = new URL(href, "http://erp.local");
@@ -232,7 +241,16 @@ function appendMaterialIssueWorkspaceBucket(href: string, groupKey: string): str
  * Continue Production (single): keep WO deep-link so the executable remaining-balance screen opens.
  */
 function ensureSingleProductionPendingHref(href: string, groupKey: string): string {
-  if (groupKey !== "Ready to Start Production" && groupKey !== "Continue Production") return href;
+  if (
+    groupKey !== "Ready to Start Production" &&
+    groupKey !== "Continue Production" &&
+    groupKey !== "Confirm Machine Start" &&
+    groupKey !== "Record Production"
+  ) {
+    return href;
+  }
+  // Preserve active-shift deep links (runAllocation / session / segment).
+  if (groupKey === "Confirm Machine Start" || groupKey === "Record Production") return href;
   const bucket = groupKey === "Ready to Start Production" ? "readyToStart" : "inProgress";
   try {
     const url = new URL(href, "http://erp.local");
@@ -277,6 +295,9 @@ function bucketOpenLabel(groupKey: string, count: number): string {
   }
   if (groupKey === "Ready to Start Production" || groupKey === "Continue Production") {
     return "Open Production Workspace";
+  }
+  if (groupKey === "Confirm Machine Start" || groupKey === "Record Production") {
+    return groupKey;
   }
   return count === 1 ? "Open" : "Open List";
 }

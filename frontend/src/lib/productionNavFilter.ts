@@ -1,10 +1,9 @@
 /**
  * PRODUCTION desk sidebar — allow-list (Phase 2 UI cleanup).
- * Production owns REGULAR_SO machine planning via Requirement & Cycle Planning.
+ * Requirement & Cycle Planning is Production Manager–owned (hidden unless fallback later).
  */
 const PRODUCTION_VISIBLE_NAV_KEYS = new Set([
   "dash-home",
-  "plan-dash",
   "wo",
   "prod",
   "shift-prod",

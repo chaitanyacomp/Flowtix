@@ -29,10 +29,8 @@ const machineShiftSessionsRouter = express.Router();
 const positiveInt = z.coerce.number().int().positive();
 const optionalPositiveInt = z.coerce.number().int().positive().optional().nullable();
 const nonNegQty = z.coerce.number().finite().nonnegative();
-const dateOnly = z
-  .string()
-  .trim()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "sessionDate must be YYYY-MM-DD (shift starting date)");
+const { zodStrictIsoDateString } = require("../services/strictIsoDate");
+const dateOnly = zodStrictIsoDateString(z, { required: true });
 
 const handoverStateEnum = z.enum(["RETAINED", "CLEARED", "UNKNOWN"]);
 const downtimeReasonEnum = z.enum([

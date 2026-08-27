@@ -1,8 +1,14 @@
 import * as React from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { useAuth } from "../hooks/useAuth";
+import {
+  ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS,
+  buildActiveShiftRunWorkspaceHref,
+  resolveActiveShiftRunPrimaryAction,
+} from "../lib/activeShiftRunGuidance";
 import { PageContainer } from "../components/PageHeader";
 import { Badge } from "../components/ui/badge";
-import { Button } from "../components/ui/button";
+import { Button, buttonVariants } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NativeSelect } from "../components/ui/native-select";
 import { ErpModal } from "../components/erp/ErpModal";
@@ -32,6 +38,7 @@ import {
   busyOperatorIdSet,
   canCancelShiftSession,
   canShowManagerControls,
+  canPauseShiftProduction,
   deriveMachineShiftUiStatus,
   deriveShiftLifecycleStage,
   downtimeReasonLabel,
@@ -78,6 +85,8 @@ export function ShiftSessionWorkspacePage() {
   const { sessionId: sessionIdParam } = useParams();
   const sessionId = Number(sessionIdParam);
   const navigate = useNavigate();
+  const auth = useAuth();
+  const userRole = String(auth.user?.role ?? "").trim().toUpperCase();
 
   const [session, setSession] = React.useState<ShiftSessionDetail | null>(null);
   const [caps, setCaps] = React.useState<ShiftCapabilities | null>(null);
@@ -174,8 +183,11 @@ export function ShiftSessionWorkspacePage() {
 
   const status = deriveMachineShiftUiStatus(session);
   const lifecycleStage = deriveShiftLifecycleStage(session);
-  const nextAction = shiftLifecycleNextAction(lifecycleStage, { canManage: showManager });
   const activeRun = findActiveRun(session);
+  const nextAction = shiftLifecycleNextAction(lifecycleStage, {
+    canManage: showManager,
+    activeRunSegment: Boolean(activeRun),
+  });
   const openDt = findOpenDowntimeIncident(session);
   const activeOps = (session?.operators ?? []).filter((o) => !o.leftAt);
   const historyOps = (session?.operators ?? []).filter((o) => o.leftAt);
@@ -184,9 +196,32 @@ export function ShiftSessionWorkspacePage() {
   const isCancelled = String(session?.status ?? "").toUpperCase() === "CANCELLED";
   const isOpenSession = String(session?.status ?? "").toUpperCase() === "OPEN";
   const showLiveManager = showManager && isOpenSession;
+  const showPauseProduction = canPauseShiftProduction(caps) && isOpenSession;
   const showCancel = canCancelShiftSession(session, caps);
   const canCompleteShiftOver =
     lifecycleStage === "VERIFIED" && showManager && !isShiftOver && !isCancelled;
+  const canCloseRun =
+    showLiveManager && !openDt && (userRole === "ADMIN" || userRole === "PRODUCTION_MANAGER");
+
+  const activeRunPrimaryLabel = activeRun
+    ? resolveActiveShiftRunPrimaryAction({
+        runAllocationId: activeRun.runAllocationId,
+      })
+    : null;
+  const activeRunWorkspaceHref =
+    activeRun && session
+      ? buildActiveShiftRunWorkspaceHref(
+          {
+            workOrderId: activeRun.workOrderId,
+            runAllocationId: activeRun.runAllocationId,
+            shiftSessionId: session.id,
+            runSegmentId: activeRun.id,
+            machineId: session.machine?.id ?? null,
+            primaryActionLabel: activeRunPrimaryLabel,
+          },
+          "shift-production",
+        )
+      : null;
 
   function scrollToReport() {
     reportSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -442,14 +477,27 @@ export function ShiftSessionWorkspacePage() {
                       "Shift Report submitted — production quantities are locked pending manager review."}
                   </p>
                 ) : null}
-                {showLiveManager && !openDt ? (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <Button type="button" variant="destructive" disabled={busy} onClick={() => setModal({ kind: "pause" })}>
-                      Pause Production
-                    </Button>
-                    <Button type="button" variant="outline" disabled={busy} onClick={() => setModal({ kind: "close-run" })}>
-                      Close Run
-                    </Button>
+                {!openDt ? (
+                  <div className="mt-3 flex flex-wrap gap-2" data-testid="active-run-actions">
+                    {activeRunWorkspaceHref ? (
+                      <Link
+                        to={activeRunWorkspaceHref}
+                        className={buttonVariants()}
+                        data-testid="active-run-primary-action"
+                      >
+                        {activeRunPrimaryLabel ?? ACTIVE_SHIFT_RUN_PRIMARY_ACTIONS.RECORD_PRODUCTION}
+                      </Link>
+                    ) : null}
+                    {showPauseProduction ? (
+                      <Button type="button" variant="destructive" disabled={busy} onClick={() => setModal({ kind: "pause" })}>
+                        Pause Production
+                      </Button>
+                    ) : null}
+                    {canCloseRun ? (
+                      <Button type="button" variant="outline" disabled={busy} onClick={() => setModal({ kind: "close-run" })}>
+                        Close Run
+                      </Button>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -540,7 +588,7 @@ export function ShiftSessionWorkspacePage() {
                 <p className="mt-1 text-sm text-red-800">
                   Since {formatIndiaDateTime(openDt.startedAt)} · {formatElapsed(openDt.startedAt, nowMs)}
                 </p>
-                {showLiveManager ? (
+                {showPauseProduction ? (
                   <Button
                     type="button"
                     className="mt-3 bg-teal-700 hover:bg-teal-800"
@@ -624,6 +672,8 @@ export function ShiftSessionWorkspacePage() {
           onBusy={setBusy}
           onNotice={setNotice}
           onRefresh={refresh}
+          hideZeroProduction={Boolean(activeRun)}
+          hidePrepareReportHint={Boolean(activeRun)}
         />
       </div>
 

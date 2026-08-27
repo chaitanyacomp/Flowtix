@@ -1,12 +1,14 @@
 /**
  * PRODUCTION_MANAGER desk sidebar — allow-list (presentation only).
- * Landing: Shift Production. Masters: read-only production registers.
+ * Landing: Shift Production. Masters: read-only production registers (no Masters Hub).
+ * Planning: Requirement & Cycle Planning / machine-run allocation.
  */
 const PRODUCTION_MANAGER_VISIBLE_NAV_KEYS = new Set([
-  "masters-hub",
+  "plan-dash",
   "machines",
   "operators",
   "shifts",
+  "fg-standards",
   "shift-prod",
 ]);
 

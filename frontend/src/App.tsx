@@ -604,7 +604,7 @@ export default function App() {
         <Route
           path="/fg-production-standards"
           element={
-            <ProtectedRoute allowedRoles={["ADMIN", "PRODUCTION"]}>
+            <ProtectedRoute allowedRoles={[...PRODUCTION_MASTER_READ_ROLES]}>
               <FgProductionStandardsPage />
             </ProtectedRoute>
           }

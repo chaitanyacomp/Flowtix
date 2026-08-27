@@ -71,18 +71,14 @@ function trimGrnText(v) {
   return String(v).trim();
 }
 
-/** YYYY-MM-DD from UI → stable DateTime for persistence */
+/** Date-only from UI → stable DateTime for persistence (strict calendar / 4-digit year). */
 function parseGrnDateFromInput(raw) {
   const s = trimGrnText(raw);
   if (!s) return { ok: false, reason: "empty" };
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (!m) return { ok: false, reason: "bad" };
-  const y = Number(m[1]);
-  const mo = Number(m[2]);
-  const d = Number(m[3]);
-  const dt = new Date(Date.UTC(y, mo - 1, d, 12, 0, 0));
-  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return { ok: false, reason: "bad" };
-  return { ok: true, date: dt };
+  const { parseStrictIsoDateOnly } = require("../services/strictIsoDate");
+  const parsed = parseStrictIsoDateOnly(s, { required: true });
+  if (!parsed.ok || !parsed.utcDate) return { ok: false, reason: "bad" };
+  return { ok: true, date: parsed.utcDate };
 }
 
 /** Signals POST /purchase/grns to respond with `{ error: string, message: string }`. */
@@ -1045,7 +1041,8 @@ purchaseRouter.post("/grns", requireAuth, grnWriteRoles, async (req, res, next) 
     }
     const parsedGrnDate = parseGrnDateFromInput(grnDateRaw);
     if (!parsedGrnDate.ok) {
-      const err = new Error("Enter a valid GRN date.");
+      const { INVALID_MESSAGE } = require("../services/strictIsoDate");
+      const err = new Error(INVALID_MESSAGE);
       err.statusCode = 400;
       throw err;
     }

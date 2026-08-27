@@ -5,7 +5,6 @@ import { DrillFocusBanner } from "../../components/DrillFocusBanner";
 import { useDebouncedUrlStringParam, useUrlQueryState } from "../../hooks/useUrlQueryState";
 import { useListScrollRestoration } from "../../hooks/useListScrollRestoration";
 import { buildListReturnTo, withListReturnContext } from "../../lib/listNavigationState";
-import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { ErpEmptyState, ErpKpiLabel, ErpKpiSegment, ErpKpiStrip, ErpKpiValue } from "../../components/erp/foundation";
 import { erpKpi, erpTable } from "../../lib/erpFoundationTokens";
 import {

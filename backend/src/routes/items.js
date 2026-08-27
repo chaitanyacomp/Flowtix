@@ -14,6 +14,10 @@ const {
   runBulkHardDelete,
 } = require("../services/masterBulkMutationService");
 const { isItemTypeCode, itemTypeZodEnum } = require("../services/itemTypes");
+const {
+  normalizeIssueIncrementForItemSave,
+  weightUnitKind,
+} = require("../services/rmIssueRoundingService");
 
 const ITEM_DELETE_BLOCKED = "This item is used in orders, stock, or manufacturing and cannot be deleted.";
 const ITEM_DUPLICATE_NAME = "An item with this name already exists.";
@@ -143,13 +147,15 @@ itemRouter.get("/", requireAuth, async (req, res, next) => {
     const rows = await prisma.item.findMany({
       where,
       orderBy: { id: "desc" },
-      include: { unitRef: { select: { id: true, unitName: true } } },
+      include: { unitRef: { select: { id: true, unitName: true, unitCode: true } } },
     });
     return res.json(
       rows.map((r) => ({
         ...r,
         unitId: r.unitId ?? null,
         unitName: r.unitRef?.unitName ?? null,
+        unitCode: r.unitRef?.unitCode ?? null,
+        issueIncrement: r.issueIncrement != null ? Number(r.issueIncrement) : null,
       })),
     );
   } catch (e) {
@@ -225,6 +231,7 @@ itemRouter.post("/", requireAuth, itemWriteRoles, async (req, res, next) => {
       minimumStockQty: z.union([z.number(), z.string(), z.null()]).optional(),
       reorderQty: z.union([z.number(), z.string(), z.null()]).optional(),
       fgManualGreenLevelQty: z.union([z.number(), z.string(), z.null()]).optional(),
+      issueIncrement: z.union([z.number(), z.string(), z.null()]).optional(),
     });
     const body = schema.parse(req.body);
     body.itemName = normalizeMasterNameDisplay(body.itemName);
@@ -240,10 +247,11 @@ itemRouter.post("/", requireAuth, itemWriteRoles, async (req, res, next) => {
     }
     let unitId = body.unitId ?? null;
     let unitDisplay = "";
+    let unitToken = "";
     if (unitId != null) {
       const unit = await prisma.unit.findFirst({
         where: { id: unitId, isActive: true },
-        select: { id: true, unitName: true },
+        select: { id: true, unitName: true, unitCode: true },
       });
       if (!unit) {
         const err = new Error("Invalid unit");
@@ -252,6 +260,7 @@ itemRouter.post("/", requireAuth, itemWriteRoles, async (req, res, next) => {
       }
       unitId = unit.id;
       unitDisplay = unit.unitName;
+      unitToken = unit.unitCode || unit.unitName;
     } else {
       unitDisplay = normalizeMasterNameDisplay(body.unit);
       if (!unitDisplay) {
@@ -259,6 +268,7 @@ itemRouter.post("/", requireAuth, itemWriteRoles, async (req, res, next) => {
         err.statusCode = 400;
         throw err;
       }
+      unitToken = unitDisplay;
     }
     const hsnCode = normalizeOptionalHsn(body.hsnCode);
     if (!hsnCode) {
@@ -274,6 +284,19 @@ itemRouter.post("/", requireAuth, itemWriteRoles, async (req, res, next) => {
     }
     const criticalPct = normalizeOptionalPercent(body.redThresholdPercent);
     const warningPct = normalizeOptionalPercent(body.yellowThresholdPercent);
+    let issueIncrementPayload = normalizeIssueIncrementForItemSave({
+      itemType: body.itemType,
+      unitToken,
+      issueIncrement: body.issueIncrement,
+    });
+    if (
+      issueIncrementPayload === undefined &&
+      body.itemType === "RM" &&
+      weightUnitKind(unitToken) === "kilogram"
+    ) {
+      issueIncrementPayload = 1;
+    }
+    if (issueIncrementPayload === undefined) issueIncrementPayload = null;
     const created = await prisma.item.create({
       data: {
         itemName: body.itemName,
@@ -295,6 +318,7 @@ itemRouter.post("/", requireAuth, itemWriteRoles, async (req, res, next) => {
           const q = normalizeOptionalQty(body.reorderQty);
           return q != null ? String(q) : null;
         })(),
+        issueIncrement: issueIncrementPayload != null ? String(issueIncrementPayload) : null,
         ...(body.itemType === "FG"
           ? {
               fgManualGreenLevelQty: (() => {
@@ -304,12 +328,14 @@ itemRouter.post("/", requireAuth, itemWriteRoles, async (req, res, next) => {
             }
           : {}),
       },
-      include: { unitRef: { select: { id: true, unitName: true } } },
+      include: { unitRef: { select: { id: true, unitName: true, unitCode: true } } },
     });
     return res.status(201).json({
       ...created,
       unitId: created.unitId ?? null,
       unitName: created.unitRef?.unitName ?? null,
+      unitCode: created.unitRef?.unitCode ?? null,
+      issueIncrement: created.issueIncrement != null ? Number(created.issueIncrement) : null,
     });
   } catch (e) {
     return next(e);
@@ -333,6 +359,7 @@ itemRouter.put("/:id", requireAuth, itemWriteRoles, async (req, res, next) => {
       minimumStockQty: z.union([z.number(), z.string(), z.null()]).optional(),
       reorderQty: z.union([z.number(), z.string(), z.null()]).optional(),
       fgManualGreenLevelQty: z.union([z.number(), z.string(), z.null()]).optional(),
+      issueIncrement: z.union([z.number(), z.string(), z.null()]).optional(),
     });
     const body = schema.parse(req.body);
 
@@ -408,7 +435,7 @@ itemRouter.put("/:id", requireAuth, itemWriteRoles, async (req, res, next) => {
       } else {
         const unit = await prisma.unit.findFirst({
           where: { id: body.unitId, isActive: true },
-          select: { id: true, unitName: true },
+          select: { id: true, unitName: true, unitCode: true },
         });
         if (!unit) {
           const err = new Error("Invalid unit");
@@ -467,15 +494,52 @@ itemRouter.put("/:id", requireAuth, itemWriteRoles, async (req, res, next) => {
       const q = normalizeOptionalQty(body.fgManualGreenLevelQty);
       patch.fgManualGreenLevelQty = q != null ? String(q) : null;
     }
+    if (body.issueIncrement !== undefined || body.itemType !== undefined || body.unitId !== undefined || body.unit !== undefined) {
+      const effectiveType = body.itemType ?? existing.itemType;
+      let unitToken =
+        existing.unitRef?.unitCode || existing.unitRef?.unitName || existing.unit || "";
+      if (patch.unitId != null) {
+        const u = await prisma.unit.findUnique({
+          where: { id: patch.unitId },
+          select: { unitCode: true, unitName: true },
+        });
+        unitToken = u?.unitCode || u?.unitName || patch.unit || unitToken;
+      } else if (patch.unit) {
+        unitToken = patch.unit;
+      }
+      const normalized = normalizeIssueIncrementForItemSave({
+        itemType: effectiveType,
+        unitToken,
+        issueIncrement:
+          body.issueIncrement !== undefined
+            ? body.issueIncrement
+            : existing.issueIncrement != null
+              ? Number(existing.issueIncrement)
+              : null,
+      });
+      if (normalized === null) {
+        patch.issueIncrement = null;
+      } else if (normalized !== undefined) {
+        patch.issueIncrement = String(normalized);
+      } else if (
+        effectiveType === "RM" &&
+        weightUnitKind(unitToken) === "kilogram" &&
+        existing.issueIncrement == null
+      ) {
+        patch.issueIncrement = "1";
+      }
+    }
     const updated = await prisma.item.update({
       where: { id },
       data: patch,
-      include: { unitRef: { select: { id: true, unitName: true } } },
+      include: { unitRef: { select: { id: true, unitName: true, unitCode: true } } },
     });
     return res.json({
       ...updated,
       unitId: updated.unitId ?? null,
       unitName: updated.unitRef?.unitName ?? null,
+      unitCode: updated.unitRef?.unitCode ?? null,
+      issueIncrement: updated.issueIncrement != null ? Number(updated.issueIncrement) : null,
     });
   } catch (e) {
     return next(e);

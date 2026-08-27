@@ -38,6 +38,8 @@ type Props = {
   onRequestAdminApproval?: () => void;
   saving?: boolean;
   disabled?: boolean;
+  /** Create WO / post-planning: buffer is single-sourced from Machine Run Planning. */
+  readOnlyBuffer?: boolean;
   className?: string;
 };
 
@@ -59,6 +61,7 @@ export function WoPrepareProductionPlanningPanel({
   onRequestAdminApproval,
   saving,
   disabled,
+  readOnlyBuffer = false,
   className,
 }: Props) {
   const suggested =
@@ -67,7 +70,8 @@ export function WoPrepareProductionPlanningPanel({
       : null;
   const allLines = [primaryLine, ...extraLines];
   const band = classifyRegularSoBufferPercent(Number(bufferPercentInput) || metrics.productionBufferPercent);
-  const showApprovalHint = bufferRequiresAdminApproval || band === "REQUIRES_ADMIN_APPROVAL";
+  const showApprovalHint =
+    !readOnlyBuffer && (bufferRequiresAdminApproval || band === "REQUIRES_ADMIN_APPROVAL");
   const reasonEditable = Boolean(isAdmin || allowStoreReasonEntry);
 
   return (
@@ -77,6 +81,8 @@ export function WoPrepareProductionPlanningPanel({
         className,
       )}
       aria-labelledby="wo-prepare-production-planning-title"
+      data-testid="wo-prepare-production-planning-panel"
+      data-buffer-readonly={readOnlyBuffer ? "true" : "false"}
     >
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-1">
         <h2
@@ -92,43 +98,56 @@ export function WoPrepareProductionPlanningPanel({
 
       <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <ReadOnlyMetric label="Customer Qty" value={metrics.customerCommittedQty} emphasize />
-        {suggested != null ? (
-          <ReadOnlyMetric label="Suggested Buffer" valueLabel={`${suggested}%`} muted />
-        ) : null}
-        <div>
-          <label
-            htmlFor="fg-buffer-percent"
-            className="text-[10px] font-semibold uppercase tracking-wider text-slate-600"
-          >
-            Production buffer %
-          </label>
-          <DecimalInput
-            id="fg-buffer-percent"
-            maxFractionDigits={REGULAR_SO_BUFFER_PERCENT_DECIMALS}
-            className={cn(
-              "mt-0.5 h-8 w-full max-w-[5.5rem] rounded border bg-white px-2 text-sm font-semibold tabular-nums text-slate-950",
-              bufferInputInvalid ? "border-red-400" : "border-slate-300",
-            )}
-            value={bufferPercentInput}
-            disabled={disabled || saving}
-            onValueChange={onBufferPercentInputChange}
-            aria-invalid={bufferInputInvalid || undefined}
-            aria-describedby="fg-buffer-percent-hint"
-          />
-          <p id="fg-buffer-percent-hint" className="mt-0.5 text-[10px] text-slate-500">
-            0–{REGULAR_SO_BUFFER_PERCENT_SOFT_MAX}% normal · up to {REGULAR_SO_BUFFER_PERCENT_MAX}% with Admin
-          </p>
-        </div>
-        <ReadOnlyMetric
-          label="Buffer"
-          valueLabel={`${formatRegularSoBufferPercentDisplay(metrics.productionBufferPercent)}%`}
-        />
-        <ReadOnlyMetric
-          label="Additional planned quantity"
-          value={metrics.productionBufferQty}
-          emphasize
-        />
-        <ReadOnlyMetric label="Planned WO quantity" value={metrics.plannedProductionQty} emphasize />
+        {readOnlyBuffer ? (
+          <>
+            <ReadOnlyMetric
+              label="Buffer %"
+              valueLabel={`${formatRegularSoBufferPercentDisplay(metrics.productionBufferPercent)}%`}
+            />
+            <ReadOnlyMetric label="Buffer Qty" value={metrics.productionBufferQty} emphasize />
+            <ReadOnlyMetric label="Planned WO Qty" value={metrics.plannedProductionQty} emphasize />
+          </>
+        ) : (
+          <>
+            {suggested != null ? (
+              <ReadOnlyMetric label="Suggested Buffer" valueLabel={`${suggested}%`} muted />
+            ) : null}
+            <div>
+              <label
+                htmlFor="fg-buffer-percent"
+                className="text-[10px] font-semibold uppercase tracking-wider text-slate-600"
+              >
+                Production buffer %
+              </label>
+              <DecimalInput
+                id="fg-buffer-percent"
+                maxFractionDigits={REGULAR_SO_BUFFER_PERCENT_DECIMALS}
+                className={cn(
+                  "mt-0.5 h-8 w-full max-w-[5.5rem] rounded border bg-white px-2 text-sm font-semibold tabular-nums text-slate-950",
+                  bufferInputInvalid ? "border-red-400" : "border-slate-300",
+                )}
+                value={bufferPercentInput}
+                disabled={disabled || saving}
+                onValueChange={onBufferPercentInputChange}
+                aria-invalid={bufferInputInvalid || undefined}
+                aria-describedby="fg-buffer-percent-hint"
+              />
+              <p id="fg-buffer-percent-hint" className="mt-0.5 text-[10px] text-slate-500">
+                0–{REGULAR_SO_BUFFER_PERCENT_SOFT_MAX}% normal · up to {REGULAR_SO_BUFFER_PERCENT_MAX}% with Admin
+              </p>
+            </div>
+            <ReadOnlyMetric
+              label="Buffer"
+              valueLabel={`${formatRegularSoBufferPercentDisplay(metrics.productionBufferPercent)}%`}
+            />
+            <ReadOnlyMetric
+              label="Additional planned quantity"
+              value={metrics.productionBufferQty}
+              emphasize
+            />
+            <ReadOnlyMetric label="Planned WO quantity" value={metrics.plannedProductionQty} emphasize />
+          </>
+        )}
         <ReadOnlyMetric label="FG Stock Adjustment" value={metrics.fgStockAdjustmentQty} muted />
         <ReadOnlyMetric label="RM Planning Qty" value={metrics.rmPlanningQty} emphasize />
       </div>

@@ -1,6 +1,7 @@
 const { Prisma } = require("../prismaClientPackage");
 const { isTestingModeRelaxed, resolveLineTaxFromItem } = require("./rmPoTaxFields");
 const { assertAnyAdminPassword } = require("./adminPasswordAuth");
+const { parseStrictIsoDateOnly, INVALID_MESSAGE } = require("./strictIsoDate");
 const {
   resolvePurchaseBillCommercialSnapshots,
   resolvePurchaseBillIntraState,
@@ -173,6 +174,26 @@ const billInclude = {
   },
   payments: { orderBy: { id: "asc" }, include: { createdBy: { select: { id: true, name: true } } } },
 };
+
+/**
+ * Strict calendar date-only → UTC midnight (bill / payment / due persistence).
+ * @param {unknown} raw
+ * @param {{ required?: boolean, emptyMessage?: string, invalidMessage?: string }} [opts]
+ * @returns {Date|null}
+ */
+function parseUtcMidnightDateOnly(raw, opts = {}) {
+  const required = opts.required !== false;
+  if (raw == null || raw === "") {
+    if (required) throw friendlyError(opts.emptyMessage || INVALID_MESSAGE, 400);
+    return null;
+  }
+  const parsed = parseStrictIsoDateOnly(raw, { required: true });
+  if (!parsed.ok || !parsed.utcDate) {
+    throw friendlyError(opts.invalidMessage || INVALID_MESSAGE, 400);
+  }
+  const d = parsed.utcDate;
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
 
 function friendlyError(message, statusCode = 400) {
   const err = new Error(message);
@@ -698,22 +719,16 @@ async function updateDraft(prisma, billId, body) {
     );
 
     const trimmedBillNo = billNo != null && String(billNo).trim() !== "" ? String(billNo).trim() : null;
-    let parsedBillDate = billDate instanceof Date ? billDate : new Date(billDate);
-    if (Number.isNaN(parsedBillDate.getTime())) {
-      throw friendlyError("Please enter a valid bill date.");
-    }
-    parsedBillDate = new Date(
-      Date.UTC(parsedBillDate.getUTCFullYear(), parsedBillDate.getUTCMonth(), parsedBillDate.getUTCDate()),
-    );
+    const parsedBillDate = parseUtcMidnightDateOnly(billDate, {
+      invalidMessage: "Please enter a valid bill date.",
+    });
 
-    let parsedDue = null;
-    if (dueDate != null && String(dueDate).trim() !== "") {
-      const d = dueDate instanceof Date ? dueDate : new Date(dueDate);
-      if (Number.isNaN(d.getTime())) {
-        throw friendlyError("Please enter a valid due date, or leave it blank.");
-      }
-      parsedDue = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-    }
+    const parsedDue =
+      dueDate != null && String(dueDate).trim() !== ""
+        ? parseUtcMidnightDateOnly(dueDate, {
+            invalidMessage: "Please enter a valid due date, or leave it blank.",
+          })
+        : null;
 
     for (const nl of nextLines) {
       await tx.purchaseBillLine.update({
@@ -1166,11 +1181,10 @@ async function addPurchaseBillPayment(prisma, billId, input, { userId, role }) {
   let amount = Number(input?.amount);
   if (!Number.isFinite(amount) || amount <= 0) throw friendlyError("Amount must be positive.", 400);
 
-  const paymentDateRaw = input?.paymentDate;
-  if (paymentDateRaw == null || paymentDateRaw === "") throw friendlyError("Payment date is required.", 400);
-  const pd = paymentDateRaw instanceof Date ? paymentDateRaw : new Date(paymentDateRaw);
-  if (Number.isNaN(pd.getTime())) throw friendlyError("Invalid payment date.", 400);
-  const paymentDateVal = new Date(Date.UTC(pd.getUTCFullYear(), pd.getUTCMonth(), pd.getUTCDate()));
+  const paymentDateVal = parseUtcMidnightDateOnly(input?.paymentDate, {
+    emptyMessage: "Payment date is required.",
+    invalidMessage: "Invalid payment date.",
+  });
 
   const refTrim = input?.referenceNo != null ? String(input.referenceNo).trim().slice(0, 128) : "";
   const remarksTrim = input?.remarks != null ? String(input.remarks).trim().slice(0, 4000) : "";
@@ -1275,9 +1289,9 @@ async function updatePurchaseBillPaymentTracking(prisma, billId, input) {
       if (dueDateRaw === null || dueDateRaw === "") {
         dueDateVal = null;
       } else {
-        const d = dueDateRaw instanceof Date ? dueDateRaw : new Date(dueDateRaw);
-        if (Number.isNaN(d.getTime())) throw friendlyError("Please enter a valid due date.", 400);
-        dueDateVal = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+        dueDateVal = parseUtcMidnightDateOnly(dueDateRaw, {
+          invalidMessage: "Please enter a valid due date.",
+        });
       }
     }
 

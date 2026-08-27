@@ -61,6 +61,7 @@ describe("Machine Run Planning compact redesign", () => {
     expect(intentBranch).not.toContain("WoPrepareProductionPlanningPanel");
     expect(intentBranch).not.toContain("WoPrepareGuidedStrip");
     expect(compactSource).toContain('data-testid="machine-planning-combined-rm"');
+    expect(compactSource).toContain("Material Readiness");
     expect(compactSource.match(/Total planned RM/g) ?? []).toHaveLength(0);
   });
 
@@ -71,7 +72,7 @@ describe("Machine Run Planning compact redesign", () => {
     expect(rmCheckSource).toContain("readOnly={!canMutatePlanning}");
     expect(compactSource).toContain("Reopen Planning");
     expect(compactSource).toContain('data-testid="reopen-machine-planning"');
-    expect(compactSource).toContain("Handed to Store");
+    expect(compactSource).toContain("Planning complete");
   });
 
   it("post-complete redirects to planning hub with success toast and double-submit guard", () => {
@@ -110,7 +111,10 @@ describe("Machine Run Planning compact redesign", () => {
 
   it("1280 layout contract markers exist for dense packing", () => {
     expect(rmCheckSource).toContain('data-machine-planning-layout={useCompactMachinePlanning ? "compact"');
-    expect(rmCheckSource).toContain('data-page-width={useCompactMachinePlanning ? "fluid"');
+    // Fluid width for compact Machine Planning and Ready-for-WO confirmation layouts.
+    expect(rmCheckSource).toContain(
+      'data-page-width={useCompactMachinePlanning || useReadyForWoConfirmation ? "fluid" : "narrow"}',
+    );
     expect(compactSource).toContain("erp-sticky-workflow-bar");
     expect(allocationSource).toContain("compactCapacity");
   });

@@ -124,6 +124,15 @@ describe("erpNavContext", () => {
     expect(issue.trail.map((t) => t.label)).toEqual(["Dashboard", "Material Issue"]);
   });
 
+  it("resolves Material Issue sidebar default to Operations", () => {
+    const issue = resolveStoreExecutionNavContext(
+      { pathname: "/material-issue", search: "", state: null },
+      "material-issue",
+    );
+    expect(issue.parentLabel).toBe("Operations");
+    expect(issue.trail.map((t) => t.label)).toEqual(["Operations", "Material Issue"]);
+  });
+
   it("resolves pending-actions → workspace trail (scenario 4)", () => {
     const ws = resolveStoreExecutionNavContext(
       {

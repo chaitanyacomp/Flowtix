@@ -39,7 +39,8 @@ const previewBodySchema = z.object({
   netShiftMinutes: z.coerce.number().positive().optional().nullable(),
 });
 
-const READ_ROLES = ["ADMIN", "PRODUCTION", "STORE"];
+const READ_ROLES = ["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER", "STORE"];
+/** ADMIN maintains masters; PRODUCTION may update registers; PRODUCTION_MANAGER is read-only. */
 const WRITE_ROLES = ["ADMIN", "PRODUCTION"];
 
 fgProductionStandardsRouter.get("/", requireAuth, requireRole(READ_ROLES), async (req, res, next) => {

@@ -11,7 +11,7 @@ const IGNORE_SELECTOR = "button, input, select, textarea, a, [data-no-drag], [ro
 
 function asClosestHost(target: EventTarget | null): { closest: (selector: string) => unknown } | null {
   if (!target || typeof (target as { closest?: unknown }).closest !== "function") return null;
-  return target as { closest: (selector: string) => unknown };
+  return target as unknown as { closest: (selector: string) => unknown };
 }
 
 export function isErpModalDragIgnoreTarget(target: EventTarget | null): boolean {

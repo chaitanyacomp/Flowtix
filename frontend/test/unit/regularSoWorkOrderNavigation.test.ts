@@ -22,8 +22,11 @@ describe("REGULAR_SO WO navigation", () => {
     });
     expect(mi).toContain("/material-issue");
     expect(mi).toContain("workOrderId=26");
+    expect(mi).toContain("returnTo=work-order-detail");
+    expect(mi).toContain("from=create-work-order");
+    expect(mi).not.toContain("returnTo=prepare-wo");
     expect(mi).not.toContain("/work-orders?");
-    expect(buildRegularSoViewWorkOrderHref(26)).toBe("/work-orders/26?from=prepare-wo");
+    expect(buildRegularSoViewWorkOrderHref(26)).toBe("/work-orders/26?from=create-work-order");
     expect(shouldReuseExistingRegularWo(26)).toBe(true);
   });
 

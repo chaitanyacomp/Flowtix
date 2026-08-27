@@ -30,6 +30,10 @@ type Props = {
   onSelectedRunAllocationIdChange?: (runAllocationId: number | null) => void;
   /** Notify parent when entry should stay disabled until a run is start-confirmed. */
   onEntryGateChange?: (gate: ProductionRunStartEntryGate) => void;
+  /** Prefer this run from dashboard / pending-actions deep link. */
+  preferredRunAllocationId?: number | null;
+  /** When true, open confirm modal for preferred (or first pending) run. */
+  autoOpenConfirm?: boolean;
 };
 
 /**
@@ -45,6 +49,8 @@ export function ProductionRunStartConfirmPanel({
   selectedRunAllocationId = null,
   onSelectedRunAllocationIdChange,
   onEntryGateChange,
+  preferredRunAllocationId = null,
+  autoOpenConfirm = false,
 }: Props) {
   const [data, setData] = React.useState<ProductionRunStartListResponse | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -114,13 +120,39 @@ export function ProductionRunStartConfirmPanel({
       onSelectedRunAllocationIdChange(null);
       return;
     }
+    const preferred = Number(preferredRunAllocationId ?? 0);
+    if (preferred > 0 && fgRuns.some((r) => r.runAllocationId === preferred)) {
+      if (selectedRunAllocationId !== preferred) {
+        onSelectedRunAllocationIdChange(preferred);
+      }
+      return;
+    }
     const stillValid =
       selectedRunAllocationId != null &&
       entryAllowedRuns.some((r) => r.runAllocationId === selectedRunAllocationId);
     if (stillValid) return;
     const first = entryAllowedRuns[0]?.runAllocationId ?? null;
     onSelectedRunAllocationIdChange(first);
-  }, [data, entryAllowedRuns, selectedRunAllocationId, onSelectedRunAllocationIdChange]);
+  }, [
+    data,
+    entryAllowedRuns,
+    selectedRunAllocationId,
+    onSelectedRunAllocationIdChange,
+    preferredRunAllocationId,
+    fgRuns,
+  ]);
+
+  React.useEffect(() => {
+    if (!autoOpenConfirm || !canConfirm || !data || data.mode === "LEGACY") return;
+    if (activeRunId != null) return;
+    const preferred = Number(preferredRunAllocationId ?? 0);
+    const pending = fgRuns.filter((r) => r.needsConfirmation);
+    const target =
+      preferred > 0
+        ? pending.find((r) => r.runAllocationId === preferred) ?? pending[0]
+        : pending[0];
+    if (target) setActiveRunId(target.runAllocationId);
+  }, [autoOpenConfirm, canConfirm, data, preferredRunAllocationId, fgRuns, activeRunId]);
 
   if (error) {
     return (
@@ -130,7 +162,16 @@ export function ProductionRunStartConfirmPanel({
     );
   }
 
-  if (!data) return null;
+  if (loading || !data) {
+    return (
+      <div
+        className={cn("rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700", className)}
+        data-testid="production-run-start-panel-loading"
+      >
+        Loading machine run context…
+      </div>
+    );
+  }
 
   if (data.mode === "LEGACY") {
     return (
@@ -172,7 +213,7 @@ export function ProductionRunStartConfirmPanel({
                   onClick={() => setActiveRunId(r.runAllocationId)}
                   data-testid={`open-start-confirm-${r.runAllocationId}`}
                 >
-                  {canConfirm ? "Confirm start" : "View only"}
+                  {canConfirm ? "Confirm Machine Start" : "View only"}
                 </Button>
               </li>
             ))}

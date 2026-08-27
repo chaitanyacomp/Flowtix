@@ -80,6 +80,7 @@ describe("B — getShiftCapabilities", () => {
     const db = { user: { count: async () => 2 } };
     const caps = await getShiftCapabilities({ role: "PRODUCTION" }, db);
     assert.equal(caps.canPerformManagerActions, false);
+    assert.equal(caps.canPauseProduction, true);
     assert.equal(caps.productionManagerAssigned, true);
     assert.equal(caps.isFallbackControl, false);
   });

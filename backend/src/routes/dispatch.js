@@ -2447,17 +2447,15 @@ dispatchRouter.get("/sales-orders-debug", requireAuth, requireRole(["ADMIN"]), a
   }
 });
 
-/** YYYY-MM-DD → UTC day bounds for `Dispatch.date` filtering. */
+/** Strict YYYY-MM-DD → UTC day bounds for `Dispatch.date` filtering. */
 function parseLedgerYmdStartUtc(ymd) {
-  if (typeof ymd !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
-  const t = Date.parse(`${ymd}T00:00:00.000Z`);
-  return Number.isNaN(t) ? null : new Date(t);
+  const { parseStrictIsoDateBoundUtc } = require("../services/strictIsoDate");
+  return parseStrictIsoDateBoundUtc(ymd, "start");
 }
 
 function parseLedgerYmdEndUtc(ymd) {
-  if (typeof ymd !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
-  const t = Date.parse(`${ymd}T23:59:59.999Z`);
-  return Number.isNaN(t) ? null : new Date(t);
+  const { parseStrictIsoDateBoundUtc } = require("../services/strictIsoDate");
+  return parseStrictIsoDateBoundUtc(ymd, "end");
 }
 
 /**
@@ -2495,12 +2493,14 @@ dispatchRouter.get("/ledger", requireAuth, requireRole(DISPATCH_READ_ROLES), asy
           : null;
 
     if (fromQ != null && String(fromQ).trim() !== "" && !fromDate) {
-      const err = new Error("Invalid from date; use YYYY-MM-DD.");
+      const { INVALID_MESSAGE } = require("../services/strictIsoDate");
+      const err = new Error(INVALID_MESSAGE);
       err.statusCode = 400;
       throw err;
     }
     if (toQ != null && String(toQ).trim() !== "" && !toDate) {
-      const err = new Error("Invalid to date; use YYYY-MM-DD.");
+      const { INVALID_MESSAGE } = require("../services/strictIsoDate");
+      const err = new Error(INVALID_MESSAGE);
       err.statusCode = 400;
       throw err;
     }

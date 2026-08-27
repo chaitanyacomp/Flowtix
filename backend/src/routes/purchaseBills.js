@@ -29,6 +29,7 @@ const {
   PURCHASE_BILL_DRAFT_ROLES,
   PURCHASE_BILL_READ_ROLES,
 } = require("../constants/erpRoles");
+const { zodStrictIsoDateString } = require("../services/strictIsoDate");
 // Legacy aliases kept for minimal diff; map onto the new groups.
 const PURCHASE_BILL_FULL_OPS_ROLES = PURCHASE_BILL_DRAFT_ROLES;
 const PURCHASE_BILL_ACCOUNTS_READ_ROLES = PURCHASE_BILL_READ_ROLES;
@@ -495,11 +496,8 @@ purchaseBillsRouter.post("/", requireAuth, requireRole(PURCHASE_BILL_FULL_OPS_RO
   }
 });
 
-const dateInput = z.union([
-  z.string().min(1),
-  z.number(),
-  z.coerce.date(),
-]);
+const dateInput = zodStrictIsoDateString(z, { required: true });
+const optionalDueDateInput = zodStrictIsoDateString(z, { required: false });
 
 purchaseBillsRouter.put("/:id", requireAuth, requireRole(PURCHASE_BILL_FULL_OPS_ROLES), async (req, res, next) => {
   try {
@@ -507,7 +505,7 @@ purchaseBillsRouter.put("/:id", requireAuth, requireRole(PURCHASE_BILL_FULL_OPS_
     const schema = z.object({
       billNo: z.string().max(128).optional().nullable(),
       billDate: dateInput,
-      dueDate: z.union([dateInput, z.null(), z.literal("")]).optional(),
+      dueDate: optionalDueDateInput,
       remarks: z.string().max(4000).optional().nullable(),
       lines: z
         .array(

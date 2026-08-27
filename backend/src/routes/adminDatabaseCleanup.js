@@ -14,6 +14,9 @@ const {
   buildNoQtyRecoveryDependencyCleanupSteps,
 } = require("../services/noQtyRecoveryCleanupService");
 const { getResetTransactionVerifyTables } = require("../services/cleanup/cleanupRegistry");
+const {
+  restoreOrphanClosedEnquiriesForRetainedApprovedQuotations,
+} = require("../services/enquiryQuotationLifecycle");
 
 const adminDatabaseCleanupRouter = express.Router();
 
@@ -895,12 +898,18 @@ async function runResetNoQtyTransactionalDeletes(tx) {
   /** @type {Record<string, number>} */
   const deletedCounts = {};
 
-  const noQtySoIds = (
-    await tx.salesOrder.findMany({
-      where: { orderType: "NO_QTY" },
-      select: { id: true },
-    })
-  ).map((r) => r.id);
+  const noQtySos = await tx.salesOrder.findMany({
+    where: { orderType: "NO_QTY" },
+    select: { id: true, quotationId: true },
+  });
+  const noQtySoIds = noQtySos.map((r) => r.id);
+  const retainedQuotationIds = [
+    ...new Set(
+      noQtySos
+        .map((r) => Number(r.quotationId))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ),
+  ];
 
   if (noQtySoIds.length === 0) {
     return deletedCounts;
@@ -1330,6 +1339,12 @@ async function runResetNoQtyTransactionalDeletes(tx) {
     }),
   );
 
+  // SOs removed but quotations/enquiries retained — restore CLOSED → QUOTED for approved unlinked quotes.
+  const { restoredEnquiryIds } = await restoreOrphanClosedEnquiriesForRetainedApprovedQuotations(tx, {
+    quotationIds: retainedQuotationIds,
+  });
+  deletedCounts.enquiryRestoredToQuoted = restoredEnquiryIds.length;
+
   return deletedCounts;
 }
 
@@ -1740,6 +1755,7 @@ async function runResetTransactionDataInTransaction(tx) {
 /**
  * Admin-only destructive endpoint to clear transactional rows for process testing.
  * Master data (users/roles/items/customers/suppliers/units/settings/etc.) is preserved.
+ * Deletes the full enquiry→quotation→SO chain, so no CLOSED→QUOTED enquiry compensation is needed.
  */
 adminDatabaseCleanupRouter.post(
   "/database-cleanup/reset-transaction-data",
@@ -1934,6 +1950,7 @@ module.exports = {
   runFinalTransactionResetSweep,
   runFullDemoResetDeletes,
   runResetTransactionDataInTransaction,
+  runResetNoQtyTransactionalDeletes,
   verifyTransactionResetComplete,
   NO_QTY_RECOVERY_CLEANUP_TABLES,
   CleanupStepError,

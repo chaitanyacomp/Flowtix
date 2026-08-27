@@ -28,6 +28,7 @@ import type { ResolvedNoQtyContinuation } from "../lib/noQtyDashboardContinuatio
 import {
   DashboardControlColumn,
   DashboardCurrentProductionStatus,
+  DashboardActiveProductionRunCard,
   DashboardPausedWorkOrders,
   type PausedWorkOrderRow,
   DashboardOpsClearStrip,
@@ -50,6 +51,13 @@ import { useRouteActive } from "../hooks/useRouteActive";
 import { endPerfMark, usePagePerf } from "../lib/performanceTiming";
 import { summarizeDashboardProductionAttention } from "../lib/dashboardProductionStatus";
 import { summarizeFactoryProductionCounters } from "../lib/adminDashboardClassification";
+import { pickActiveShiftRunsFromQueue } from "../lib/activeShiftRunGuidance";
+import type { ActiveShiftRunGuidance } from "../lib/activeShiftRunGuidance";
+import {
+  filterPendingActionsUnrelatedToActiveRuns,
+  filterProdQueueExcludingActiveRunWos,
+  shouldHideProductionDashboardDuplicates,
+} from "../lib/productionDashboardActiveRunUi";
 import { buildAdminCriticalExceptions } from "../lib/adminDashboardExceptions";
 import { controlTowerHref } from "../lib/controlTowerNavigation";
 import {
@@ -454,6 +462,7 @@ type ProductionQueueRow = {
   qtyLabel?: string;
   actionHref?: string;
   actionLabel?: string;
+  activeShiftRun?: ActiveShiftRunGuidance | null;
 };
 
 type QcQueueRow = {
@@ -1420,6 +1429,33 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
     () => summarizeFactoryProductionCounters(prodQueue),
     [prodQueue],
   );
+  const activeShiftRuns = React.useMemo(
+    () => pickActiveShiftRunsFromQueue(prodQueue),
+    [prodQueue],
+  );
+  const activeShiftWorkOrderIds = React.useMemo(
+    () => activeShiftRuns.map((r) => Number(r.workOrderId)).filter((id) => id > 0),
+    [activeShiftRuns],
+  );
+  const hideActiveRunDuplicates =
+    role === "PRODUCTION" && shouldHideProductionDashboardDuplicates(activeShiftRuns.length);
+  const pendingActionsUnrelated = React.useMemo(() => {
+    const list = pendingActionsDeskProps?.actions ?? [];
+    if (!hideActiveRunDuplicates) return list;
+    return filterPendingActionsUnrelatedToActiveRuns(list, activeShiftWorkOrderIds);
+  }, [pendingActionsDeskProps?.actions, hideActiveRunDuplicates, activeShiftWorkOrderIds]);
+  const showPendingActionsDesk =
+    Boolean(pendingActionsDeskProps) &&
+    (!hideActiveRunDuplicates
+      ? true
+      : !pendingActionsDeskProps?.loading && pendingActionsUnrelated.length > 0);
+  const prodQueueForMonitor = React.useMemo(
+    () =>
+      hideActiveRunDuplicates
+        ? filterProdQueueExcludingActiveRunWos(prodQueue, activeShiftWorkOrderIds)
+        : prodQueue,
+    [hideActiveRunDuplicates, prodQueue, activeShiftWorkOrderIds],
+  );
 
   const prodWaitingForMaterial = React.useMemo(() => {
     if (!prodQueue?.length) return { workOrderCount: 0, waitingStoreIssueCount: 0 };
@@ -1498,16 +1534,28 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
 
   const dispatchDashRegular = actionRequiredGroups.dispatch.filter((r) => !isDashActionNoQty(r));
   const dispatchDashNoQty = actionRequiredGroups.dispatch.filter(isDashActionNoQty);
-  const woProdRegular = woProductionActions.filter((r) => !isDashActionNoQty(r));
+  const woProdRegular = woProductionActions.filter((r) => {
+    if (isDashActionNoQty(r)) return false;
+    if (hideActiveRunDuplicates && activeShiftWorkOrderIds.length) {
+      const woId = Number((r as { workOrderId?: number }).workOrderId ?? 0);
+      if (woId > 0 && activeShiftWorkOrderIds.includes(woId)) return false;
+      // Prefer matching via href when workOrderId missing on continue-working rows.
+      const href = String((r as { href?: string }).href ?? "");
+      if (activeShiftWorkOrderIds.some((id) => href.includes(`workOrderId=${id}`))) return false;
+    }
+    return true;
+  });
   const salesBillRegular = salesBillActions.filter((r) => !isDashActionNoQty(r));
   const salesBillNoQty = salesBillActions.filter(isDashActionNoQty);
 
-  const showProductionPendingRegularCard = shouldShowProductionPendingRegularControlCard({
-    woProdRegularSalesOrderIds: woProdRegular.map((r) => r.salesOrderId),
-    hasOperationalBlockerCards,
-    blockerCoverage: operationalBlockerCoverage,
-    prodQueue,
-  });
+  const showProductionPendingRegularCard =
+    !(hideActiveRunDuplicates && woProdRegular.length === 0) &&
+    shouldShowProductionPendingRegularControlCard({
+      woProdRegularSalesOrderIds: woProdRegular.map((r) => r.salesOrderId),
+      hasOperationalBlockerCards,
+      blockerCoverage: operationalBlockerCoverage,
+      prodQueue,
+    });
 
   const qcBatchCount = canViewProductionQaQueue ? (qcQueue?.length ?? 0) : 0;
   const qcPendingTotalQty =
@@ -1606,6 +1654,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
 
   const showOperationsClearStrip =
     !demo.enabled &&
+    !hideActiveRunDuplicates &&
     (pendingActionsDeskProps?.loading !== false || pendingActionsDeskProps.count === 0) &&
     userHasOperationalSummaryWidgets &&
     opsQueuesReady &&
@@ -1624,7 +1673,11 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
       : 0;
 
   const showRoleKpiStrip =
-    !demo.enabled && !canViewOverallSummary && opsQueuesReady && noOperationalFetchErrors;
+    !demo.enabled &&
+    !canViewOverallSummary &&
+    opsQueuesReady &&
+    noOperationalFetchErrors &&
+    !hideActiveRunDuplicates;
 
   const showOperationalLeftPanel =
     !demo.enabled && (hasOperationalQueueAttention || hasVisibleNoQtyContinuation);
@@ -2225,14 +2278,23 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
               </Button>
             </div>
           ) : null}
-          {!demo.enabled && pendingActionsDeskProps ? (
+          {!demo.enabled && role === "PRODUCTION" && activeShiftRuns.length > 0 ? (
+            <DashboardActiveProductionRunCard runs={activeShiftRuns} />
+          ) : null}
+          {!demo.enabled && showPendingActionsDesk && pendingActionsDeskProps ? (
             <PendingActionsDashboardCard
-              count={pendingActionsDeskProps.count}
+              count={
+                hideActiveRunDuplicates
+                  ? pendingActionsUnrelated.length
+                  : pendingActionsDeskProps.count
+              }
               loading={pendingActionsDeskProps.loading}
               error={pendingActionsDeskProps.error}
               description={
                 role === "PRODUCTION"
-                  ? PENDING_ACTIONS_PRODUCTION_HELPER
+                  ? hideActiveRunDuplicates
+                    ? "Additional tasks only — active shift run is shown above."
+                    : PENDING_ACTIONS_PRODUCTION_HELPER
                   : role === "ADMIN"
                     ? "Admin-owned decisions only — Ready-to-Start production is not listed here."
                     : undefined
@@ -2485,7 +2547,11 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
                 description="Operations clear. No shop-floor actions pending right now."
               />
             ) : null}
-          {!demo.enabled && !showOperationsClearStrip && roleShortcuts.length > 0 && role !== "ADMIN" ? (
+          {!demo.enabled &&
+          !showOperationsClearStrip &&
+          roleShortcuts.length > 0 &&
+          role !== "ADMIN" &&
+          !hideActiveRunDuplicates ? (
             <DashboardRoleShortcuts items={roleShortcuts} />
           ) : null}
           </div>
@@ -2516,7 +2582,7 @@ export function AdminOperationalDashboardPage({ role }: { role: "ADMIN" | "PRODU
               }}
             />
             <DashboardCurrentProductionStatus
-              rows={prodQueue}
+              rows={prodQueueForMonitor}
               loading={prodQueue === null}
               error={prodQueueError}
               hideWhenEmpty

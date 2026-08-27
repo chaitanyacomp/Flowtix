@@ -421,6 +421,9 @@ function resolveHrefForNormalizedRow(row, role = "STORE") {
       if (productionId > 0) params.set("productionId", String(productionId));
       return `/qc-entry?${params.toString()}#qc-production-pending`;
     }
+    const activeShift = meta.activeShiftRun && typeof meta.activeShiftRun === "object" ? meta.activeShiftRun : null;
+    if (activeShift?.pendingActionsHref) return String(activeShift.pendingActionsHref);
+    if (activeShift?.workspaceHref) return String(activeShift.workspaceHref);
     const actionHref = String(meta.actionHref ?? "").trim();
     if (actionHref) return actionHref;
     return buildProductionWorkspaceHrefFromPendingMeta(meta, "pending-actions");
@@ -465,6 +468,17 @@ function friendlyActionForNormalizedRow(row, role = "STORE") {
       status === "QA_PENDING"
     ) {
       return "QC Pending";
+    }
+    const activeShift = meta.activeShiftRun && typeof meta.activeShiftRun === "object" ? meta.activeShiftRun : null;
+    if (activeShift?.primaryActionLabel) {
+      return String(activeShift.primaryActionLabel);
+    }
+    const metaActionLabel = String(meta.actionLabel ?? "").trim();
+    if (
+      metaActionLabel === "Confirm Machine Start" ||
+      metaActionLabel === "Record Production"
+    ) {
+      return metaActionLabel;
     }
     const execStatus =
       meta.productionExecutionStatus ??
@@ -2405,6 +2419,8 @@ function isProductionExecutionPendingAction(action) {
     label === PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING ||
     label === PRODUCTION_EXECUTION_PENDING_LABELS.SHORTFALL_PENDING ||
     label === PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED ||
+    label === "Confirm Machine Start" ||
+    label === "Record Production" ||
     label === "Resume Production" ||
     label === "Production Pending" ||
     label === "Production On Hold"
@@ -2424,6 +2440,7 @@ function productionPendingActionRank(action) {
   if (label === PRODUCTION_EXECUTION_PENDING_LABELS.BLOCKED || label === "Resume Production") return 0;
   if (label === PRODUCTION_EXECUTION_PENDING_LABELS.SHORTFALL_PENDING) return 0;
   if (label === "Production On Hold") return 1;
+  if (label === "Confirm Machine Start" || label === "Record Production") return 1;
   if (label === PRODUCTION_EXECUTION_PENDING_LABELS.RUNNING) return 2;
   if (label === READY_TO_START_PRODUCTION) return 3;
   if (label === "Production Pending") return 4;
@@ -3022,6 +3039,16 @@ async function getPendingActions(opts = {}) {
   if (role === "PRODUCTION" || role === "ADMIN") {
     merged = dedupeProductionPendingActions(merged);
     merged = await filterExecutableProductionPendingActions(db, merged);
+    try {
+      const {
+        listActiveShiftRunGuidance,
+        applyActiveShiftRunGuidanceToPendingActions,
+      } = require("./activeShiftRunGuidanceService");
+      const activeShiftRuns = await listActiveShiftRunGuidance(db);
+      merged = applyActiveShiftRunGuidanceToPendingActions(merged, activeShiftRuns);
+    } catch {
+      // Advisory overlay — do not fail pending actions.
+    }
   }
   if (role === "QA" || role === "ADMIN" || role === "STORE") {
     merged = dedupeLifecyclePendingActions(merged);

@@ -46,6 +46,8 @@ export type PendingActionsDashboardProps = {
   error?: string | null;
   /** Optional subtitle clarifying the inbox purpose (e.g. Production vs Store). */
   description?: string;
+  /** Full action rows when available (used to hide Active-Run duplicates). */
+  actions?: PendingAction[];
 };
 
 export async function fetchPendingActions(): Promise<PendingActionsResponse> {

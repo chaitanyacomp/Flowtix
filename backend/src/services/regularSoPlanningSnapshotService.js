@@ -36,6 +36,37 @@ function clampBufferPercent(v) {
   return Math.round((clamped + Number.EPSILON) * 100) / 100;
 }
 
+/**
+ * True when every FG planned qty has matching allocated run total (buffer-aware planned WO qty).
+ * Empty runs are treated as not matching when planned demand exists (allocation still required).
+ * @param {Array<{ fgItemId?: number, plannedQty?: number }>} runs
+ * @param {Array<{ fgItemId?: number, plannedQty?: number, plannedProductionQty?: number }>} plannedFgLines
+ * @param {number} [eps]
+ */
+function allocationMatchesBufferedPlannedQty(runs, plannedFgLines, eps = 0.001) {
+  const planned = (plannedFgLines ?? []).filter((l) => Number(l.fgItemId) > 0);
+  if (!planned.length) return (runs ?? []).length === 0;
+  const allocatedByFg = new Map();
+  for (const r of runs ?? []) {
+    const id = Number(r.fgItemId);
+    if (!Number.isInteger(id) || id <= 0) continue;
+    const q = n(r.plannedQty);
+    allocatedByFg.set(id, (allocatedByFg.get(id) ?? 0) + q);
+  }
+  if (!(runs ?? []).length) return false;
+  for (const line of planned) {
+    const id = Number(line.fgItemId);
+    const target = n(line.plannedQty ?? line.plannedProductionQty);
+    const allocated = allocatedByFg.get(id) ?? 0;
+    if (Math.abs(allocated - target) > eps) return false;
+    allocatedByFg.delete(id);
+  }
+  for (const leftover of allocatedByFg.values()) {
+    if (Math.abs(leftover) > eps) return false;
+  }
+  return true;
+}
+
 /** Apply FG UOM precision (default Nos = 0 dp) without rounding the WO qty upward. */
 function applyFgUomPrecisionToPlannedQty(qty, decimalPlaces = 0) {
   const q = n(qty);
@@ -280,6 +311,8 @@ async function upsertRegularSoPlanningSnapshot(
     skipBufferApprovalSupersede = false,
     /** `draft` = allow incomplete/stale qty rows; `complete` = full validation (default when runs sent). */
     machinePlanningMode = null,
+    /** Required when newly submitting a past Start Date (Admin / Production Manager). */
+    machinePlanningBackdateReason = null,
   },
   db = prisma,
 ) {
@@ -382,7 +415,16 @@ async function upsertRegularSoPlanningSnapshot(
   const run = async (tx) => {
     const existing = await tx.regularSoPlanningSnapshot.findUnique({
       where: { salesOrderId: soId },
-      select: { id: true, createdByUserId: true, plannedSetupCount: true },
+      select: {
+        id: true,
+        createdByUserId: true,
+        plannedSetupCount: true,
+        machinePlanningCompleted: true,
+        bufferPercent: true,
+        productionRuns: {
+          select: { fgItemId: true, plannedQty: true, runSequence: true, plannedDate: true },
+        },
+      },
     });
 
     // Build line metrics first so run qty can be validated against planned production qty.
@@ -410,10 +452,36 @@ async function upsertRegularSoPlanningSnapshot(
     let derivedRunCount = null;
     let enrichedRuns = null;
     let handoffPatch = {};
+    /** @type {{ backdatedRuns: Array, reason: string|null }|null} */
+    let backdateResult = null;
+
+    // Buffer-only update (no productionRuns payload): keep existing runs, but if allocated
+    // totals no longer equal revised Planned Qty, revoke Store handoff until reallocated.
+    if (productionRuns === undefined && existing?.productionRuns?.length) {
+      const existingRuns = existing.productionRuns.map((r) => ({
+        fgItemId: Number(r.fgItemId),
+        plannedQty: n(r.plannedQty),
+      }));
+      const matches = allocationMatchesBufferedPlannedQty(
+        existingRuns,
+        plannedLineMetrics.map((l) => ({
+          fgItemId: l.fgItemId,
+          plannedQty: l.plannedProductionQty,
+        })),
+      );
+      if (!matches) {
+        handoffPatch = {
+          machinePlanningCompleted: false,
+          machinePlanningCompletedAt: null,
+          machinePlanningCompletedByUserId: null,
+        };
+      }
+    }
+
     if (productionRuns !== undefined) {
       if (!canWriteMachineRuns(actorRole)) {
         const err = new Error(
-          "Only Admin or Production may create or edit machine production-run allocations.",
+          "Only Admin, Production, or Production Manager may create or edit machine production-run allocations.",
         );
         err.statusCode = 403;
         err.code = "PRODUCTION_RUNS_FORBIDDEN";
@@ -447,6 +515,22 @@ async function upsertRegularSoPlanningSnapshot(
       enrichedRuns = validated.enriched;
       derivedPurgeCount = validated.plannedPurgeCount;
       derivedRunCount = validated.productionRunCount;
+
+      const {
+        assertMachinePlanningPlannedDatesAllowed,
+      } = require("./machinePlanningBackdate");
+      backdateResult = assertMachinePlanningPlannedDatesAllowed({
+        runs: (enrichedRuns ?? []).map((r) => ({
+          fgItemId: r.fgItemId,
+          runSequence: r.runSequence,
+          machineId: r.machineId,
+          plannedDate: r.plannedDate,
+        })),
+        actorRole,
+        backdateReason: machinePlanningBackdateReason,
+        salesOrder: so,
+        existingRuns: existing?.productionRuns ?? [],
+      });
 
       // Explicit handoff: only `complete` with valid runs marks Store-ready machine planning.
       // Draft / incomplete edits revoke Store handoff until Complete is clicked again.
@@ -515,6 +599,18 @@ async function upsertRegularSoPlanningSnapshot(
 
     if (enrichedRuns != null) {
       await replaceRegularSoSnapshotProductionRuns(tx, snapshot.id, enrichedRuns);
+    }
+
+    if (backdateResult?.backdatedRuns?.length && backdateResult.reason) {
+      const { writeMachinePlanningBackdateAudits } = require("./machinePlanningBackdate");
+      await writeMachinePlanningBackdateAudits(tx, {
+        salesOrderId: soId,
+        salesOrderDocNo: so.docNo ?? null,
+        actorUserId: createdByUserId,
+        actorRole,
+        reason: backdateResult.reason,
+        backdatedRuns: backdateResult.backdatedRuns,
+      });
     }
 
     if (!skipBufferApprovalSupersede) {
@@ -689,8 +785,8 @@ async function reopenRegularSoMachinePlanning(input, db = prisma) {
   }
 
   const role = String(input?.actorRole ?? "").trim().toUpperCase();
-  if (role !== "ADMIN" && role !== "PRODUCTION") {
-    const err = new Error("Only Production or Admin may reopen machine planning.");
+  if (role !== "ADMIN" && role !== "PRODUCTION" && role !== "PRODUCTION_MANAGER") {
+    const err = new Error("Only Production, Production Manager, or Admin may reopen machine planning.");
     err.statusCode = 403;
     err.code = "REOPEN_FORBIDDEN";
     throw err;
@@ -781,6 +877,7 @@ module.exports = {
   upsertRegularSoPlanningSnapshot,
   clampBufferPercent,
   assertRegularSoBufferPercentForPersist,
+  allocationMatchesBufferedPlannedQty,
   applyFgUomPrecisionToPlannedQty,
   capPlannedQtyByRmSupportedMax,
   REGULAR_SO_BUFFER_SOFT_MAX,

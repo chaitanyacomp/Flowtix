@@ -5,6 +5,8 @@
 import * as React from "react";
 import { apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
+import { useAuth } from "../hooks/useAuth";
+import { canWriteProductionMasters } from "../lib/productionMasterPermissions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
@@ -17,6 +19,8 @@ import {
   MasterListPagination,
   MasterListToolbar,
   MasterSearchInput,
+  MasterReadOnlyField,
+  MasterReadOnlyPlaceholder,
   resultCountLabel,
 } from "../components/masters/MasterListWorkbench";
 import { useMasterListWorkbench } from "../hooks/useMasterListWorkbench";
@@ -72,6 +76,8 @@ function rowToForm(r: FgProductionStandardRow) {
 
 export function FgProductionStandardsPage() {
   const toast = useToast();
+  const auth = useAuth();
+  const canWrite = canWriteProductionMasters(auth.user?.role);
   useListScrollRestoration();
   const [rows, setRows] = React.useState<FgProductionStandardRow[]>([]);
   const [fgItems, setFgItems] = React.useState<FgItemOpt[]>([]);
@@ -374,15 +380,21 @@ export function FgProductionStandardsPage() {
         title="FG Production Standards"
         description="Standard FG capacity on a machine (cycle time, cavities, efficiency). Soft-deactivate only — not used for Start Shift yet."
         actions={
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={onNewStandard}
-            data-testid="fg-standard-new-btn"
-          >
-            New
-          </Button>
+          canWrite ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onNewStandard}
+              data-testid="fg-standard-new-btn"
+            >
+              New
+            </Button>
+          ) : (
+            <span className="text-[11px] font-medium text-slate-500" data-testid="fg-standard-readonly-badge">
+              Read-only
+            </span>
+          )
         }
       />
 
@@ -462,19 +474,23 @@ export function FgProductionStandardsPage() {
                       )}
                     </td>
                     <td className="px-2 py-1.5 text-right">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2"
-                        disabled={saving}
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          void toggleActive(r);
-                        }}
-                      >
-                        {r.isActive ? "Deactivate" : "Activate"}
-                      </Button>
+                      {canWrite ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2"
+                          disabled={saving}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            void toggleActive(r);
+                          }}
+                        >
+                          {r.isActive ? "Deactivate" : "Activate"}
+                        </Button>
+                      ) : (
+                        <span className="text-[11px] text-slate-400">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -519,7 +535,7 @@ export function FgProductionStandardsPage() {
               className="col-start-1 row-start-1 flex min-h-[2.75rem] shrink-0 items-center border-b border-slate-200 bg-white px-3 py-2 pr-[11.5rem]"
             >
               <h3 className="truncate text-sm font-bold text-slate-800">
-                {selectedId ? "Edit standard" : "New standard"}
+                {selectedId ? (canWrite ? "Edit standard" : "View standard") : canWrite ? "New standard" : "Standard detail"}
               </h3>
             </div>
             <div
@@ -527,6 +543,7 @@ export function FgProductionStandardsPage() {
               className="col-start-1 row-start-2 min-h-0 overflow-y-auto px-3 py-2 pb-3"
               style={{ scrollbarGutter: "stable" }}
             >
+              {canWrite ? (
               <div className="grid gap-2">
                 <label className="grid gap-0.5 text-[11px] font-medium text-slate-600">
                   Finished goods item <span className="font-normal text-red-600">*</span>
@@ -680,7 +697,34 @@ export function FgProductionStandardsPage() {
                   Preview shift is for calculation only and is never stored. Standards cannot be hard-deleted.
                 </p>
               </div>
+              ) : selectedId ? (
+                <div className="grid gap-2" data-testid="fg-standard-read-only-detail">
+                  <MasterReadOnlyField
+                    label="Finished goods item"
+                    value={fgOptions.find((i) => String(i.id) === form.itemId)?.itemName ?? form.itemId}
+                  />
+                  <MasterReadOnlyField
+                    label="Machine"
+                    value={
+                      machineOptions.find((m) => String(m.id) === form.machineId)
+                        ? `${machineOptions.find((m) => String(m.id) === form.machineId)?.machineCode} — ${machineOptions.find((m) => String(m.id) === form.machineId)?.machineName}`
+                        : form.machineId
+                    }
+                  />
+                  <MasterReadOnlyField label="Cycle time (seconds)" value={form.cycleTimeSeconds} />
+                  <MasterReadOnlyField label="Pieces per cycle / cavities" value={form.piecesPerCycle} />
+                  <MasterReadOnlyField label="Standard efficiency %" value={form.standardEfficiencyPercent} />
+                  <MasterReadOnlyField label="Remarks" value={form.remarks || "—"} />
+                  <MasterReadOnlyField label="Status" value={form.isActive ? "Active" : "Inactive"} />
+                  {"error" in qtyPreview ? null : (
+                    <MasterReadOnlyField label="Expected qty" value={qtyPreview.expectedQuantity} />
+                  )}
+                </div>
+              ) : (
+                <MasterReadOnlyPlaceholder entityLabel="standard" />
+              )}
             </div>
+            {canWrite ? (
             <div
               data-testid="fg-standard-form-actions"
               className="col-start-1 row-start-1 z-[3] flex flex-row-reverse flex-wrap items-center gap-2 justify-self-end self-center bg-white px-3 py-2"
@@ -706,6 +750,7 @@ export function FgProductionStandardsPage() {
                 </Button>
               ) : null}
             </div>
+            ) : null}
           </form>
         </section>
       </div>

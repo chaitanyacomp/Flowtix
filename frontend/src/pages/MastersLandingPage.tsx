@@ -85,7 +85,7 @@ const CARDS: MasterCard[] = [
     title: "FG Production Standards",
     description: "FG capacity on a machine (cycle time, cavities, efficiency). Soft activate/deactivate only.",
     icon: <Gauge className="h-5 w-5" />,
-    roles: ["ADMIN", "PRODUCTION"],
+    roles: [...PRODUCTION_MASTER_READ_ROLES],
   },
   {
     to: "/locations",

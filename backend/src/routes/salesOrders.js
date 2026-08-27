@@ -52,6 +52,7 @@ const {
 const {
   normalizeSalesOrderDraftLineQuantities,
   clampMaxRegularSoBufferPercent,
+  assertFromQuotationCustomerPoQuantities,
 } = require("../services/regularSoBufferQty");
 const {
   getDraftSoItemQtyFloorViolations,
@@ -78,6 +79,7 @@ const {
   loadNoQtyDispositionUsableForDispatchPoolMap,
   loadNoQtyPostCycleApprovalMapForInputs,
 } = require("../services/noQtyPostCycleApprovalService");
+const { restoreEnquiryQuotedAfterLinkedSoDeleted } = require("../services/enquiryQuotationLifecycle");
 const { QC_ENTRY_ACTIVE_WHERE } = require("../services/qcEntryConstants");
 const {
   getProductionBatchQcPendingQty,
@@ -302,18 +304,7 @@ salesOrderRouter.post(
 
         const overrideLines = body.lines;
         if (overrideLines != null) {
-          if (overrideLines.length !== q.lines.length) {
-            const err = new Error("Line count must match the quotation.");
-            err.statusCode = 400;
-            throw err;
-          }
-          for (let i = 0; i < q.lines.length; i += 1) {
-            if (Number(q.lines[i].itemId) !== Number(overrideLines[i].itemId)) {
-              const err = new Error("Line itemId order must match the quotation.");
-              err.statusCode = 400;
-              throw err;
-            }
-          }
+          assertFromQuotationCustomerPoQuantities(q.lines, overrideLines);
         }
 
         const lineCreates =
@@ -1511,7 +1502,7 @@ salesOrderRouter.get(
 salesOrderRouter.put(
   "/:id/production-planning-snapshot",
   requireAuth,
-  requireRole(["ADMIN", "STORE", "PRODUCTION"]),
+  requireRole(["ADMIN", "STORE", "PRODUCTION", "PRODUCTION_MANAGER"]),
   async (req, res, next) => {
     try {
       const soId = Number(req.params.id);
@@ -1522,6 +1513,8 @@ salesOrderRouter.put(
         plannedSetupCount: z.number().int().min(1).max(9999).optional(),
         /** draft = incomplete OK; complete = full validation before Store queue. */
         machinePlanningMode: z.enum(["draft", "complete"]).optional(),
+        /** Required when newly submitting a past Start Date (Admin / Production Manager). */
+        machinePlanningBackdateReason: z.string().max(500).optional(),
         productionRuns: z
           .array(
             z.object({
@@ -1543,6 +1536,7 @@ salesOrderRouter.put(
           // Client plannedSetupCount is not accepted — purge/setup derived from detection.
           productionRuns: body.productionRuns,
           machinePlanningMode: body.machinePlanningMode ?? null,
+          machinePlanningBackdateReason: body.machinePlanningBackdateReason ?? null,
           createdByUserId: req.user?.userId ?? null,
           actorRole: req.user?.role ?? null,
           bufferReason: body.bufferReason ?? null,
@@ -3968,7 +3962,7 @@ salesOrderRouter.post(
             entityId: String(createdSo.id),
             actorUserId: req.user.userId,
             actorRole: req.user.role,
-            summary: "Sales Order created from previous quotation (snapshot)",
+            summary: "Sales Order created from previous quotation snapshot (independent order; not linked to quotation)",
             payload: {
               module: "ADMIN",
               actionLabel: "CREATE",
@@ -3977,6 +3971,7 @@ salesOrderRouter.post(
                 sourceType: "QUOTATION",
                 sourceId: q.id,
                 quotationNo: q.quotationNo ?? null,
+                independentFromQuotationCaps: true,
                 customerId: createdSo.customerId ?? null,
                 customerPoReference: createdSo.customerPoReference ?? null,
               },
@@ -3992,7 +3987,7 @@ salesOrderRouter.post(
             entityId: createdSo.id,
             docNo: docLabel,
             action: ACTIVITY_ACTIONS.APPROVED,
-            message: "Sales Order created from previous quotation (snapshot)",
+            message: "Sales Order created from previous quotation snapshot (independent order)",
             metadata: salesOrderActivityMeta(createdSo),
           });
 
@@ -4299,10 +4294,29 @@ salesOrderRouter.delete(
       const soId = Number(req.params.id);
       if (!Number.isFinite(soId) || soId <= 0) return res.status(400).json({ ok: false, message: "Invalid sales order id." });
 
+      const deleteReason =
+        typeof req.body?.reason === "string" && req.body.reason.trim()
+          ? req.body.reason.trim().slice(0, 512)
+          : "Admin hard-delete of Sales Order";
+
       const out = await prisma.$transaction(async (tx) => {
         const so = await tx.salesOrder.findUnique({
           where: { id: soId },
-          select: { id: true, docNo: true, orderType: true, internalStatus: true },
+          select: {
+            id: true,
+            docNo: true,
+            orderType: true,
+            internalStatus: true,
+            quotationId: true,
+            quotation: {
+              select: {
+                id: true,
+                quotationNo: true,
+                workflowStatus: true,
+                enquiryId: true,
+              },
+            },
+          },
         });
         if (!so) {
           const err = new Error("Sales order not found");
@@ -4374,10 +4388,46 @@ salesOrderRouter.delete(
         await tx.salesOrderCycle.deleteMany({ where: { salesOrderId: soId } });
         await tx.salesOrder.delete({ where: { id: soId } });
 
+        const enquiryRestore = await restoreEnquiryQuotedAfterLinkedSoDeleted(tx, {
+          quotationId: so.quotationId,
+          enquiryId: so.quotation?.enquiryId ?? null,
+        });
+
+        const docLabel = displaySalesOrderNo(so.id, so.docNo);
+        await auditLog.write(tx, {
+          action: auditLog.AuditAction.DELETE,
+          entityType: auditLog.AuditEntityType.SALES_ORDER,
+          entityId: String(so.id),
+          actorUserId: req.user.userId,
+          actorRole: req.user.role,
+          summary: `Sales Order ${docLabel} deleted`,
+          reason: deleteReason,
+          payload: {
+            module: "ADMIN",
+            actionLabel: "DELETE",
+            ref: { type: "SO", id: String(so.id), no: docLabel },
+            snapshot: {
+              salesOrderId: so.id,
+              salesOrderNo: docLabel,
+              quotationId: so.quotationId ?? null,
+              quotationNo: so.quotation?.quotationNo ?? null,
+              enquiryId: so.quotation?.enquiryId ?? enquiryRestore.enquiryId ?? null,
+              enquiryRestoredToQuoted: enquiryRestore.restored,
+              enquiryStatusFrom: enquiryRestore.fromStatus,
+              enquiryStatusTo: enquiryRestore.toStatus,
+              actorUserId: req.user.userId,
+              actorRole: req.user.role,
+            },
+            status: { from: so.internalStatus ?? null, to: null },
+          },
+        });
+
         return {
           ok: true,
           deletedSalesOrderId: soId,
           deletedDraftRequirementSheetIds: draftSheetIds,
+          enquiryRestoredToQuoted: enquiryRestore.restored,
+          enquiryId: enquiryRestore.enquiryId,
           message: "Sales Order deleted successfully.",
         };
       });

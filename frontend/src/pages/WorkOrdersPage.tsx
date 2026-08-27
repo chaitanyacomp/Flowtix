@@ -1558,24 +1558,30 @@ export function WorkOrdersPage() {
     const woId = Number(workOrderId);
     if (!Number.isFinite(woId) || woId <= 0) return;
     const { pmrId, pmrDocNo } = await ensureSubmittedPmrForWorkOrderHandoff(woId);
-    const returnTo = fromRmPurchase
-      ? "rm-purchase"
-      : cameFromRmCheckPlanning
-        ? "prepare-wo"
-        : showWoWorkspace
-          ? "production-workspace"
-          : "work-orders";
     const label = workOrderLabel?.trim() || displayWorkOrderNo(woId, null);
     toast.showSuccess(formatPostWoCreateSuccessMessage(label, pmrDocNo));
+    // After create, always return to the permanent WO detail — never editable Prepare WO.
+    const returnTo = fromRmPurchase
+      ? "rm-purchase"
+      : showWoWorkspace && !cameFromRmCheckPlanning
+        ? "production-workspace"
+        : "work-order-detail";
+    const source = fromRmPurchase
+      ? undefined
+      : cameFromRmCheckPlanning || returnTo === "work-order-detail"
+        ? "create-work-order"
+        : undefined;
     nav(
       buildMaterialIssueDeepLink({
         workOrderId: woId,
         pmrId,
         returnTo,
         salesOrderId: salesOrderId !== "" ? Number(salesOrderId) : null,
+        workOrderNo: workOrderLabel?.trim() || null,
         bucket: "readyToIssue",
-        source: cameFromRmCheckPlanning ? "prepare-wo" : undefined,
+        source,
       }),
+      { replace: true },
     );
   }
 

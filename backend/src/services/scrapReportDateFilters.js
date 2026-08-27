@@ -1,4 +1,4 @@
-const { parseDateStart, parseDateEnd } = require("./soDispatchTraceReport");
+const { INVALID_MESSAGE, parseStrictIsoDateBoundUtc, parseStrictIsoDateOnly } = require("./strictIsoDate");
 
 /**
  * Resolve Scrap Report From/To query params.
@@ -16,12 +16,14 @@ function resolveScrapReportDateFilters(fromRaw, toRaw) {
   let from;
   let to;
   if (fromStr) {
-    from = parseDateStart(fromStr);
-    if (!from) return { ok: false, message: "Invalid from date; use YYYY-MM-DD." };
+    const parsed = parseStrictIsoDateOnly(fromStr, { required: true });
+    if (!parsed.ok) return { ok: false, message: INVALID_MESSAGE };
+    from = parseStrictIsoDateBoundUtc(fromStr, "start");
   }
   if (toStr) {
-    to = parseDateEnd(toStr);
-    if (!to) return { ok: false, message: "Invalid to date; use YYYY-MM-DD." };
+    const parsed = parseStrictIsoDateOnly(toStr, { required: true });
+    if (!parsed.ok) return { ok: false, message: INVALID_MESSAGE };
+    to = parseStrictIsoDateBoundUtc(toStr, "end");
   }
   if (from && to && from.getTime() > to.getTime()) {
     return { ok: false, message: "From date must be on or before To date." };

@@ -335,10 +335,10 @@ export function ProductionWastageWoReportPage() {
 
       <ReportFilterToolbar className="erp-no-print">
         <ReportFilterField label="From">
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+          <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
         </ReportFilterField>
         <ReportFilterField label="To">
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+          <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
         </ReportFilterField>
         <ReportFilterField label="WO no.">
           <Input className="h-8" value={woNumber} onChange={(e) => setWoNumber(e.target.value)} placeholder="WO-R-26- / WO-26-" />

@@ -33,6 +33,10 @@ import { Button } from "../components/ui/button";
 import { ErpModal } from "../components/erp/ErpModal";
 import { ErpModalFrame, ErpModalFrameBody, ErpModalFrameFooter } from "../components/erp/ErpModalFrame";
 import { REGULAR_TERMS } from "../lib/flowTerminology";
+import {
+  formatQuoteQtyDisplay,
+  validateCreateFromQuotationLineQtys,
+} from "../lib/createSoFromQuotationQty";
 import { woPreparePositionLabel, woPreparePrimaryCta, woPreparePrepareHref, type WoPrepareOperational } from "../lib/woPrepareOperationalStage";
 import { formatProcessStageDisplayLabel } from "../lib/operationalErrorPresentation";
 import { Input } from "../components/ui/input";
@@ -1486,6 +1490,19 @@ export function SalesOrdersPage() {
     [quoteDetailForCreate, quoteFlowLoading, copyFromPreviousActive],
   );
 
+  const createFromQuoteQtyBlocked = React.useMemo(() => {
+    if (copyFromPreviousActive || !quoteDetailForCreate) return false;
+    return (
+      validateCreateFromQuotationLineQtys(
+        quoteDetailForCreate.lines.map((ln, i) => ({
+          itemId: Number(quoteCreateLines[i]?.itemId ?? ln.itemId),
+          quotedQty: Number(ln.qty),
+          customerPoQty: quoteCreateLines[i]?.customerPoQty ?? "",
+        })),
+      ).length > 0
+    );
+  }, [copyFromPreviousActive, quoteDetailForCreate, quoteCreateLines]);
+
   useFastEntryForm({
     containerRef: createFromQuoteRef,
     initialFocusRef: createPoRefInputRef,
@@ -1660,6 +1677,19 @@ export function SalesOrdersPage() {
     ) {
       setError("Enter a valid Customer PO Qty (greater than zero) for every line.");
       toast.showError("Enter a valid Customer PO Qty for every line.");
+      return;
+    }
+    const qtyIssues = validateCreateFromQuotationLineQtys(
+      qDetail.lines.map((ln, i) => ({
+        itemId: Number(quoteCreateLines[i]?.itemId ?? ln.itemId),
+        quotedQty: Number(ln.qty),
+        customerPoQty: quoteCreateLines[i]?.customerPoQty ?? "",
+      })),
+    );
+    if (qtyIssues.length) {
+      const msg = qtyIssues[0].message;
+      setError(msg);
+      toast.showError(msg);
       return;
     }
     setCreating(true);
@@ -2108,6 +2138,12 @@ export function SalesOrdersPage() {
                             existing documents are unchanged.
                           </p>
                         ) : null}
+                        {copyFromPreviousActive ? (
+                          <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] leading-snug text-amber-950">
+                            This creates a <strong>new independent</strong> sales order from a commercial snapshot.
+                            Quotation quantity caps do not apply; it is not linked as the quotation conversion SO.
+                          </p>
+                        ) : null}
                         <p className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-[13px] leading-snug text-sky-950">
                           This sales order will be created as <strong>Approved</strong>
                           {copyFromPreviousActive ? (
@@ -2146,10 +2182,16 @@ export function SalesOrdersPage() {
                             Lines — customer commitment
                           </div>
                           <div className="mt-2 overflow-x-auto rounded-md border border-slate-200">
-                            <table className="min-w-full text-sm">
+                            <table className="min-w-full text-sm" data-testid="create-so-from-quotation-lines">
                               <thead className="bg-slate-50">
                                 <tr className="text-left text-xs font-semibold text-slate-600">
                                   <th className="px-3 py-2">Item</th>
+                                  {!copyFromPreviousActive ? (
+                                    <>
+                                      <th className="px-3 py-2 text-right">Quoted Qty</th>
+                                      <th className="px-3 py-2 text-right">Max allowed</th>
+                                    </>
+                                  ) : null}
                                   <th className="px-3 py-2 text-right">Customer PO Qty</th>
                                   <th className="px-3 py-2 text-right">Rate</th>
                                   <th className="px-3 py-2 text-right">GST %</th>
@@ -2158,6 +2200,13 @@ export function SalesOrdersPage() {
                               <tbody className="divide-y divide-slate-200">
                                 {quoteDetailForCreate.lines.map((ln, idx) => {
                                   const row = quoteCreateLines[idx];
+                                  const quotedQty = Number(ln.qty);
+                                  const entered = Number(row?.customerPoQty);
+                                  const overQuoted =
+                                    !copyFromPreviousActive &&
+                                    Number.isFinite(entered) &&
+                                    Number.isFinite(quotedQty) &&
+                                    entered > quotedQty;
                                   const gstPctStr = ln.gstPct;
                                   const gstLabel =
                                     gstPctStr != null && String(gstPctStr).trim() !== ""
@@ -2174,10 +2223,25 @@ export function SalesOrdersPage() {
                                           <span className="ml-2 text-xs font-semibold text-emerald-800">(Free)</span>
                                         ) : null}
                                       </td>
+                                      {!copyFromPreviousActive ? (
+                                        <>
+                                          <td className="px-3 py-2 text-right tabular-nums text-slate-700">
+                                            {formatQuoteQtyDisplay(quotedQty)}
+                                          </td>
+                                          <td className="px-3 py-2 text-right tabular-nums text-slate-700">
+                                            {formatQuoteQtyDisplay(quotedQty)}
+                                          </td>
+                                        </>
+                                      ) : null}
                                       <td className="px-3 py-2 text-right align-middle">
                                         <Input
-                                          className="ml-auto w-28 text-right tabular-nums"
-                                          inputMode="numeric"
+                                          className={[
+                                            "ml-auto w-28 text-right tabular-nums",
+                                            overQuoted ? "border-red-400 focus-visible:ring-red-400" : "",
+                                          ].join(" ")}
+                                          inputMode="decimal"
+                                          data-testid={`create-so-customer-po-qty-${idx}`}
+                                          aria-invalid={overQuoted}
                                           value={row?.customerPoQty ?? ""}
                                           onChange={(e) =>
                                             setQuoteCreateLines((prev) => {
@@ -2187,6 +2251,15 @@ export function SalesOrdersPage() {
                                             })
                                           }
                                         />
+                                        {overQuoted ? (
+                                          <div
+                                            className="mt-1 text-left text-[11px] font-medium text-red-700"
+                                            data-testid={`create-so-qty-over-quote-${idx}`}
+                                          >
+                                            Max {formatQuoteQtyDisplay(quotedQty)} (quoted). Entered{" "}
+                                            {formatQuoteQtyDisplay(entered)}.
+                                          </div>
+                                        ) : null}
                                       </td>
                                       <td className="px-3 py-2 text-right tabular-nums text-slate-800">
                                         {ln.isFree ? "0 (Free)" : Number(ln.rate).toFixed(2)}
@@ -2199,8 +2272,9 @@ export function SalesOrdersPage() {
                             </table>
                           </div>
                           <p className="mt-1 text-[11px] text-slate-500">
-                            Customer PO Qty is stored as-is on the sales order. Optional production buffer for rejection
-                            risk is applied on work order planning only.
+                            {copyFromPreviousActive
+                              ? "Independent order from snapshot — quotation caps are not enforced. Customer PO Qty is stored as-is; optional production buffer is applied on work order planning only."
+                              : "Customer PO Qty cannot exceed Quoted Qty. Optional production buffer for rejection risk is applied on work order planning only and does not increase customer ordered qty."}
                           </p>
                         </div>
 
@@ -2255,7 +2329,7 @@ export function SalesOrdersPage() {
                                 shortcutHints.markFieldShortcutUsed("soQuoteCreate");
                                 void createFromQuotation();
                               }}
-                              disabled={creating}
+                              disabled={creating || createFromQuoteQtyBlocked}
                             >
                               {creating ? "Creating…" : "Create Sales Order"}
                             </Button>
@@ -3281,7 +3355,7 @@ export function SalesOrdersPage() {
                           <div className="erp-table-actions">
                             {primaryCta ? (
                               <Link
-                                to={primaryCta.to}
+                                to={withSoListReturn(primaryCta.to)}
                                 state={primaryCta.state}
                                 className={cn(buttonVariants({ variant: "default", size: "sm" }), "erp-so-act-primary")}
                               >

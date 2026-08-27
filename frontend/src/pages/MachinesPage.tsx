@@ -5,6 +5,8 @@
 import * as React from "react";
 import { apiFetch } from "../services/api";
 import { useToast } from "../contexts/ToastContext";
+import { useAuth } from "../hooks/useAuth";
+import { canWriteProductionMasters } from "../lib/productionMasterPermissions";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
@@ -17,6 +19,8 @@ import {
   MasterListPagination,
   MasterListToolbar,
   MasterSearchInput,
+  MasterReadOnlyField,
+  MasterReadOnlyPlaceholder,
   resultCountLabel,
 } from "../components/masters/MasterListWorkbench";
 import { useMasterListWorkbench } from "../hooks/useMasterListWorkbench";
@@ -72,6 +76,8 @@ function rowToForm(r: MachineRow) {
 
 export function MachinesPage() {
   const toast = useToast();
+  const auth = useAuth();
+  const canWrite = canWriteProductionMasters(auth.user?.role);
   useListScrollRestoration();
   const [rows, setRows] = React.useState<MachineRow[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -274,9 +280,15 @@ export function MachinesPage() {
         title="Machines"
         description="Production machine register. Used for machine planning and Shift Production. Soft-deactivate only."
         actions={
-          <Button type="button" size="sm" variant="outline" onClick={onNewMachine} data-testid="machine-new-btn">
-            New
-          </Button>
+          canWrite ? (
+            <Button type="button" size="sm" variant="outline" onClick={onNewMachine} data-testid="machine-new-btn">
+              New
+            </Button>
+          ) : (
+            <span className="text-[11px] font-medium text-slate-500" data-testid="machine-readonly-badge">
+              Read-only
+            </span>
+          )
         }
       />
 
@@ -351,19 +363,23 @@ export function MachinesPage() {
                       )}
                     </td>
                     <td className="px-2 py-1.5 text-right">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2"
-                        disabled={saving}
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          void toggleActive(r);
-                        }}
-                      >
-                        {r.isActive ? "Deactivate" : "Activate"}
-                      </Button>
+                      {canWrite ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2"
+                          disabled={saving}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            void toggleActive(r);
+                          }}
+                        >
+                          {r.isActive ? "Deactivate" : "Activate"}
+                        </Button>
+                      ) : (
+                        <span className="text-[11px] text-slate-400">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -412,7 +428,7 @@ export function MachinesPage() {
               className="col-start-1 row-start-1 flex min-h-[2.75rem] shrink-0 items-center border-b border-slate-200 bg-white px-3 py-2 pr-[11.5rem]"
             >
               <h3 className="truncate text-sm font-bold text-slate-800">
-                {selectedId ? "Edit machine" : "New machine"}
+                {selectedId ? (canWrite ? "Edit machine" : "View machine") : canWrite ? "New machine" : "Machine detail"}
               </h3>
             </div>
             <div
@@ -420,6 +436,7 @@ export function MachinesPage() {
               className="col-start-1 row-start-2 min-h-0 overflow-y-auto px-3 py-2 pb-3"
               style={{ scrollbarGutter: "stable" }}
             >
+              {canWrite ? (
               <div className="grid gap-2">
                 <label className="grid gap-0.5 text-[11px] font-medium text-slate-600">
                   Machine code <span className="font-normal text-red-600">*</span>
@@ -535,7 +552,26 @@ export function MachinesPage() {
                   hard-deleted.
                 </p>
               </div>
+              ) : selectedId ? (
+                <div className="grid gap-2" data-testid="machine-read-only-detail">
+                  <MasterReadOnlyField label="Machine code" value={form.machineCode} />
+                  <MasterReadOnlyField label="Machine name" value={form.machineName} />
+                  <MasterReadOnlyField
+                    label="Machine type / category"
+                    value={MACHINE_TYPES.find((t) => t.value === form.machineType)?.label ?? form.machineType}
+                  />
+                  <MasterReadOnlyField label="Make" value={form.make || "—"} />
+                  <MasterReadOnlyField label="Model" value={form.model || "—"} />
+                  <MasterReadOnlyField label="Serial number" value={form.serialNumber || "—"} />
+                  <MasterReadOnlyField label="Department / production location" value={form.departmentLocation || "—"} />
+                  <MasterReadOnlyField label="Description / remarks" value={form.description || "—"} />
+                  <MasterReadOnlyField label="Status" value={form.isActive ? "Active" : "Inactive"} />
+                </div>
+              ) : (
+                <MasterReadOnlyPlaceholder entityLabel="machine" />
+              )}
             </div>
+            {canWrite ? (
             <div
               data-testid="machine-form-actions"
               className="col-start-1 row-start-1 z-[3] flex flex-row-reverse flex-wrap items-center gap-2 justify-self-end self-center bg-white px-3 py-2"
@@ -561,6 +597,7 @@ export function MachinesPage() {
                 </Button>
               ) : null}
             </div>
+            ) : null}
           </form>
         </section>
       </div>

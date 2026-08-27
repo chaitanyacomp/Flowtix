@@ -24,6 +24,22 @@ import { useListScrollRestoration } from "../hooks/useListScrollRestoration";
 const ENQUIRY_DUPLICATE_ITEM_MESSAGE =
   "The same item cannot be added more than once in one enquiry.";
 
+type EnquiryListScope = "active" | "history";
+
+function enquiriesListUrl(scope: EnquiryListScope): string {
+  return scope === "active" ? "/api/enquiries?scope=active" : "/api/enquiries?scope=history";
+}
+
+function initialEnquiryListScope(): EnquiryListScope {
+  try {
+    const sp = new URLSearchParams(window.location.search);
+    if (sp.get("source") === "dashboard" || sp.get("from") === "dashboard") return "active";
+  } catch {
+    /* ignore */
+  }
+  return "history";
+}
+
 function enquiryLinesHaveDuplicateItem(lines: readonly { itemId: number }[]): boolean {
   const ids = lines.map((l) => l.itemId);
   return new Set(ids).size !== ids.length;
@@ -277,6 +293,9 @@ export function EnquiriesPage() {
 
   // Toolbar / filter state
   const [flowFilter, setFlowFilter] = React.useState<FlowFilter>("ALL");
+  const [listScope, setListScope] = React.useState<EnquiryListScope>(initialEnquiryListScope);
+  const listScopeRef = React.useRef(listScope);
+  listScopeRef.current = listScope;
   const [statusFilter, setStatusFilter] = React.useState<StatusFilter>("ALL");
   const [search, setSearch] = React.useState("");
 
@@ -318,15 +337,16 @@ export function EnquiriesPage() {
 
   /** List-only refresh — must never touch new-enquiry draft state. */
   async function refreshEnquiryList() {
-    const e = await apiFetch<EnquiryRow[]>("/api/enquiries");
+    const e = await apiFetch<EnquiryRow[]>(enquiriesListUrl(listScopeRef.current));
     setRows(e);
   }
 
   async function refresh() {
+    const scope = listScopeRef.current;
     const [c, i, e] = await Promise.all([
       apiFetch<Customer[]>("/api/customers"),
       apiFetch<Item[]>("/api/items?type=FG"),
-      apiFetch<EnquiryRow[]>("/api/enquiries"),
+      apiFetch<EnquiryRow[]>(enquiriesListUrl(scope)),
     ]);
     setCustomers(c);
     setItems(i);
@@ -337,7 +357,7 @@ export function EnquiriesPage() {
   React.useEffect(() => {
     refresh().catch((err) => setError(err instanceof Error ? err.message : "Failed"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [listScope]);
 
   // One-time defaults after master data loads (functional updates — safe across re-renders).
   React.useEffect(() => {
@@ -609,6 +629,37 @@ export function EnquiriesPage() {
           </>
         ) : null}
         <FlowFilterSegmented value={flowFilter} onChange={setFlowFilter} />
+        <div
+          role="group"
+          aria-label="Enquiry list scope"
+          className="inline-flex h-8 overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm"
+          data-testid="enquiries-list-scope"
+        >
+          <button
+            type="button"
+            className={[
+              "px-2.5 text-[12px] font-medium",
+              listScope === "active" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50",
+            ].join(" ")}
+            aria-pressed={listScope === "active"}
+            data-testid="enquiries-scope-active"
+            onClick={() => setListScope("active")}
+          >
+            Active
+          </button>
+          <button
+            type="button"
+            className={[
+              "border-l border-slate-200 px-2.5 text-[12px] font-medium",
+              listScope === "history" ? "bg-slate-900 text-white" : "bg-white text-slate-700 hover:bg-slate-50",
+            ].join(" ")}
+            aria-pressed={listScope === "history"}
+            data-testid="enquiries-scope-history"
+            onClick={() => setListScope("history")}
+          >
+            All
+          </button>
+        </div>
         <select
           aria-label="Status filter"
           className="h-8 rounded-md border border-slate-200 bg-white px-2 text-[12px] text-slate-800 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
@@ -639,7 +690,7 @@ export function EnquiriesPage() {
         <div className="flex min-h-0 flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-3 py-1.5">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-              Recent Enquiries
+              {listScope === "active" ? "Active enquiries" : "Enquiry history"}
             </span>
             <span className="text-[11px] tabular-nums text-slate-500">
               {filteredRows.length} of {rows.length}

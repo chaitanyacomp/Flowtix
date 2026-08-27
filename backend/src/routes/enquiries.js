@@ -2,6 +2,7 @@ const express = require("express");
 const { z } = require("zod");
 const { prisma } = require("../utils/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
+const { parseEnquiryListScope, enquiryListWhereForScope } = require("../services/enquiryListScope");
 
 const enquiryRouter = express.Router();
 
@@ -38,11 +39,10 @@ const includeEnquiry = {
 
 enquiryRouter.get("/", requireAuth, requireRole(["ADMIN"]), async (req, res, next) => {
   try {
+    const scope = parseEnquiryListScope(req.query.scope);
+    const where = enquiryListWhereForScope(scope);
     const rows = await prisma.enquiry.findMany({
-      where: {
-        // Active pre-quotation funnel only (plus QUOTED optionally for tracking).
-        status: { in: ["OPEN", "DRAFT", "PENDING", "FEASIBLE", "QUOTED"] },
-      },
+      where,
       orderBy: { id: "desc" },
       include: includeEnquiry,
     });

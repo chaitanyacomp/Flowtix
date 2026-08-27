@@ -186,3 +186,159 @@ describe("fgShortageDemandInputFromPlanningView (operational shortage detection)
     assert.equal(out[0].fgQty, 7);
   });
 });
+
+describe("allocationMatchesBufferedPlannedQty (buffer single-source)", () => {
+  const {
+    allocationMatchesBufferedPlannedQty,
+  } = require("../../src/services/regularSoPlanningSnapshotService");
+
+  it("requires allocation to equal customer qty + buffer planned qty", () => {
+    const planned = [{ fgItemId: 66, plannedQty: 15075 }];
+    assert.equal(
+      allocationMatchesBufferedPlannedQty([{ fgItemId: 66, plannedQty: 15000 }], planned),
+      false,
+    );
+    assert.equal(
+      allocationMatchesBufferedPlannedQty([{ fgItemId: 66, plannedQty: 15075 }], planned),
+      true,
+    );
+  });
+
+  it("empty runs do not match when planned demand exists (reallocation required)", () => {
+    assert.equal(
+      allocationMatchesBufferedPlannedQty([], [{ fgItemId: 1, plannedProductionQty: 1000 }]),
+      false,
+    );
+  });
+
+  it("sums multiple runs per FG against buffered planned qty", () => {
+    const planned = [{ fgItemId: 10, plannedQty: 10500 }];
+    assert.equal(
+      allocationMatchesBufferedPlannedQty(
+        [
+          { fgItemId: 10, plannedQty: 5000 },
+          { fgItemId: 10, plannedQty: 5500 },
+        ],
+        planned,
+      ),
+      true,
+    );
+    assert.equal(
+      allocationMatchesBufferedPlannedQty(
+        [
+          { fgItemId: 10, plannedQty: 5000 },
+          { fgItemId: 10, plannedQty: 5000 },
+        ],
+        planned,
+      ),
+      false,
+    );
+  });
+});
+
+describe("upsert buffer-only marks planning incomplete when runs are stale", () => {
+  it("clears machinePlanningCompleted when buffer revises planned qty below allocated runs", async () => {
+    const { upsertRegularSoPlanningSnapshot } = require("../../src/services/regularSoPlanningSnapshotService");
+    const locationService = require("../../src/services/locationService");
+    locationService.clearDefaultRmLocationCache?.();
+
+    const soRow = {
+      id: 42,
+      docNo: "SO-42",
+      orderType: "NORMAL",
+      lines: [
+        {
+          id: 1,
+          itemId: 66,
+          qty: 1000,
+          customerPoQty: 1000,
+          item: { id: 66, itemName: "Nozzle", itemType: "FG", unit: "Nos" },
+        },
+      ],
+    };
+    let snapshotState = {
+      id: 9,
+      salesOrderId: 42,
+      bufferPercent: "0",
+      machinePlanningCompleted: true,
+      machinePlanningCompletedAt: new Date(),
+      machinePlanningCompletedByUserId: 1,
+      productionRuns: [{ fgItemId: 66, plannedQty: "1000" }],
+    };
+    let lastUpdate = null;
+    const tx = {
+      salesOrder: { findUnique: async () => soRow },
+      regularSoBufferApprovalRequest: {
+        findMany: async () => [],
+        updateMany: async () => ({ count: 0 }),
+      },
+      regularSoPlanningSnapshot: {
+        findUnique: async ({ select, include } = {}) => {
+          if (select && !include) {
+            return {
+              id: snapshotState.id,
+              createdByUserId: 1,
+              plannedSetupCount: 1,
+              machinePlanningCompleted: snapshotState.machinePlanningCompleted,
+              bufferPercent: snapshotState.bufferPercent,
+              productionRuns: snapshotState.productionRuns,
+            };
+          }
+          return {
+            ...snapshotState,
+            lines: [],
+            createdBy: null,
+            updatedBy: null,
+            salesOrder: soRow,
+            productionRuns: snapshotState.productionRuns,
+          };
+        },
+        update: async ({ data }) => {
+          lastUpdate = data;
+          snapshotState = { ...snapshotState, ...data };
+          return snapshotState;
+        },
+        create: async () => {
+          throw new Error("unexpected create");
+        },
+      },
+      regularSoPlanningSnapshotLine: {
+        deleteMany: async () => ({ count: 0 }),
+        createMany: async () => ({ count: 1 }),
+      },
+      stockTransaction: {
+        aggregate: async () => ({ _sum: { qtyIn: 0, qtyOut: 0 } }),
+      },
+      location: {
+        findFirst: async () => ({ id: 1 }),
+        findMany: async () => [{ id: 1 }],
+      },
+    };
+
+    // Outer early handoff guard uses root-like findUnique without $transaction.
+    const db = {
+      salesOrder: tx.salesOrder,
+      regularSoPlanningSnapshot: {
+        findUnique: async (args) => {
+          if (args?.select && Object.keys(args.select).length === 1) {
+            return { machinePlanningCompleted: snapshotState.machinePlanningCompleted };
+          }
+          return tx.regularSoPlanningSnapshot.findUnique(args);
+        },
+      },
+      regularSoBufferApprovalRequest: tx.regularSoBufferApprovalRequest,
+      stockTransaction: tx.stockTransaction,
+      location: tx.location,
+      $transaction: async (fn) => fn(tx),
+    };
+
+    await upsertRegularSoPlanningSnapshot(
+      { salesOrderId: 42, bufferPercent: 5, actorRole: "ADMIN", bufferReason: null },
+      db,
+    );
+
+    assert.equal(lastUpdate?.machinePlanningCompleted, false);
+    assert.equal(lastUpdate?.machinePlanningCompletedAt, null);
+    assert.equal(String(lastUpdate?.bufferPercent ?? snapshotState.bufferPercent), "5");
+  });
+});

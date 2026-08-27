@@ -84,7 +84,9 @@ const NO_QTY_FLOW_STATE_READ_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTIO
 const WO_WRITE_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
 const WO_PLAN_PREP_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
 /** ADMIN + PRODUCTION may create/edit machine production-run allocations; STORE is read-only. */
-const WO_MACHINE_RUN_WRITE_ROLES = Object.freeze(["ADMIN", "PRODUCTION"]);
+const WO_MACHINE_RUN_WRITE_ROLES = Object.freeze(["ADMIN", "PRODUCTION", "PRODUCTION_MANAGER"]);
+/** Past Start Date on Machine Run Planning — Admin / Production Manager only. */
+const MACHINE_PLANNING_BACKDATE_ROLES = Object.freeze(["ADMIN", "PRODUCTION_MANAGER"]);
 /**
  * REGULAR_SO Work Order create (post machine planning).
  * PRODUCTION plans machines but cannot create the WO; ADMIN is secondary/emergency.
@@ -135,8 +137,8 @@ const PURCHASE_BILL_READ_ROLES = Object.freeze(["ADMIN", "PURCHASE"]);
 const ACCOUNTS_COMMERCIAL_ROLES = SALES_BILL_READ_ROLES;
 
 const DASHBOARD_READ_ROLES = ALL_APP_ROLES;
-/** NO_QTY cycle / requirement planning hub — Store owns RS planning. */
-const PLANNING_DASHBOARD_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION"]);
+/** NO_QTY cycle / requirement planning hub — Store owns RS; Production Manager owns machine-run allocation. */
+const PLANNING_DASHBOARD_ROLES = Object.freeze(["ADMIN", "STORE", "PRODUCTION", "PRODUCTION_MANAGER"]);
 const REPORTS_ROLES = Object.freeze(["ADMIN"]);
 
 /** Monthly planning workspace (MPRS) — Store-owned write; Purchase read-only. */
@@ -190,6 +192,7 @@ module.exports = {
   WO_WRITE_ROLES,
   WO_PLAN_PREP_ROLES,
   WO_MACHINE_RUN_WRITE_ROLES,
+  MACHINE_PLANNING_BACKDATE_ROLES,
   REGULAR_SO_WO_CREATE_ROLES,
   GREEN_LEVEL_WO_PLACEMENT_ROLES,
   PRODUCTION_WRITE_ROLES,

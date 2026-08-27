@@ -51,6 +51,7 @@ export const ERP_RETURN_TO_TOKEN_MAP: Record<string, ERPBackNavigationTarget> = 
   "rm-control-center": { to: "/reports/rm-shortage", label: "Back to RM Control Center" },
   production: { to: "/production", label: "Back to Production Workspace" },
   "work-orders": { to: "/work-orders", label: "Back to Work Orders" },
+  "work-order-detail": { to: "/work-orders", label: "Back to Work Order" },
   "rm-purchase": { to: "/rm-po-grn", label: "Back to RM Purchase" },
   dispatch: { to: "/dispatch", label: "Back to Dispatch Workspace" },
   "material-requests": { to: "/production/material-requests", label: "Back to Material Requests" },
@@ -113,6 +114,29 @@ function resolveReturnToTarget(
   const token = trimmed.toLowerCase();
   const mapped = ERP_RETURN_TO_TOKEN_MAP[token];
   if (mapped) {
+    if (token === "work-order-detail") {
+      const woId =
+        (workOrderId && workOrderId > 0 ? workOrderId : 0) ||
+        Number(searchParams.get("workOrderId") || 0);
+      if (woId > 0) {
+        return { to: `/work-orders/${woId}`, label: "Back to Work Order" };
+      }
+      return { to: "/work-orders?flow=REGULAR_SO", label: "Back to Work Orders" };
+    }
+    // After WO create, never send users back into editable Prepare WO.
+    if (token === "prepare-wo") {
+      const woId =
+        (workOrderId && workOrderId > 0 ? workOrderId : 0) ||
+        Number(searchParams.get("workOrderId") || 0);
+      if (woId > 0) {
+        return { to: `/work-orders/${woId}`, label: "Back to Work Order" };
+      }
+      const soId = Number(searchParams.get("salesOrderId") || 0);
+      return {
+        to: soId > 0 ? `/work-orders/prepare?salesOrderId=${soId}` : "/work-orders/prepare",
+        label: "Back to Prepare Work Order",
+      };
+    }
     if (token === "production-workspace") {
       const bucket = searchParams.get("productionBucket");
       const qs = new URLSearchParams();

@@ -13,6 +13,8 @@ export const SHIFT_REPORT_PRODUCTION_LOCKED_UI =
 export type ShiftCapabilities = {
   canView: boolean;
   canPerformManagerActions: boolean;
+  /** Pause/resume production downtime — always for PRODUCTION/ADMIN/PM. */
+  canPauseProduction?: boolean;
   productionManagerAssigned: boolean;
   isFallbackControl: boolean;
 };

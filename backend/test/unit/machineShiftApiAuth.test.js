@@ -60,6 +60,20 @@ describe("assertShiftActionAllowed", () => {
     await assertShiftActionAllowed(db, { role: "PRODUCTION" }, SHIFT_ACTION.REQUEST_ADJUSTMENT);
   });
 
+  it("PRODUCTION may pause/resume (DOWNTIME) even when active manager exists", async () => {
+    const db = mockDb({ managerCount: 2 });
+    const r = await assertShiftActionAllowed(db, { role: "PRODUCTION" }, SHIFT_ACTION.DOWNTIME);
+    assert.equal(r.via, "PRODUCTION");
+  });
+
+  it("PRODUCTION rejected for close-run (RUN_SEGMENT) when active manager exists", async () => {
+    const db = mockDb({ managerCount: 2 });
+    await assert.rejects(
+      () => assertShiftActionAllowed(db, { role: "PRODUCTION" }, SHIFT_ACTION.RUN_SEGMENT),
+      (e) => e.code === "PRODUCTION_MANAGER_ACTION_REQUIRED" && e.statusCode === 403,
+    );
+  });
+
   it("PRODUCTION fallback for manager actions when no active manager", async () => {
     const db = mockDb({ managerCount: 0 });
     const r = await assertShiftActionAllowed(db, { role: "PRODUCTION" }, SHIFT_ACTION.START_SESSION);
@@ -166,6 +180,24 @@ describe("machine-shift-sessions API authorization", () => {
     assert.equal(res.body.error.code, "VALIDATION");
   });
 
+  it("PRODUCTION may reach pause path when manager assigned (DOWNTIME always allowed)", async () => {
+    const res = await request(app)
+      .post("/api/machine-shift-sessions/1/downtime/pause")
+      .set("Authorization", bearer("PRODUCTION"))
+      .send({ reason: "MACHINE_BREAKDOWN" });
+    assert.notEqual(res.status, 403);
+    assert.notEqual(res.status, 401);
+  });
+
+  it("PRODUCTION blocked from close-run when manager assigned", async () => {
+    const res = await request(app)
+      .post("/api/machine-shift-sessions/1/run-segments/close")
+      .set("Authorization", bearer("PRODUCTION"))
+      .send({ segmentId: 1, closeReason: "test" });
+    assert.equal(res.status, 403);
+    assert.equal(res.body.error.code, "PRODUCTION_MANAGER_ACTION_REQUIRED");
+  });
+
   it("PRODUCTION may reach save-report path (always-allowed; validation/DB after)", async () => {
     const res = await request(app)
       .post("/api/machine-shift-sessions/1/report/draft")
@@ -173,7 +205,8 @@ describe("machine-shift-sessions API authorization", () => {
       .send({});
     assert.notEqual(res.status, 403);
     assert.notEqual(res.status, 401);
-    assert.equal(res.status, 400);
+    // 400 = validation; 409 = session state (e.g. cancelled) — both prove auth passed
+    assert.ok([400, 409].includes(res.status), `expected 400 or 409, got ${res.status}`);
   });
 
   it("PRODUCTION may reach reopen request path", async () => {

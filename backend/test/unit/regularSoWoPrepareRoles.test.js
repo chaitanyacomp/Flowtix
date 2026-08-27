@@ -22,6 +22,7 @@ describe("REGULAR_SO WO prepare / write roles", () => {
   it("STORE cannot write machine-run allocations or confirm machine material state", () => {
     assert.ok(WO_MACHINE_RUN_WRITE_ROLES.includes("ADMIN"));
     assert.ok(WO_MACHINE_RUN_WRITE_ROLES.includes("PRODUCTION"));
+    assert.ok(WO_MACHINE_RUN_WRITE_ROLES.includes("PRODUCTION_MANAGER"));
     assert.ok(!WO_MACHINE_RUN_WRITE_ROLES.includes("STORE"));
     assert.ok(MACHINE_WRITE_ROLES.includes("ADMIN"));
     assert.ok(MACHINE_WRITE_ROLES.includes("PRODUCTION"));

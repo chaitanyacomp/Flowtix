@@ -4,6 +4,7 @@ import { Card, CardContent } from "../components/ui/card";
 import { apiFetch } from "../services/api";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import { cn } from "../lib/utils";
 import { ReportFilterField,
   ReportFilterToolbar,
@@ -424,14 +425,14 @@ export function WorkOrderTrackingReportPage() {
           </select>
         </ReportFilterField>
         <ReportFilterField label="From">
-          <input
+          <Input
             type="date"
             value={dateFrom}
             onChange={(e) => patch({ dateFrom: e.target.value || null })}
           />
         </ReportFilterField>
         <ReportFilterField label="To">
-          <input type="date" value={dateTo} onChange={(e) => patch({ dateTo: e.target.value || null })} />
+          <Input type="date" value={dateTo} onChange={(e) => patch({ dateTo: e.target.value || null })} />
         </ReportFilterField>
         <ReportFilterField label="Search" span={2}>
           <input

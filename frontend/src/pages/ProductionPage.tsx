@@ -540,6 +540,7 @@ export function ProductionPage() {
   const canCreateNextRs = useCanCreateNextRs();
   const canProd = auth.user?.role === "ADMIN" || auth.user?.role === "PRODUCTION";
   const canConfirmProductionStart = hasErpRole(auth.user?.role, PRODUCTION_WRITE_ROLES);
+  const operatorRole = auth.user?.role ?? "";
   const [selectedRunAllocationId, setSelectedRunAllocationId] = React.useState<number | null>(null);
   const [runStartEntryGate, setRunStartEntryGate] = React.useState<ProductionRunStartEntryGate>({
     mode: null,
@@ -552,7 +553,6 @@ export function ProductionPage() {
     setRunStartEntryGate(gate);
   }, []);
   const runStartEntryBlocked = Boolean(runStartEntryGate.entryBlocked);
-  const operatorRole = auth.user?.role ?? "";
   const canOpenQaFromProduction = productionRoleCanOpenQaWorkspace(operatorRole);
   const isAdmin = auth.user?.role === "ADMIN";
   const [searchParams] = useSearchParams();
@@ -585,6 +585,15 @@ export function ProductionPage() {
   const workOrderLineIdFromUrl = Number(searchParams.get("workOrderLineId") ?? 0);
   const woIdFromWorkOrderParam = Number(searchParams.get("workOrderId") ?? 0);
   const woIdFromLegacy = Number(searchParams.get("woId") ?? 0);
+  const runAllocationIdFromUrl = Number(searchParams.get("runAllocationId") ?? 0);
+  const shiftSessionIdFromUrl = Number(searchParams.get("shiftSessionId") ?? 0);
+  const runSegmentIdFromUrl = Number(searchParams.get("runSegmentId") ?? 0);
+  const machineIdFromUrl = Number(searchParams.get("machineId") ?? 0);
+  const focusConfirmStartFromUrl = searchParams.get("focusConfirmStart") === "1";
+  const focusRecordProductionFromUrl = searchParams.get("focusRecordProduction") === "1";
+  const activeShiftDeepLink =
+    (Number.isFinite(shiftSessionIdFromUrl) && shiftSessionIdFromUrl > 0) ||
+    (Number.isFinite(runAllocationIdFromUrl) && runAllocationIdFromUrl > 0);
   const woIdFromUrlPick =
     Number.isFinite(woIdFromWorkOrderParam) && woIdFromWorkOrderParam > 0
       ? woIdFromWorkOrderParam
@@ -606,6 +615,17 @@ export function ProductionPage() {
     urlWoSelectionAuthority ||
     focusSoIdValid ||
     fromNoQtySo;
+
+  React.useEffect(() => {
+    if (Number.isFinite(runAllocationIdFromUrl) && runAllocationIdFromUrl > 0) {
+      setSelectedRunAllocationId(runAllocationIdFromUrl);
+    }
+  }, [runAllocationIdFromUrl]);
+
+  const activeShiftRunDeepLink =
+    activeShiftDeepLink &&
+    woIdFromUrlValid &&
+    (focusConfirmStartFromUrl || focusRecordProductionFromUrl);
 
   const [workOrders, setWorkOrders] = React.useState<WoRow[]>([]);
   const [entries, setEntries] = React.useState<ProdEntryRow[]>([]);
@@ -5448,6 +5468,33 @@ export function ProductionPage() {
         (showNoQtyOperatorChrome && wolId > 0)),
   );
 
+  const activeShiftDeepLinkLoadState = React.useMemo((): "loading" | "wo_missing" | "ready" | null => {
+    if (!activeShiftRunDeepLink) return null;
+    if (productionIdentityUnresolved || !initialRefreshDone) return "loading";
+    if (woIdFromUrlValid && !workOrders.some((w) => w.id === woIdFromUrlPick)) return "wo_missing";
+    return "ready";
+  }, [
+    activeShiftRunDeepLink,
+    productionIdentityUnresolved,
+    initialRefreshDone,
+    woIdFromUrlValid,
+    woIdFromUrlPick,
+    workOrders,
+  ]);
+
+  const showActiveShiftRunConfirmShell = Boolean(
+    activeShiftRunDeepLink &&
+      activeShiftDeepLinkLoadState === "ready" &&
+      effectiveScopedWoId > 0 &&
+      canProd &&
+      !showProductionWorkspace &&
+      !showProductionWorkspaceCompactLayout &&
+      !showProductionOperatorWorkbench,
+  );
+
+  const activeShiftBackHref =
+    shiftSessionIdFromUrl > 0 ? `/shift-production/sessions/${shiftSessionIdFromUrl}` : "/shift-production";
+
   const operatorOpenWoQueueRows = React.useMemo((): ProductionOperatorOpenWoRow[] => {
     return sortedFlatLines
       .filter((l) => l.id !== wolId)
@@ -5601,6 +5648,40 @@ export function ProductionPage() {
           </>
         ) : null}
       </OperationalContextBar>
+    ) : null;
+
+  const activeShiftContextStrip =
+    activeShiftDeepLink && effectiveScopedWoId > 0 ? (
+      <div
+        className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-emerald-300/80 bg-emerald-50/90 px-2.5 py-1.5 text-[12px] text-emerald-950"
+        data-testid="active-shift-run-context-strip"
+      >
+        <span className="font-bold">Active shift run</span>
+        {shiftSessionIdFromUrl > 0 ? (
+          <Link
+            className="font-semibold text-teal-800 underline"
+            to={`/shift-production/sessions/${shiftSessionIdFromUrl}`}
+          >
+            Open Active Shift
+          </Link>
+        ) : null}
+        {runAllocationIdFromUrl > 0 ? (
+          <span className="tabular-nums text-emerald-900/80">Run #{runAllocationIdFromUrl}</span>
+        ) : null}
+        {runSegmentIdFromUrl > 0 ? (
+          <span className="tabular-nums text-emerald-900/80">Segment #{runSegmentIdFromUrl}</span>
+        ) : null}
+        {machineIdFromUrl > 0 ? (
+          <span className="tabular-nums text-emerald-900/80">Machine #{machineIdFromUrl}</span>
+        ) : null}
+        <span className="font-medium text-emerald-900">
+          {focusConfirmStartFromUrl
+            ? "Next: Confirm Machine Start"
+            : focusRecordProductionFromUrl
+              ? "Next: Record Production"
+              : "Continue this run — do not start another"}
+        </span>
+      </div>
     ) : null;
 
   const renderRecentEntriesPanel = (
@@ -5824,6 +5905,7 @@ export function ProductionPage() {
           primaryAction={productionPrimaryStrip.primaryAction}
         />
       ) : null}
+      {activeShiftContextStrip}
       {!showProductionWorkspaceCompactLayout && !showProductionOperatorWorkbench ? productionCompactContextBar : null}
       {showProductionWorkspace ? (
         <div className="flex flex-col gap-2" data-testid="production-workspace-dashboard">
@@ -7282,6 +7364,12 @@ export function ProductionPage() {
                         onSelectedRunAllocationIdChange={setSelectedRunAllocationId}
                         onEntryGateChange={onRunStartEntryGateChange}
                         onChanged={() => void refresh()}
+                        preferredRunAllocationId={
+                          Number.isFinite(runAllocationIdFromUrl) && runAllocationIdFromUrl > 0
+                            ? runAllocationIdFromUrl
+                            : null
+                        }
+                        autoOpenConfirm={focusConfirmStartFromUrl}
                       />
                     ) : null}
                     {showRegularRmReadiness && !draftApprovalPendingRegular ? (
@@ -7941,6 +8029,83 @@ export function ProductionPage() {
   ) : null;
 
   /**
+   * Active shift-run deep link (Confirm Machine Start / Record Production).
+   * Never render a blank page — loading, error, or confirm shell until WO line workbench mounts.
+   */
+  if (activeShiftDeepLinkLoadState === "loading") {
+    return (
+      <PageContainer className="erp-flow-page -mt-1 max-w-none space-y-2 pb-2">
+        <ErpPageLoader
+          variant="workspace"
+          hint="Loading active shift run…"
+          data-testid="active-shift-run-deep-link-loading"
+        />
+        {shiftSessionIdFromUrl > 0 ? (
+          <p className="text-center text-[12px] text-slate-600">
+            <Link className="font-medium text-teal-800 underline" to={activeShiftBackHref}>
+              Back to Active Shift
+            </Link>
+          </p>
+        ) : null}
+      </PageContainer>
+    );
+  }
+
+  if (activeShiftDeepLinkLoadState === "wo_missing") {
+    return (
+      <PageContainer className="erp-flow-page -mt-1 max-w-none space-y-3 pb-2" data-testid="active-shift-run-deep-link-error">
+        <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-950" role="alert">
+          Work order {displayWorkOrderNo(woIdFromUrlPick, null)} is not available in Production Workspace.
+          {error ? ` ${error}` : ""}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Link to={activeShiftBackHref} className={buttonVariants({ variant: "outline" })}>
+            Back to Active Shift
+          </Link>
+          <Button type="button" variant="secondary" onClick={() => void refresh()}>
+            Retry
+          </Button>
+        </div>
+      </PageContainer>
+    );
+  }
+
+  if (showActiveShiftRunConfirmShell) {
+    return (
+      <PageContainer className="erp-flow-page -mt-1 max-w-none space-y-2 pb-2" data-testid="active-shift-run-confirm-shell">
+        <OperationalContextSticky className="sticky top-0 z-20 space-y-1 border-b border-slate-200/90 bg-white/95 pb-1.5 pt-0.5 shadow-sm backdrop-blur-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <PageSmartBackLink defaultTo={activeShiftBackHref} defaultLabel="Back to Active Shift" />
+            <h1 className="text-sm font-semibold tracking-tight text-slate-900">Production Workspace</h1>
+          </div>
+        </OperationalContextSticky>
+        {activeShiftContextStrip}
+        <ProductionRunStartConfirmPanel
+          workOrderId={effectiveScopedWoId}
+          fgItemId={selected?.fgItemId ?? null}
+          canConfirm={canConfirmProductionStart}
+          selectedRunAllocationId={selectedRunAllocationId}
+          onSelectedRunAllocationIdChange={setSelectedRunAllocationId}
+          onEntryGateChange={onRunStartEntryGateChange}
+          onChanged={() => void refresh()}
+          preferredRunAllocationId={
+            Number.isFinite(runAllocationIdFromUrl) && runAllocationIdFromUrl > 0
+              ? runAllocationIdFromUrl
+              : null
+          }
+          autoOpenConfirm={focusConfirmStartFromUrl && !runStartEntryGate.loading}
+        />
+        {focusRecordProductionFromUrl && !focusConfirmStartFromUrl ? (
+          <p className="text-[12px] text-slate-600" data-testid="active-shift-record-production-hint">
+            After start confirmation, record production quantities here or use the full entry form once the work order
+            line loads.
+          </p>
+        ) : null}
+      </PageContainer>
+    );
+  }
+
+  /**
    * Identity resolving state — placed BEFORE the REGULAR branch return.
    *
    * For NO_QTY deep-links that omit `source=no_qty_so` (e.g. `/production?salesOrderId=X` or
@@ -8578,6 +8743,12 @@ export function ProductionPage() {
               onEntryGateChange={onRunStartEntryGateChange}
               className="mb-2"
               onChanged={() => void refresh()}
+              preferredRunAllocationId={
+                Number.isFinite(runAllocationIdFromUrl) && runAllocationIdFromUrl > 0
+                  ? runAllocationIdFromUrl
+                  : null
+              }
+              autoOpenConfirm={focusConfirmStartFromUrl}
             />
             <ProductionExecutionPanel
               key={scopedProductionWorkspaceKey(effectiveScopedWoId, effectiveScopedWolId)}

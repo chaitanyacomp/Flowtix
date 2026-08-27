@@ -24,7 +24,9 @@ export function DashboardWorkspaceHeader({
         <h1 className={cn(erpTypography.pageTitle, "text-[1.25rem] font-extrabold leading-tight tracking-tight")}>
           {title}
         </h1>
-        <p className="mt-0.5 text-[12px] font-semibold uppercase tracking-[0.1em] text-slate-600">{subtitle}</p>
+        {subtitle ? (
+          <p className="mt-0.5 text-[12px] font-semibold uppercase tracking-[0.1em] text-slate-600">{subtitle}</p>
+        ) : null}
       </div>
       {trailing ? <div className="shrink-0">{trailing}</div> : null}
     </header>

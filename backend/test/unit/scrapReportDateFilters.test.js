@@ -34,11 +34,19 @@ describe("resolveScrapReportDateFilters", () => {
   it("rejects invalid From/To with controlled message", () => {
     const badFrom = resolveScrapReportDateFilters("not-a-date", "2026-07-01");
     assert.equal(badFrom.ok, false);
-    assert.match(badFrom.message, /Invalid from date/i);
+    assert.equal(badFrom.message, "Enter a valid date in DD-MM-YYYY format.");
+    assert.equal(/YYYY-MM-DD/.test(badFrom.message), false);
 
     const badTo = resolveScrapReportDateFilters("2026-07-01", "bogus");
     assert.equal(badTo.ok, false);
-    assert.match(badTo.message, /Invalid to date/i);
+    assert.equal(badTo.message, "Enter a valid date in DD-MM-YYYY format.");
+  });
+
+  it("rejects 5-digit years and impossible calendar days", () => {
+    assert.equal(resolveScrapReportDateFilters("20261-01-01", "").ok, false);
+    assert.equal(resolveScrapReportDateFilters("", "2026-02-30").ok, false);
+    assert.equal(resolveScrapReportDateFilters("1899-01-01", "").ok, false);
+    assert.equal(resolveScrapReportDateFilters("2101-01-01", "").ok, false);
   });
 
   it("rejects From later than To with business-readable message", () => {

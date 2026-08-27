@@ -12,6 +12,7 @@ const {
 const { getNoQtyCloseSnapshotMetaBatch } = require("./noQtySoCloseSnapshotService");
 const { QC_ENTRY_ACTIVE_WHERE } = require("./qcEntryConstants");
 const { netDispatchedByItemId, DISPATCH_ALLOC_MODE } = require("./salesOrderDispatchAllocation");
+const { parseStrictIsoDateBoundUtc } = require("./strictIsoDate");
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
@@ -33,10 +34,8 @@ function parsePositiveInt(raw) {
  */
 function parseDateStart(raw) {
   if (!raw || String(raw).trim() === "") return undefined;
-  const d = new Date(String(raw));
-  if (Number.isNaN(d.getTime())) return undefined;
-  d.setHours(0, 0, 0, 0);
-  return d;
+  const d = parseStrictIsoDateBoundUtc(raw, "start");
+  return d || undefined;
 }
 
 /**
@@ -45,10 +44,8 @@ function parseDateStart(raw) {
  */
 function parseDateEnd(raw) {
   if (!raw || String(raw).trim() === "") return undefined;
-  const d = new Date(String(raw));
-  if (Number.isNaN(d.getTime())) return undefined;
-  d.setHours(23, 59, 59, 999);
-  return d;
+  const d = parseStrictIsoDateBoundUtc(raw, "end");
+  return d || undefined;
 }
 
 function fmtDoc(prefix, id) {

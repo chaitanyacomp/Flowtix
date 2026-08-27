@@ -58,6 +58,10 @@ export type DashboardProductionStatusSource = {
   rmReadinessGate?: string | null;
   rmProductionAllowedNowQty?: number | null;
   rmReadyForProduction?: boolean | null;
+  activeShiftRun?: {
+    primaryActionLabel?: string | null;
+    confirmationPending?: boolean | null;
+  } | null;
   /** Backend-owned CTA label from production-queue (`deriveProductionQueueActionLabel`). */
   actionLabel?: string | null;
   /**

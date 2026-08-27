@@ -2,23 +2,12 @@ const express = require("express");
 const { z } = require("zod");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { listExportHistory } = require("../services/exportHistoryService");
+const { parseStrictIsoDateBoundUtc, INVALID_MESSAGE } = require("../services/strictIsoDate");
 
 const exportHistoryRouter = express.Router();
 
 const EXPORT_HISTORY_ACCESS_DENIED = "Access denied. Only administrators and purchase staff can view export history.";
 const exportHistoryRoles = requireRole(["ADMIN", "PURCHASE"], EXPORT_HISTORY_ACCESS_DENIED);
-
-function parseYmdStartUtc(ymd) {
-  if (typeof ymd !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
-  const t = Date.parse(`${ymd}T00:00:00.000Z`);
-  return Number.isNaN(t) ? null : new Date(t);
-}
-
-function parseYmdEndUtc(ymd) {
-  if (typeof ymd !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
-  const t = Date.parse(`${ymd}T23:59:59.999Z`);
-  return Number.isNaN(t) ? null : new Date(t);
-}
 
 exportHistoryRouter.get("/", requireAuth, exportHistoryRoles, async (req, res, next) => {
   try {
@@ -31,15 +20,17 @@ exportHistoryRouter.get("/", requireAuth, exportHistoryRoles, async (req, res, n
       })
       .parse(req.query);
 
-    const from = query.from ? parseYmdStartUtc(String(query.from).trim()) : null;
-    const to = query.to ? parseYmdEndUtc(String(query.to).trim()) : null;
-    if (query.from && !from) {
-      const err = new Error("Invalid from date; use YYYY-MM-DD.");
+    const fromRaw = query.from ? String(query.from).trim() : "";
+    const toRaw = query.to ? String(query.to).trim() : "";
+    const from = fromRaw ? parseStrictIsoDateBoundUtc(fromRaw, "start") : null;
+    const to = toRaw ? parseStrictIsoDateBoundUtc(toRaw, "end") : null;
+    if (fromRaw && !from) {
+      const err = new Error(INVALID_MESSAGE);
       err.statusCode = 400;
       throw err;
     }
-    if (query.to && !to) {
-      const err = new Error("Invalid to date; use YYYY-MM-DD.");
+    if (toRaw && !to) {
+      const err = new Error(INVALID_MESSAGE);
       err.statusCode = 400;
       throw err;
     }

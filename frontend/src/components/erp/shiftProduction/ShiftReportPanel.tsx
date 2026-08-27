@@ -48,6 +48,10 @@ type Props = {
   onNotice: (msg: string | null) => void;
   onRefresh: () => Promise<void>;
   expanded?: boolean;
+  /** Hide zero-production capture while an active run segment exists. */
+  hideZeroProduction?: boolean;
+  /** Suppress prepare-report empty-state hints while a run is active. */
+  hidePrepareReportHint?: boolean;
 };
 
 function lineKey(runSegmentId: number, itemId: number) {
@@ -62,7 +66,17 @@ function parseScrap(raw: string): number | null {
   return Math.round(n * 1000) / 1000;
 }
 
-export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefresh, expanded = true }: Props) {
+export function ShiftReportPanel({
+  session,
+  caps,
+  busy,
+  onBusy,
+  onNotice,
+  onRefresh,
+  expanded = true,
+  hideZeroProduction = false,
+  hidePrepareReportHint = false,
+}: Props) {
   const showManager = canShowManagerControls(caps);
   const merged = React.useMemo(() => mergeShiftReportEditableLines(session), [session]);
   const latest = session.report?.latestVersion ?? null;
@@ -132,7 +146,8 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
   const readOnlySnapshot = latestStatus === "SUBMITTED" || latestStatus === "VERIFIED";
   const showReturnReason = latestStatus === "RETURNED" && latest?.returnReason;
   const isZeroReport = Boolean(latest?.zeroProductionReason) && !(latest?.lines?.length);
-  const canRecordZero = editable && !readOnlySnapshot && !displayLines.length && pendingCount === 0;
+  const canRecordZero =
+    editable && !readOnlySnapshot && !displayLines.length && pendingCount === 0 && !hideZeroProduction;
   const zeroRemarksRequired = zeroReason === "OTHER";
   const canSaveZero =
     Boolean(zeroReason) && (!zeroRemarksRequired || zeroRemarks.trim().length > 0) && !busy;
@@ -330,7 +345,7 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
       ) : null}
 
       {!displayLines.length ? (
-        isZeroReport || canRecordZero ? (
+        isZeroReport ? (
           <div
             className="rounded-md border border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-700"
             data-testid="zero-production-section"
@@ -353,6 +368,17 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
                 </div>
               </div>
             ) : null}
+          </div>
+        ) : canRecordZero ? (
+          <div
+            className="rounded-md border border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-700"
+            data-testid="zero-production-section"
+          >
+            <div className="font-semibold text-slate-900">Record Zero Production</div>
+            <p className="mt-1 text-slate-600">
+              Use this when the shift was valid but produced nothing (for example no work order, breakdown, or
+              material wait). This is not for a mistakenly started shift — use Cancel Shift for mistakes.
+            </p>
             {editable && !readOnlySnapshot ? (
               <div className="mt-3 space-y-3">
                 <label className="block text-sm">
@@ -396,6 +422,14 @@ export function ShiftReportPanel({ session, caps, busy, onBusy, onNotice, onRefr
               </div>
             ) : null}
           </div>
+        ) : hidePrepareReportHint ? (
+          <p
+            className="rounded-md border border-dashed border-teal-200 bg-teal-50/60 px-3 py-4 text-sm text-teal-900"
+            data-testid="shift-report-blocked-active-run"
+          >
+            A production run is active on this shift. Complete confirm/start or production on the run, then close the
+            run before preparing the Shift Report.
+          </p>
         ) : (
           <p className="rounded-md border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-sm text-slate-600">
             No approved production is linked to this shift yet. Produce and approve entries in Production Workspace, then

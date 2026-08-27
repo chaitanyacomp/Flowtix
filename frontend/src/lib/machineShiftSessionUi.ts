@@ -242,6 +242,15 @@ export function canShowManagerControls(caps: {
   return Boolean(caps?.canPerformManagerActions);
 }
 
+/** Shop-floor pause/resume — always allowed for PRODUCTION (independent of PM assignment). */
+export function canPauseShiftProduction(caps: {
+  canPauseProduction?: boolean;
+  canPerformManagerActions?: boolean;
+} | null | undefined): boolean {
+  if (caps?.canPauseProduction != null) return Boolean(caps.canPauseProduction);
+  return Boolean(caps?.canPerformManagerActions);
+}
+
 /** Compact Shift Report lifecycle stage for the session workspace. */
 export type ShiftLifecycleStage =
   | "SHIFT_ACTIVE"
@@ -288,8 +297,14 @@ export function shiftLifecycleStageLabel(stage: ShiftLifecycleStage): string {
 
 export function shiftLifecycleNextAction(
   stage: ShiftLifecycleStage,
-  opts?: { canManage?: boolean },
+  opts?: { canManage?: boolean; activeRunSegment?: boolean },
 ): { label: string; action: "report" | "review" | "shift-over" | "summary" | "reopen" | "none" } {
+  if (
+    opts?.activeRunSegment &&
+    (stage === "SHIFT_ACTIVE" || stage === "REPORT_DRAFT" || stage === "RETURNED")
+  ) {
+    return { label: "Complete active production run first", action: "none" };
+  }
   switch (stage) {
     case "SHIFT_ACTIVE":
     case "REPORT_DRAFT":

@@ -24,9 +24,11 @@ const PM_NAV_ITEMS = [
   { navKey: "dash-home", roles: ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "PRODUCTION_MANAGER", "QA"] },
   { navKey: "control-tower", roles: ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "PRODUCTION_MANAGER", "QA"] },
   { navKey: "masters-hub", roles: ["ADMIN", "STORE", "PURCHASE", "PRODUCTION", "PRODUCTION_MANAGER", "QA"] },
+  { navKey: "plan-dash", roles: ["ADMIN", "STORE", "PRODUCTION", "PRODUCTION_MANAGER"] },
   { navKey: "machines", roles: [...PRODUCTION_MASTER_READ_ROLES] },
   { navKey: "operators", roles: [...PRODUCTION_MASTER_READ_ROLES] },
   { navKey: "shifts", roles: [...PRODUCTION_MASTER_READ_ROLES] },
+  { navKey: "fg-standards", roles: [...PRODUCTION_MASTER_READ_ROLES] },
   { navKey: "shift-prod", roles: ["ADMIN", "PRODUCTION_MANAGER", "PRODUCTION"] },
   { navKey: "prod", roles: ["ADMIN", "PRODUCTION"] },
   { navKey: "reports", roles: ["ADMIN"] },
@@ -82,12 +84,14 @@ describe("PRODUCTION_MANAGER landing", () => {
 });
 
 describe("PRODUCTION_MANAGER navigation filter", () => {
-  it("shows Shift Production and authorized masters read links only", () => {
+  it("shows Shift Production, planning, and authorized masters read links only", () => {
     expect(isProductionManagerNavItemVisible("PRODUCTION_MANAGER", "shift-prod")).toBe(true);
-    expect(isProductionManagerNavItemVisible("PRODUCTION_MANAGER", "masters-hub")).toBe(true);
+    expect(isProductionManagerNavItemVisible("PRODUCTION_MANAGER", "plan-dash")).toBe(true);
+    expect(isProductionManagerNavItemVisible("PRODUCTION_MANAGER", "masters-hub")).toBe(false);
     expect(isProductionManagerNavItemVisible("PRODUCTION_MANAGER", "machines")).toBe(true);
     expect(isProductionManagerNavItemVisible("PRODUCTION_MANAGER", "operators")).toBe(true);
     expect(isProductionManagerNavItemVisible("PRODUCTION_MANAGER", "shifts")).toBe(true);
+    expect(isProductionManagerNavItemVisible("PRODUCTION_MANAGER", "fg-standards")).toBe(true);
 
     expect(isProductionManagerNavItemVisible("PRODUCTION_MANAGER", "dash-home")).toBe(false);
     expect(isProductionManagerNavItemVisible("PRODUCTION_MANAGER", "control-tower")).toBe(false);
@@ -95,10 +99,11 @@ describe("PRODUCTION_MANAGER navigation filter", () => {
     expect(isProductionManagerNavItemVisible("PRODUCTION_MANAGER", "reports")).toBe(false);
 
     expect(listVisibleProductionManagerNavKeys("PRODUCTION_MANAGER", PM_NAV_ITEMS)).toEqual([
-      "masters-hub",
+      "plan-dash",
       "machines",
       "operators",
       "shifts",
+      "fg-standards",
       "shift-prod",
     ]);
   });

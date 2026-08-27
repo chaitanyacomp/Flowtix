@@ -1396,6 +1396,17 @@ async function getProductionQueueRowsUncached() {
 
   await attachRmReadinessToProductionQueueRows(prisma, rows);
 
+  const {
+    listActiveShiftRunGuidance,
+    attachActiveShiftRunGuidanceToProductionQueueRows,
+  } = require("./activeShiftRunGuidanceService");
+  try {
+    const activeShiftRuns = await listActiveShiftRunGuidance(prisma);
+    attachActiveShiftRunGuidanceToProductionQueueRows(rows, activeShiftRuns);
+  } catch {
+    // Guidance is advisory — never fail the production queue on shift-run lookup errors.
+  }
+
   const { classifyLiveFactoryBucket } = require("./liveFactorySnapshotService");
   for (const row of rows) {
     row.liveFactoryBucket = classifyLiveFactoryBucket(row);

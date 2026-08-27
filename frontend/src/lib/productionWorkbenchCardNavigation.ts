@@ -5,7 +5,7 @@
 
 import {
   classifyProductionWorkbenchState,
-  workbenchStatePrimaryActionLabel,
+  workbenchRowPrimaryActionLabel,
   type ProductionWorkbenchState,
   type ProductionWorkbenchStateSource,
 } from "./productionWorkbenchState";
@@ -38,8 +38,15 @@ export function productionWorkbenchCardAriaLabel(opts: {
   state: ProductionWorkbenchState;
   workOrderNo: string;
   itemName: string;
+  row?: ProductionWorkbenchStateSource;
 }): string {
-  return `${workbenchStatePrimaryActionLabel(opts.state)}: ${opts.workOrderNo} · ${opts.itemName}`;
+  const action = opts.row
+    ? workbenchRowPrimaryActionLabel(opts.row, opts.state)
+    : workbenchRowPrimaryActionLabel(
+        { activeShiftRun: null, actionLabel: null } as ProductionWorkbenchStateSource,
+        opts.state,
+      );
+  return `${action}: ${opts.workOrderNo} · ${opts.itemName}`;
 }
 
 export function cardStateFromRow(row: ProductionWorkbenchStateSource): ProductionWorkbenchState {

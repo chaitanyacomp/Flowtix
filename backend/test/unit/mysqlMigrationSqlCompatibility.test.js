@@ -233,4 +233,23 @@ describe("MySQL Prisma migration SQL compatibility", () => {
     assert.doesNotMatch(sql, /DROP\s+COLUMN/i);
     assert.doesNotMatch(sql, /DELETE\s+FROM/i);
   });
+
+  it("Kg RM issue increment migration adds nullable columns and backfills Kg RM to 1", () => {
+    const file = path.join(MIGRATIONS_DIR, "20260826120000_kg_rm_issue_increment", "migration.sql");
+    assert.ok(fs.existsSync(file), "kg rm issue increment migration.sql missing");
+    const sql = stripSqlComments(fs.readFileSync(file, "utf8"));
+    assert.match(sql, /ALTER\s+TABLE\s+`Item`/i);
+    assert.match(sql, /ADD\s+COLUMN\s+`issueIncrement`\s+DECIMAL\(18,\s*6\)\s+NULL/i);
+    assert.match(sql, /SET\s+`i`\.`issueIncrement`\s*=\s*1/i);
+    assert.match(sql, /`i`\.`itemType`\s*=\s*'RM'/i);
+    assert.match(sql, /ALTER\s+TABLE\s+`ProductionMaterialRequestLine`/i);
+    assert.match(sql, /`roundedIssueTargetQty`/i);
+    assert.match(sql, /`productionRmQty`/i);
+    assert.match(sql, /`purgingRmQty`/i);
+    assert.match(sql, /ALTER\s+TABLE\s+`MaterialIssueLine`/i);
+    assert.match(sql, /`plannedRequiredQtySnapshot`/i);
+    assert.match(sql, /`roundingExcessQty`/i);
+    assert.doesNotMatch(sql, /packSize/i);
+    assert.doesNotMatch(sql, /DROP\s+COLUMN/i);
+  });
 });

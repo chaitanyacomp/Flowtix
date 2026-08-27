@@ -2,7 +2,7 @@ import * as React from "react";
 import { Link, Navigate, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { cn } from "../lib/utils";
 import { buttonVariants } from "../components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { Card } from "../components/ui/card";
 import { apiFetch, getApiUrl } from "../services/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";

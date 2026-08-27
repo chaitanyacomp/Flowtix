@@ -63,6 +63,7 @@ export type MaterialIssueDeepLinkInput = {
   requirementSheetId?: number | null;
   salesOrderId?: number | null;
   source?: string;
+  workOrderNo?: string | null;
   /** Canonical MI side-queue bucket (`readyToIssue`, `partiallyIssued`, …). */
   bucket?: MaterialIssueBucket | null;
   listOnly?: boolean;
@@ -78,6 +79,7 @@ export function buildMaterialIssueDeepLink(input: MaterialIssueDeepLinkInput): s
     from: input.source === "pending-actions" ? "pending-actions" : input.source ?? null,
     requirementSheetId: input.requirementSheetId,
     salesOrderId: input.salesOrderId,
+    workOrderNo: input.workOrderNo,
     listOnly: input.listOnly,
   });
 }

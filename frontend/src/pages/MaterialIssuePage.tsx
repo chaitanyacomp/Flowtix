@@ -11,7 +11,7 @@ import { cn } from "../lib/utils";
 import { useToast } from "../contexts/ToastContext";
 import { useAuth } from "../contexts/AuthContext";
 import { PageContainer, StickyWorkspaceHead, ERPBackNavigation } from "../components/PageHeader";
-import { ErpWorkflowTrail, ErpPageLoader } from "../components/erp/foundation";
+import { ErpPageLoader } from "../components/erp/foundation";
 import { useStablePageLoad } from "../hooks/useStablePageLoad";
 import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { useStoreExecutionNavContext } from "../hooks/useStoreExecutionNavContext";
@@ -158,6 +158,12 @@ type IssueLineDraft = {
   lineReadinessLabel?: string | null;
   lineReadinessExplanation?: string | null;
   waitingProcurement?: boolean | null;
+  kgIssueRoundingApplies?: boolean;
+  issueIncrement?: number | null;
+  plannedRequiredQty?: number | null;
+  roundedIssueTargetQty?: number | null;
+  roundingExcessQty?: number | null;
+  allowProcessAllowance?: boolean;
 };
 
 type PendingPmr = {
@@ -211,6 +217,12 @@ type PmrIssueLine = {
   stillRequiredQty?: number;
   rmIssueToleranceQty?: number;
   maxAllowedIssueQty?: number;
+  kgIssueRoundingApplies?: boolean;
+  issueIncrement?: number | null;
+  plannedRequiredQty?: number | null;
+  roundedIssueTargetQty?: number | null;
+  roundingExcessQty?: number | null;
+  allowProcessAllowance?: boolean;
   lineReadinessKey?: string | null;
   lineReadinessLabel?: string | null;
   lineReadinessExplanation?: string | null;
@@ -251,6 +263,12 @@ type PmrIssueDecision = {
   releaseBlockedByUnissuedBom?: boolean;
   materialReleasedToProductionAt: string | null;
   showPartialDecisionPanel: boolean;
+  plannedRequirementReconcile?: {
+    applied?: boolean;
+    failed?: boolean;
+    operatorMessage?: string | null;
+    reviewRequired?: boolean;
+  } | null;
 };
 
 type PmrIssueContext = {
@@ -319,6 +337,7 @@ function newLineKey() {
 function pmrLineToDraft(pl: PmrIssueLine): IssueLineDraft {
   const issueCap = pl.issueCapQty ?? pl.stillRequiredQty ?? pl.pendingQty;
   const storeQty = pl.freeStoreStock ?? pl.availableStoreQty ?? pl.available ?? null;
+  const kgMode = Boolean(pl.kgIssueRoundingApplies);
   const draft: IssueLineDraft = {
     key: `pmr-${pl.id}`,
     pmrLineId: pl.id,
@@ -346,7 +365,7 @@ function pmrLineToDraft(pl: PmrIssueLine): IssueLineDraft {
     freeStoreStock: storeQty,
     issueQty: "0",
     issueQtyTouched: false,
-    fullWoRmNeed: pl.fullWoRmNeed ?? pl.originalRequiredQty ?? pl.requiredQty,
+    fullWoRmNeed: pl.plannedRequiredQty ?? pl.fullWoRmNeed ?? pl.originalRequiredQty ?? pl.requiredQty,
     allowanceInputSource: "QUANTITY",
     plannedAllowancePct: "0",
     plannedAllowanceQty: "0",
@@ -357,13 +376,29 @@ function pmrLineToDraft(pl: PmrIssueLine): IssueLineDraft {
     lineReadinessLabel: pl.lineReadinessLabel,
     lineReadinessExplanation: pl.lineReadinessExplanation,
     waitingProcurement: pl.waitingProcurement,
+    kgIssueRoundingApplies: kgMode,
+    issueIncrement: pl.issueIncrement ?? null,
+    plannedRequiredQty: pl.plannedRequiredQty ?? pl.requiredQty,
+    roundedIssueTargetQty: pl.roundedIssueTargetQty ?? null,
+    roundingExcessQty: pl.roundingExcessQty ?? null,
+    allowProcessAllowance: pl.allowProcessAllowance !== false && !kgMode,
   };
-  draft.issueQty = defaultIssueQtyForLine(draft, storeQty);
+  if (kgMode && pl.suggestedIssueQty != null) {
+    draft.issueQty = formatAllowanceInput(Math.max(0, Number(pl.suggestedIssueQty) || 0));
+  } else {
+    draft.issueQty = defaultIssueQtyForLine(draft, storeQty);
+  }
   return draft;
 }
 
 function assessIssueLineDraft(ln: IssueLineDraft) {
   const pending = ln.pmrPendingQty ?? ln.pendingQty ?? 0;
+  if (ln.kgIssueRoundingApplies) {
+    return assessMaterialIssueQty(ln.issueQty, pending, {
+      woStillRequiredQty: ln.issueCapQty ?? ln.stillRequiredQty,
+      maxAllowedIssueQty: Number(ln.maxAllowedIssueQty ?? pending),
+    });
+  }
   const allowance = allowanceForLine(ln);
   const defaultNow = allowance.valid ? allowance.defaultIssueNowQty : pending;
   const allowanceAdjustedPending = Math.max(pending, defaultNow);
@@ -530,13 +565,20 @@ export function MaterialIssuePage() {
       const sourceLines = filterMaterialIssueEntryLines(data.pendingLines?.length ? data.pendingLines : data.lines ?? []);
       const draftLines = sourceLines.length ? sourceLines.map(pmrLineToDraft) : [];
       setLines(hydrateIssueLinesWithAllowanceApprovals(draftLines, allowanceApprovals));
+      const reconcileMsg =
+        data.issueDecision?.plannedRequirementReconcile?.failed
+          ? data.issueDecision.plannedRequirementReconcile.operatorMessage ||
+            data.issueDecision.blockerReason ||
+            "Could not refresh planned RM quantities for this request."
+          : null;
+      setPmrLoadError(reconcileMsg);
     } catch (e) {
       setPmrLoadError(e instanceof Error ? e.message : "Could not load PMR");
       setActivePmrId(null);
       setActivePmr(null);
       setIssueDecision(null);
       setLines([]);
-      showError(e instanceof Error ? e.message : "Could not load PMR");
+      // Inline error only — do not also toast the same load failure.
     } finally {
       setPmrLoading(false);
     }
@@ -1121,19 +1163,33 @@ export function MaterialIssuePage() {
       if (activePmrId) {
         const pmrLines = lines
           .filter((ln) => ln.pmrLineId && Number(ln.issueQty) > 0)
-          .map((ln) => ({
-            pmrLineId: ln.pmrLineId as number,
-            issueQty: Number(ln.issueQty),
-            theoreticalBomQty: Number(ln.fullWoRmNeed ?? ln.originalRequestQty ?? 0),
-            includedRunnerQty: 0,
-            allowanceInputSource: "QUANTITY" as const,
-            enteredAllowanceQty: Number(ln.plannedAllowanceQty || 0),
-            plannedAllowanceQty: allowanceForLine(ln).calculatedQty,
-            recommendedIssueQty: allowanceForLine(ln).recommendedIssueQty,
-            allowanceReason: ln.allowanceReason?.trim() || null,
-            allowanceApprovalRequestId:
-              ln.allowanceApprovalStatus === "APPROVED" ? ln.allowanceApprovalId ?? null : null,
-          }));
+          .map((ln) => {
+            const kgMode = Boolean(ln.kgIssueRoundingApplies);
+            const allowance = kgMode
+              ? {
+                  calculatedQty: 0,
+                  recommendedIssueQty: Number(ln.pmrPendingQty ?? ln.pendingQty ?? 0),
+                }
+              : allowanceForLine(ln);
+            return {
+              pmrLineId: ln.pmrLineId as number,
+              issueQty: Number(ln.issueQty),
+              theoreticalBomQty: Number(
+                ln.plannedRequiredQty ?? ln.fullWoRmNeed ?? ln.originalRequestQty ?? 0,
+              ),
+              includedRunnerQty: 0,
+              allowanceInputSource: "QUANTITY" as const,
+              enteredAllowanceQty: kgMode ? 0 : Number(ln.plannedAllowanceQty || 0),
+              plannedAllowanceQty: allowance.calculatedQty,
+              recommendedIssueQty: allowance.recommendedIssueQty,
+              allowanceReason: kgMode ? null : ln.allowanceReason?.trim() || null,
+              allowanceApprovalRequestId: kgMode
+                ? null
+                : ln.allowanceApprovalStatus === "APPROVED"
+                  ? ln.allowanceApprovalId ?? null
+                  : null,
+            };
+          });
         if (!pmrLines.length) {
           showError("Add issue quantities for PMR lines.");
           setSubmitting(false);
@@ -1294,6 +1350,7 @@ export function MaterialIssuePage() {
     }
     const targets = lines.filter((ln) => {
       if (!ln.pmrLineId || Number(ln.issueQty) <= 0) return false;
+      if (ln.kgIssueRoundingApplies) return false;
       const allowance = allowanceForLine(ln);
       return allowance.valid && !allowance.blocked && allowance.requiresAdminApproval;
     });
@@ -1533,6 +1590,11 @@ export function MaterialIssuePage() {
         disabled: noIssue || pmrLoading || primaryAction.readOnly,
         approvalStatus: ln.allowanceApprovalStatus ?? "NONE",
         approvalRejectionReason: ln.allowanceApprovalRejectionReason,
+        kgIssueRoundingApplies: Boolean(ln.kgIssueRoundingApplies),
+        issueIncrement: ln.issueIncrement ?? null,
+        plannedRequiredQty: ln.plannedRequiredQty ?? theoretical,
+        roundedIssueTargetQty: ln.roundedIssueTargetQty ?? null,
+        roundingExcessQty: ln.roundingExcessQty ?? null,
       };
     });
   }, [ctx?.rmItems, lines, pmrLoading, primaryAction.readOnly]);
@@ -1550,15 +1612,32 @@ export function MaterialIssuePage() {
     });
   }, [sessionComplete]);
 
+  const materialIssueBackDefaults = React.useMemo(() => {
+    if (hideWorkflowTrail) {
+      return { defaultTo: "/pending-actions", defaultLabel: "Back to Pending Actions" };
+    }
+    if (materialIssueNavContext.parentLabel === "Work Order") {
+      return {
+        defaultTo: materialIssueNavContext.parentHref || "/work-orders",
+        defaultLabel: "Back to Work Order",
+      };
+    }
+    if (materialIssueNavContext.parentLabel === "Operations") {
+      return { defaultTo: "/dashboard", defaultLabel: "Back to Operations" };
+    }
+    return { defaultTo: "/dashboard", defaultLabel: "Back to Operations" };
+  }, [hideWorkflowTrail, materialIssueNavContext.parentHref, materialIssueNavContext.parentLabel]);
+
   return (
     <PageContainer className="erp-txn-workspace erp-mat-plan-workspace space-y-1">
       <StickyWorkspaceHead
         lead={
-          hideWorkflowTrail ? (
-            <ERPBackNavigation defaultTo="/pending-actions" defaultLabel="Back to Pending Actions" />
-          ) : (
-            <ErpWorkflowTrail navContext={materialIssueNavContext} />
-          )
+          <ERPBackNavigation
+            defaultTo={materialIssueBackDefaults.defaultTo}
+            defaultLabel={materialIssueBackDefaults.defaultLabel}
+            navContext={hideWorkflowTrail ? null : materialIssueNavContext}
+            data-testid="material-issue-contextual-back"
+          />
         }
       >
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">

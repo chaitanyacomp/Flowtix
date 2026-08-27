@@ -393,6 +393,8 @@ function normalizeProductionRow(raw) {
       productionExecutionStatus: raw?.productionExecutionStatus ?? null,
       productionWorkState: raw?.productionWorkState ?? null,
       actionHref: raw?.actionHref ?? null,
+      actionLabel: raw?.actionLabel ?? null,
+      activeShiftRun: raw?.activeShiftRun ?? null,
       lastShortageQty: raw?.lastShortageQty ?? null,
       ...lineage,
     },

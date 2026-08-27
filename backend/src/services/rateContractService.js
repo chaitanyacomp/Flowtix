@@ -2,16 +2,29 @@
  * Customer + item rate contracts (append-only; rate changes insert new rows).
  */
 
+const { parseStrictIsoDateOnly, INVALID_MESSAGE } = require("./strictIsoDate");
+
 function endOfUtcCalendarDay(d) {
   const x = d instanceof Date ? d : new Date(d);
   if (Number.isNaN(x.getTime())) return null;
   return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), x.getUTCDate(), 23, 59, 59, 999));
 }
 
+/**
+ * Normalize to UTC midnight calendar day. Null/blank → null; invalid non-empty → throws INVALID_MESSAGE.
+ * @param {unknown} input
+ * @returns {Date|null}
+ */
 function normalizeUtcDateOnly(input) {
-  if (input == null) return null;
-  const d = input instanceof Date ? input : new Date(input);
-  if (Number.isNaN(d.getTime())) return null;
+  if (input == null || input === "") return null;
+  const parsed = parseStrictIsoDateOnly(input, { required: true });
+  if (!parsed.ok || !parsed.utcDate) {
+    const err = new Error(INVALID_MESSAGE);
+    err.statusCode = 400;
+    err.code = "INVALID_DATE";
+    throw err;
+  }
+  const d = parsed.utcDate;
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
@@ -25,7 +38,7 @@ function assertEffectiveFromNotFuture(effectiveFrom) {
   const eff = normalizeUtcDateOnly(effectiveFrom);
   const today = normalizeUtcDateOnly(new Date());
   if (!eff || !today) {
-    const err = new Error("Invalid effectiveFrom date.");
+    const err = new Error(INVALID_MESSAGE);
     err.statusCode = 400;
     throw err;
   }

@@ -1,11 +1,10 @@
 /**
  * Scrap report From/To query helpers — omit blanks; reject invalid / inverted ranges.
- * UI displays dates as DD-MM-YYYY (browser locale on native date inputs).
- * API still receives ISO YYYY-MM-DD. User-facing errors never mention API/ISO format.
+ * UI displays dates as DD-MM-YYYY. API receives ISO YYYY-MM-DD.
+ * User-facing errors never mention API/ISO format.
  */
 
-const ISO_YMD = /^\d{4}-\d{2}-\d{2}$/;
-const DMY = /^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/;
+import { ERP_DATE_INVALID_MESSAGE, parseErpDateInput } from "./erpDate";
 
 const INVALID_MSG = (label: "From" | "To") =>
   `Invalid ${label} date. Please enter date in DD-MM-YYYY format.`;
@@ -20,30 +19,12 @@ export function parseScrapReportDateParam(raw: string | null | undefined, label:
   const t = String(raw ?? "").trim();
   if (!t) return { kind: "omit" };
 
-  // Native <input type="date"> value is always ISO; accept without exposing that format to users.
-  if (ISO_YMD.test(t)) {
-    const d = new Date(`${t}T00:00:00`);
-    if (Number.isNaN(d.getTime())) return { kind: "invalid", message: INVALID_MSG(label) };
-    return { kind: "ok", value: t };
+  const parsed = parseErpDateInput(t, { allowBlank: false });
+  if (!parsed.ok) {
+    // Prefer labelled message for report filters; fall back to global wording.
+    return { kind: "invalid", message: INVALID_MSG(label) || ERP_DATE_INVALID_MESSAGE };
   }
-
-  const m = DMY.exec(t);
-  if (m) {
-    const dd = Number(m[1]);
-    const mm = Number(m[2]);
-    const yyyy = Number(m[3]);
-    if (mm < 1 || mm > 12 || dd < 1 || dd > 31) {
-      return { kind: "invalid", message: INVALID_MSG(label) };
-    }
-    const iso = `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
-    const d = new Date(`${iso}T00:00:00`);
-    if (Number.isNaN(d.getTime()) || d.getFullYear() !== yyyy || d.getMonth() + 1 !== mm || d.getDate() !== dd) {
-      return { kind: "invalid", message: INVALID_MSG(label) };
-    }
-    return { kind: "ok", value: iso };
-  }
-
-  return { kind: "invalid", message: INVALID_MSG(label) };
+  return { kind: "ok", value: parsed.ymd };
 }
 
 export type ScrapDateQueryBuild =

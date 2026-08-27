@@ -45,18 +45,22 @@ describe("REGULAR_SO Prepare WO labels and create handoff", () => {
     expect(strip?.primaryLabel).toBe("Create Work Order");
   });
 
-  it("post-create deep-link opens Material Issue for the new WO — not generic Work Orders or Dashboard", () => {
+  it("post-create deep-link opens Material Issue for the new WO — not Prepare WO or Dashboard", () => {
     const href = buildRegularSoPostCreateMaterialIssueHref({
       workOrderId: 901,
       pmrId: 44,
       salesOrderId: 258,
-      source: "prepare-wo",
+      workOrderNo: "WO-R-26-0001",
+      source: "create-work-order",
     });
     expect(href).toContain("/material-issue");
     expect(href).toContain("workOrderId=901");
     expect(href).toContain("pmrId=44");
     expect(href).toContain("salesOrderId=258");
-    expect(href).toContain("returnTo=prepare-wo");
+    expect(href).toContain("returnTo=work-order-detail");
+    expect(href).toContain("from=create-work-order");
+    expect(href).toContain("workOrderNo=WO-R-26-0001");
+    expect(href).not.toContain("returnTo=prepare-wo");
     expect(href).not.toContain("/work-orders?");
     expect(href).not.toContain("/dashboard");
     expect(href).not.toContain("/sales-orders");
@@ -74,11 +78,13 @@ describe("REGULAR_SO Prepare WO labels and create handoff", () => {
     expect(shouldReuseExistingRegularWo(0)).toBe(false);
   });
 
-  it("Prepare WO posts create API and disables while submitting (no nav to generic WO list)", () => {
+  it("Prepare WO posts create API and replaces history into Material Issue (no duplicate create)", () => {
     expect(rmCheckSource).toContain('"/api/production/work-orders"');
     expect(rmCheckSource).toContain("createWoInFlightRef");
     expect(rmCheckSource).toContain("setCreatingWo(true)");
     expect(rmCheckSource).toContain("buildRegularSoPostCreateMaterialIssueHref");
+    expect(rmCheckSource).toContain('source: "create-work-order"');
+    expect(rmCheckSource).toContain("nav(href, { replace: true })");
     expect(rmCheckSource).not.toMatch(
       /nav\(\s*["']\/work-orders["']\s*,\s*\{\s*state:\s*\{\s*source:\s*["']rmCheck["']/,
     );

@@ -23,6 +23,8 @@ export type StoreExecutionNavPageKey =
 const DASHBOARD_TRAIL: ErpNavTrailItem = { label: "Dashboard", href: "/dashboard" };
 const PENDING_ACTIONS_TRAIL: ErpNavTrailItem = { label: "Pending Actions", href: "/pending-actions" };
 const SALES_ORDERS_TRAIL: ErpNavTrailItem = { label: "Sales Orders", href: "/sales-orders" };
+const WORK_ORDERS_TRAIL: ErpNavTrailItem = { label: "Work Orders", href: "/work-orders?flow=REGULAR_SO" };
+const OPERATIONS_TRAIL: ErpNavTrailItem = { label: "Operations", href: "/dashboard" };
 const NO_QTY_EXECUTION_TRAIL: ErpNavTrailItem = {
   label: "NO_QTY Execution",
   href: NO_QTY_AGREEMENTS_HREF,
@@ -114,8 +116,33 @@ export function navContextMaterialIssueFromDashboard(): ErpNavContext {
   return makeNavContext([DASHBOARD_TRAIL, { label: "Material Issue" }], "dashboard");
 }
 
+/** Sidebar / direct Operations nav — safe default when no WO create context. */
+export function navContextMaterialIssueFromOperations(): ErpNavContext {
+  return makeNavContext([OPERATIONS_TRAIL, { label: "Material Issue" }], "sidebar");
+}
+
 export function navContextMaterialIssueFromPendingActions(): ErpNavContext {
   return makeNavContext([DASHBOARD_TRAIL, PENDING_ACTIONS_TRAIL, { label: "Material Issue" }], "pending-actions");
+}
+
+/**
+ * Material Issue opened after Create WO (or from WO detail).
+ * Back → WO detail ("Back to Work Order"); breadcrumb Work Orders → WO-… → Material Issue.
+ */
+export function navContextMaterialIssueFromWorkOrder(opts: {
+  workOrderId: number;
+  workOrderLabel: string;
+  origin?: string;
+}): ErpNavContext {
+  const woId = Number(opts.workOrderId);
+  const woHref = woId > 0 ? `/work-orders/${woId}` : "/work-orders?flow=REGULAR_SO";
+  const label = opts.workOrderLabel.trim() || (woId > 0 ? `WO-${woId}` : "Work Order");
+  return {
+    parentHref: woHref,
+    parentLabel: "Work Order",
+    trail: [WORK_ORDERS_TRAIL, { label, href: woHref }, { label: "Material Issue" }],
+    origin: opts.origin ?? "create-work-order",
+  };
 }
 
 export function navContextRmControlCenterFromPendingActions(): ErpNavContext {
@@ -212,8 +239,41 @@ function queryOrigin(params: URLSearchParams): string | null {
   if (from === "pending-actions" || params.get("returnTo") === "pending-actions") return "pending-actions";
   if (from === "control-tower" || params.get("returnTo") === "control-tower") return "control-tower";
   if (from === "execution-register" || source === "no_qty_execution") return "execution-register";
+  if (
+    source === "create-work-order" ||
+    from === "create-work-order" ||
+    params.get("returnTo") === "work-order-detail"
+  ) {
+    return "create-work-order";
+  }
+  if (from === "work-order-detail" || source === "work-order-detail") return "work-order-detail";
   if (params.get("returnTo") === "dashboard") return "dashboard";
   return null;
+}
+
+function materialIssueWorkOrderLabel(params: URLSearchParams, workOrderId: number): string {
+  const fromQuery = params.get("workOrderNo")?.trim();
+  if (fromQuery) return fromQuery;
+  if (workOrderId > 0) return `WO-${workOrderId}`;
+  return "Work Order";
+}
+
+function isMaterialIssueFromCreatedWorkOrder(params: URLSearchParams): boolean {
+  const source = (params.get("source") ?? "").trim().toLowerCase();
+  const from = (params.get("from") ?? "").trim().toLowerCase();
+  const returnTo = (params.get("returnTo") ?? "").trim().toLowerCase();
+  if (source === "create-work-order" || from === "create-work-order") return true;
+  if (returnTo === "work-order-detail" || from === "work-order-detail" || source === "work-order-detail") {
+    return true;
+  }
+  // Legacy post-create links used prepare-wo; with a WO id, prefer WO detail (creation already done).
+  if (
+    (returnTo === "prepare-wo" || from === "prepare-wo" || source === "prepare-wo") &&
+    Number(params.get("workOrderId") || 0) > 0
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /** Resolve NavContext for Store Execution pilot pages (state → query → defaults). */
@@ -275,6 +335,19 @@ export function resolveStoreExecutionNavContext(
       if (returnTo === "dashboard" || origin === "dashboard" || params.get("source") === "dashboard") {
         return navContextMaterialIssueFromDashboard();
       }
+      if (isMaterialIssueFromCreatedWorkOrder(params)) {
+        const woId = Number(params.get("workOrderId") ?? 0);
+        if (woId > 0) {
+          return navContextMaterialIssueFromWorkOrder({
+            workOrderId: woId,
+            workOrderLabel: materialIssueWorkOrderLabel(params, woId),
+            origin:
+              origin === "create-work-order" || origin === "work-order-detail"
+                ? origin
+                : "create-work-order",
+          });
+        }
+      }
       if (returnTo === "rm-control-center") {
         const soId = params.get("salesOrderId");
         const wsFocus = params.get("focus") === "execution";
@@ -300,7 +373,8 @@ export function resolveStoreExecutionNavContext(
           "rm-control-center",
         );
       }
-      return navContextMaterialIssueFromDashboard();
+      // Direct nav / sidebar — Operations section safe default
+      return navContextMaterialIssueFromOperations();
 
     case "dispatch":
       if (returnTo === "pending-actions" || from === "pending-actions") {

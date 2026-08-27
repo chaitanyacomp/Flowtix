@@ -22,6 +22,7 @@ const {
   parseDateStart,
   parseDateEnd,
 } = require("../services/soDispatchTraceReport");
+const { INVALID_MESSAGE } = require("../services/strictIsoDate");
 const { buildCustomerSoRsReport } = require("../services/customerSoRsReportService");
 const { buildProductionRmVarianceReport } = require("../services/productionRmVarianceReportService");
 const { buildProductionWastageClassificationReport } = require("../services/productionWastageClassificationReportService");
@@ -314,7 +315,12 @@ reportsRouter.get("/purchase-matching", requireAuth, purchaseMatchRoles, async (
     const fromDate = parseDateStart(req.query.fromDate);
     const toDate = parseDateEnd(req.query.toDate);
     if (!fromDate || !toDate) {
-      const err = new Error("fromDate and toDate are required (YYYY-MM-DD).");
+      const hadBoth =
+        req.query.fromDate != null &&
+        String(req.query.fromDate).trim() !== "" &&
+        req.query.toDate != null &&
+        String(req.query.toDate).trim() !== "";
+      const err = new Error(hadBoth ? INVALID_MESSAGE : "fromDate and toDate are required.");
       err.statusCode = 400;
       throw err;
     }
@@ -574,7 +580,12 @@ reportsRouter.get("/sales-matching", requireAuth, salesMatchRoles, async (req, r
     const fromDate = parseDateStart(req.query.fromDate);
     const toDate = parseDateEnd(req.query.toDate);
     if (!fromDate || !toDate) {
-      const err = new Error("fromDate and toDate are required (YYYY-MM-DD).");
+      const hadBoth =
+        req.query.fromDate != null &&
+        String(req.query.fromDate).trim() !== "" &&
+        req.query.toDate != null &&
+        String(req.query.toDate).trim() !== "";
+      const err = new Error(hadBoth ? INVALID_MESSAGE : "fromDate and toDate are required.");
       err.statusCode = 400;
       throw err;
     }
@@ -980,7 +991,12 @@ reportsRouter.get("/batch-traceability", requireAuth, batchTraceRoles, async (re
     const fromDate = parseDateStart(req.query.fromDate);
     const toDate = parseDateEnd(req.query.toDate);
     if (!fromDate || !toDate) {
-      const err = new Error("fromDate and toDate are required (YYYY-MM-DD).");
+      const hadBoth =
+        req.query.fromDate != null &&
+        String(req.query.fromDate).trim() !== "" &&
+        req.query.toDate != null &&
+        String(req.query.toDate).trim() !== "";
+      const err = new Error(hadBoth ? INVALID_MESSAGE : "fromDate and toDate are required.");
       err.statusCode = 400;
       throw err;
     }
@@ -1249,7 +1265,12 @@ reportsRouter.get("/activity-log", requireAuth, activityLogRoles, async (req, re
     const fromDate = parseDateStart(req.query.fromDate);
     const toDate = parseDateEnd(req.query.toDate);
     if (!fromDate || !toDate) {
-      const err = new Error("fromDate and toDate are required (YYYY-MM-DD).");
+      const hadBoth =
+        req.query.fromDate != null &&
+        String(req.query.fromDate).trim() !== "" &&
+        req.query.toDate != null &&
+        String(req.query.toDate).trim() !== "";
+      const err = new Error(hadBoth ? INVALID_MESSAGE : "fromDate and toDate are required.");
       err.statusCode = 400;
       throw err;
     }
@@ -1361,7 +1382,12 @@ reportsRouter.get("/stock-reconciliation", requireAuth, stockReconRoles, async (
     const fromDate = parseDateStart(req.query.fromDate);
     const toDate = parseDateEnd(req.query.toDate);
     if (!fromDate || !toDate) {
-      const err = new Error("fromDate and toDate are required (YYYY-MM-DD).");
+      const hadBoth =
+        req.query.fromDate != null &&
+        String(req.query.fromDate).trim() !== "" &&
+        req.query.toDate != null &&
+        String(req.query.toDate).trim() !== "";
+      const err = new Error(hadBoth ? INVALID_MESSAGE : "fromDate and toDate are required.");
       err.statusCode = 400;
       throw err;
     }

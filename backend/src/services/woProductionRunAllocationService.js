@@ -53,11 +53,12 @@ function normalizeProductionRunInputs(rawRuns) {
     }
     let plannedDate = null;
     if (row.plannedDate != null && String(row.plannedDate).trim() !== "") {
-      const raw = String(row.plannedDate).trim().slice(0, 10);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-        throw httpError(`Production run #${i + 1}: Planned date must be YYYY-MM-DD.`, 400, "INVALID_PRODUCTION_RUN");
+      const { parseStrictIsoDateOnly, INVALID_MESSAGE } = require("./strictIsoDate");
+      const parsed = parseStrictIsoDateOnly(String(row.plannedDate).trim(), { required: true });
+      if (!parsed.ok || !parsed.ymd) {
+        throw httpError(`Production run #${i + 1}: ${INVALID_MESSAGE}`, 400, "INVALID_PRODUCTION_RUN");
       }
-      plannedDate = raw;
+      plannedDate = parsed.ymd;
     }
     let shiftId = null;
     if (row.shiftId != null && row.shiftId !== "") {

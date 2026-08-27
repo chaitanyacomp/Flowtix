@@ -10,10 +10,11 @@ const {
   endOfUtcCalendarDay,
 } = require("../services/rateContractService");
 const { assertAdminPassword } = require("../services/adminPasswordAuth");
+const { zodStrictIsoDateString, INVALID_MESSAGE } = require("../services/strictIsoDate");
 
 const rateContractsRouter = express.Router();
 
-const dateInput = z.union([z.string().min(1), z.number(), z.coerce.date()]);
+const dateInput = zodStrictIsoDateString(z, { required: true });
 const mutationSchema = z.object({
   customerId: z.number().int().positive(),
   itemId: z.number().int().positive(),
@@ -24,9 +25,13 @@ const mutationSchema = z.object({
 });
 
 function parseEffectiveFrom(input) {
-  let eff = input instanceof Date ? input : new Date(input);
-  if (Number.isNaN(eff.getTime())) return null;
-  return assertEffectiveFromNotFuture(normalizeUtcDateOnly(eff));
+  const eff = normalizeUtcDateOnly(input);
+  if (!eff) {
+    const err = new Error(INVALID_MESSAGE);
+    err.statusCode = 400;
+    throw err;
+  }
+  return assertEffectiveFromNotFuture(eff);
 }
 
 function includeContractRefs() {
@@ -74,7 +79,7 @@ rateContractsRouter.post("/", requireAuth, requireRole(["ADMIN"]), async (req, r
       eff = parseEffectiveFrom(body.effectiveFrom);
     } catch (e) {
       const status = e?.statusCode === 400 ? 400 : 400;
-      return res.status(status).json({ error: { message: e?.message ?? "Invalid effectiveFrom date." } });
+      return res.status(status).json({ error: { message: e?.message ?? INVALID_MESSAGE } });
     }
 
     const rateContractLine = getRateContractLineDelegate(prisma);
@@ -111,7 +116,7 @@ rateContractsRouter.put("/:id/revise", requireAuth, requireRole(["ADMIN"]), asyn
       eff = parseEffectiveFrom(body.effectiveFrom);
     } catch (e) {
       const status = e?.statusCode === 400 ? 400 : 400;
-      return res.status(status).json({ error: { message: e?.message ?? "Invalid effectiveFrom date." } });
+      return res.status(status).json({ error: { message: e?.message ?? INVALID_MESSAGE } });
     }
 
     const row = await prisma.$transaction(async (tx) => {

@@ -140,12 +140,8 @@ export function GrnPostReceiptModal({
                 value={grnDateInput}
                 onChange={(e) => onGrnDateChange(e.target.value)}
                 disabled={grning}
+                dateError={grnFieldErrors.grnDate}
               />
-              {grnFieldErrors.grnDate ? (
-                <p className="text-[11px] text-red-600" role="alert">
-                  {grnFieldErrors.grnDate}
-                </p>
-              ) : null}
             </div>
             <div className="grid min-w-[12rem] flex-1 gap-1">
               <label htmlFor="rm-grn-supplier-inv" className="text-[11px] font-medium text-slate-600">

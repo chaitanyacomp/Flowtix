@@ -28,6 +28,7 @@ const {
   SALES_BILL_READ_ROLES,
   SALES_BILL_CANCEL_ROLES,
 } = require("../constants/erpRoles");
+const { zodStrictIsoDateString, INVALID_MESSAGE } = require("../services/strictIsoDate");
 const { mapSalesBillToTallyExportPayload } = require("../services/salesBillTallyExportPayload");
 const { buildSalesBillTallyXml, buildSalesBillTallyMastersXml } = require("../services/salesBillTallyXml");
 const { exportSalesBillsToTallyBulk } = require("../services/salesBillTallyExportActions");
@@ -62,7 +63,8 @@ const tallyExportBillInclude = {
   },
 };
 
-const dateInput = z.union([z.string().min(1), z.number(), z.coerce.date()]);
+const dateInput = zodStrictIsoDateString(z, { required: true });
+const optionalDateInput = zodStrictIsoDateString(z, { required: false });
 
 function friendly400(message, extras = null) {
   if (extras && typeof extras === "object") {
@@ -302,7 +304,7 @@ const transportationInput = z.object({
 
 salesBillsRouter.post("/from-sales-order", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
-    const body = z.object({ salesOrderId: z.number().int().positive(), billDate: dateInput.optional(),
+    const body = z.object({ salesOrderId: z.number().int().positive(), billDate: optionalDateInput,
       allocations: z.array(allocationInput).min(1), transportation: transportationInput.optional() }).parse(req.body ?? {});
     const selected = await getEligibleDispatchesForSalesOrder(prisma, body.salesOrderId);
     if (body.allocations.some((row) => !selected.some((d) => d.dispatchId === row.dispatchId))) {
@@ -481,8 +483,12 @@ salesBillsRouter.get("/:id", requireAuth, requireRole(SALES_BILL_READ_ROLES), as
 salesBillsRouter.post("/from-dispatch/:dispatchId", requireAuth, requireRole(SALES_BILL_WRITE_ROLES), async (req, res, next) => {
   try {
     const dispatchId = Number(req.params.dispatchId);
-    const parsedBody = z.object({ billDate: dateInput.optional() }).safeParse(req.body ?? {});
-    const billDate = parsedBody.success ? parsedBody.data.billDate : undefined;
+    const parsedBody = z.object({ billDate: optionalDateInput }).safeParse(req.body ?? {});
+    if (!parsedBody.success) {
+      const msg = parsedBody.error?.issues?.[0]?.message || INVALID_MESSAGE;
+      return res.status(400).json(friendly400(msg));
+    }
+    const billDate = parsedBody.data.billDate;
     const { bill, created } = await createDraftFromDispatch(prisma, dispatchId, { billDate });
     if (created) {
       const sbDoc = displaySalesBillNo(bill.id, bill.billNo, bill.docNo);

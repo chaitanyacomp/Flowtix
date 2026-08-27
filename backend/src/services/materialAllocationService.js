@@ -129,6 +129,104 @@ async function createAllocationsForPmr(tx, pmr, lines, actor = {}) {
   return rows;
 }
 
+/**
+ * Idempotent allocation refresh for open-PMR reconcile.
+ * Reuses existing MAL-{pmrId}-{itemId} rows (including CANCELLED) so soft-cancel + recreate
+ * cannot hit unique allocationNo (Prisma P2002).
+ */
+async function refreshAllocationsForOpenPmrReconcile(tx, pmr, lines, actor = {}) {
+  if (!tx.materialAllocation?.findFirst || !pmr?.id || !lines?.length) return [];
+  const { getMaterialAvailabilityByItems } = require("./materialAvailabilityService");
+  const itemIds = [...new Set(lines.map((line) => Number(line.itemId)).filter(Boolean))];
+  const requiredQtyByItemId = new Map();
+  for (const line of lines) {
+    addToMap(requiredQtyByItemId, Number(line.itemId), Math.max(0, n(line.requiredQty)));
+  }
+  const availabilityRows = await getMaterialAvailabilityByItems({
+    db: tx,
+    itemIds,
+    requiredQtyByItemId,
+    excludePmrId: pmr.id,
+    includeIncoming: true,
+    includeIssued: true,
+  });
+  const availabilityByItem = new Map(availabilityRows.map((row) => [row.itemId, row]));
+  const out = [];
+
+  for (const line of lines) {
+    const itemId = Number(line.itemId);
+    if (!itemId) continue;
+    const requiredQty = Math.max(0, n(line.requiredQty));
+    const issuedOnLine = Math.max(0, n(line.issuedQty));
+    const availability = availabilityByItem.get(itemId);
+    const free = Math.max(0, n(availability?.freeStockQty));
+    const allocationNo = `MAL-${pmr.id}-${itemId}`;
+    const existing =
+      (await tx.materialAllocation.findFirst({
+        where: { allocationNo },
+      })) ||
+      (await tx.materialAllocation.findFirst({
+        where: { productionMaterialRequestId: Number(pmr.id), rmItemId: itemId },
+        orderBy: { id: "asc" },
+      }));
+
+    const priorIssued = existing ? Math.max(0, n(existing.qtyIssued)) : 0;
+    const qtyIssued = round3(Math.max(priorIssued, Math.min(issuedOnLine, requiredQty)));
+    const desiredAllocated = round3(
+      Math.max(qtyIssued, Math.min(requiredQty, qtyIssued + free)),
+    );
+    if (desiredAllocated <= ALLOCATION_EPS && qtyIssued <= ALLOCATION_EPS) {
+      if (existing && ACTIVE_ALLOCATION_STATUSES.includes(String(existing.status))) {
+        await tx.materialAllocation.update({
+          where: { id: existing.id },
+          data: {
+            status: "CANCELLED",
+            releasedByUserId: actor.userId ?? null,
+          },
+        });
+      }
+      continue;
+    }
+
+    const status =
+      qtyIssued + ALLOCATION_EPS >= desiredAllocated
+        ? "ISSUED"
+        : qtyIssued > ALLOCATION_EPS
+          ? "PARTIALLY_ISSUED"
+          : "ACTIVE";
+    const payload = {
+      allocationNo,
+      rmItemId: itemId,
+      salesOrderId: pmr.salesOrderId ?? pmr.workOrder?.salesOrderId ?? null,
+      workOrderId: pmr.workOrderId ?? null,
+      productionMaterialRequestId: Number(pmr.id),
+      qtyAllocated: String(desiredAllocated),
+      qtyIssued: String(qtyIssued),
+      status,
+      priority: "NORMAL",
+      allocationType: "PMR_CREATED",
+      remarks:
+        desiredAllocated + ALLOCATION_EPS < requiredQty
+          ? `Reconcile PMR allocation: ${desiredAllocated} of ${requiredQty}`
+          : "Reconcile PMR allocation",
+      createdByUserId: existing?.createdByUserId ?? actor.userId ?? null,
+      releasedByUserId: null,
+    };
+
+    if (existing) {
+      const updated = await tx.materialAllocation.update({
+        where: { id: existing.id },
+        data: payload,
+      });
+      out.push(updated);
+    } else {
+      const created = await tx.materialAllocation.create({ data: payload });
+      out.push(created);
+    }
+  }
+  return out;
+}
+
 async function cancelAllocationsForPmr(tx, pmrId, actor = {}) {
   if (!tx.materialAllocation?.updateMany || !pmrId) return { count: 0 };
   return tx.materialAllocation.updateMany({
@@ -221,6 +319,7 @@ module.exports = {
   loadActiveAllocatedByItem,
   loadPmrAllocationByItem,
   createAllocationsForPmr,
+  refreshAllocationsForOpenPmrReconcile,
   cancelAllocationsForPmr,
   syncAllocationsForPmrIssueStatus,
   prisma,

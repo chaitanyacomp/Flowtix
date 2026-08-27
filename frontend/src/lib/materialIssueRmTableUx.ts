@@ -187,3 +187,17 @@ export const MATERIAL_ISSUE_RM_TABLE_HEADER_CLASS =
 
 export const MATERIAL_ISSUE_RM_TABLE_ROW_CLASS =
   "grid min-w-0 grid-cols-2 gap-x-2 gap-y-1 border-b border-slate-100 px-2 py-1.5 text-sm sm:grid-cols-[minmax(5.5rem,1.15fr)_repeat(3,minmax(3.5rem,.65fr))_minmax(4rem,.7fr)_minmax(3rem,.45fr)_minmax(4rem,.7fr)_minmax(4rem,.72fr)_minmax(3.25rem,.55fr)] sm:items-center sm:gap-y-0 min-h-[52px] sm:min-h-[56px]";
+
+/**
+ * Kg rounding desktop one-row layout.
+ * Columns: RM | Planned Requirement | Rounding Rule | Issue Target | Already Issued | Remaining | Rounding Excess | Issue Now | Available | Status
+ */
+export const MATERIAL_ISSUE_RM_TABLE_HEADER_CLASS_KG =
+  "hidden min-w-0 gap-x-2 border-b border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-semibold tracking-wide text-slate-600 lg:grid lg:grid-cols-[minmax(7rem,1.25fr)_minmax(5.75rem,0.9fr)_minmax(7rem,1fr)_minmax(5.25rem,0.85fr)_minmax(5.25rem,0.85fr)_minmax(5rem,0.8fr)_minmax(5.75rem,0.9fr)_minmax(5.5rem,0.9fr)_minmax(5rem,0.8fr)_minmax(4.75rem,0.75fr)] lg:items-center";
+
+export const MATERIAL_ISSUE_RM_TABLE_ROW_CLASS_KG =
+  "hidden min-w-0 gap-x-2 border-b border-slate-100 px-2.5 py-2 text-sm lg:grid lg:grid-cols-[minmax(7rem,1.25fr)_minmax(5.75rem,0.9fr)_minmax(7rem,1fr)_minmax(5.25rem,0.85fr)_minmax(5.25rem,0.85fr)_minmax(5rem,0.8fr)_minmax(5.75rem,0.9fr)_minmax(5.5rem,0.9fr)_minmax(5rem,0.8fr)_minmax(4.75rem,0.75fr)] lg:items-center";
+
+/** Compact two-line card for Kg RM below lg breakpoint. */
+export const MATERIAL_ISSUE_RM_CARD_CLASS_KG =
+  "grid gap-2 border-b border-slate-100 px-2.5 py-2.5 lg:hidden";
